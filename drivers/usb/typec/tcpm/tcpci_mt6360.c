@@ -11,6 +11,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 #include <linux/usb/tcpci.h>
 #include <linux/usb/tcpm.h>
 
@@ -40,6 +41,7 @@ struct mt6360_tcpc_info {
 	struct tcpci_data tdata;
 	struct tcpci *tcpci;
 	struct device *dev;
+	struct regulator *vbus;
 	int irq;
 };
 
@@ -63,6 +65,10 @@ static int mt6360_tcpc_init(struct tcpci *tcpci, struct tcpci_data *tdata)
 
 	/* write all alert to masked */
 	ret = mt6360_tcpc_write16(regmap, TCPC_ALERT_MASK, 0);
+	if (ret)
+		return ret;
+
+	ret = mt6360_tcpc_write16(regmap, TCPC_ALERT, 0xffff);
 	if (ret)
 		return ret;
 
@@ -136,6 +142,26 @@ static irqreturn_t mt6360_irq(int irq, void *dev_id)
 	return tcpci_irq(mti->tcpci);
 }
 
+static int mt6360_tcpc_set_vbus(struct tcpci *tcpci, struct tcpci_data *data,
+				bool source, bool sink)
+{
+	struct mt6360_tcpc_info *mti =
+		container_of(data, struct mt6360_tcpc_info, tdata);
+	int ret;
+
+	ret = regulator_is_enabled(mti->vbus);
+	if (ret < 0)
+		return ret;
+
+	if (ret && !source)
+		return regulator_disable(mti->vbus);
+
+	if (!ret && source)
+		return regulator_enable(mti->vbus);
+
+	return 0;
+}
+
 static int mt6360_tcpc_probe(struct platform_device *pdev)
 {
 	struct mt6360_tcpc_info *mti;
@@ -157,6 +183,10 @@ static int mt6360_tcpc_probe(struct platform_device *pdev)
 	if (mti->irq < 0)
 		return mti->irq;
 
+	mti->vbus = devm_regulator_get_optional(&pdev->dev, "vbus");
+	if (!IS_ERR(mti->vbus))
+		mti->tdata.set_vbus = mt6360_tcpc_set_vbus;
+
 	mti->tdata.init = mt6360_tcpc_init;
 	mti->tcpci = tcpci_register_port(&pdev->dev, &mti->tdata);
 	if (IS_ERR(mti->tcpci)) {
@@ -168,6 +198,18 @@ static int mt6360_tcpc_probe(struct platform_device *pdev)
 					dev_name(&pdev->dev), mti);
 	if (ret) {
 		dev_err(mti->dev, "Failed to register irq\n");
+		tcpci_unregister_port(mti->tcpci);
+		return ret;
+	}
+
+	const u16 alert_mask = TCPC_ALERT_TX_SUCCESS | TCPC_ALERT_TX_DISCARDED |
+			       TCPC_ALERT_TX_FAILED | TCPC_ALERT_RX_HARD_RST |
+			       TCPC_ALERT_RX_STATUS | TCPC_ALERT_POWER_STATUS |
+			       TCPC_ALERT_CC_STATUS;
+
+	ret = mt6360_tcpc_write16(mti->tdata.regmap, TCPC_ALERT_MASK, alert_mask);
+	if (ret) {
+		dev_err(mti->dev, "Failed to set alert mask\n");
 		tcpci_unregister_port(mti->tcpci);
 		return ret;
 	}
