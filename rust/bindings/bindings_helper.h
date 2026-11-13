@@ -83,6 +83,7 @@
 #include <linux/pwm.h>
 #include <linux/random.h>
 #include <linux/refcount.h>
+#include <linux/power_supply.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sched.h>
 #include <linux/security.h>
