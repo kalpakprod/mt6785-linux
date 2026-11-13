@@ -59,10 +59,15 @@ properties:
 
   rtc:
     type: object
-    $ref: /schemas/rtc/rtc.yaml#
+    allOf:
+      - $ref: /schemas/rtc/rtc.yaml#
+      - $ref: /schemas/power/reset/reboot-mode.yaml#
     unevaluatedProperties: false
     description:
-      MT6397 Real Time Clock.
+      MT6397 Real Time Clock. As a reboot-mode provider, each mode-<name> value
+      is written to the RTC_PDN1 spare bits that the boot loader reads on the
+      next boot, for example 0x2000 (bit 13) for the boot loader's fastboot
+      mode. Only bit 13 is accepted.
 
     properties:
       compatible:

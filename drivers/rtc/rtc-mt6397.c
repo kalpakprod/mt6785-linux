@@ -243,6 +243,33 @@ static const struct rtc_class_ops mtk_rtc_ops = {
 	.set_alarm  = mtk_rtc_set_alarm,
 };
 
+/*
+ * The boot loader reads its boot mode from spare bits of RTC_PDN1 (MediaTek's
+ * rtc_mark_fast() sets bit 13 for fastboot). Bits 4-5 of the same register
+ * request a factory data reset in recovery, so only the bits in this mask may
+ * ever be written from a "mode-*" value.
+ */
+#define MTK_RTC_REBOOT_MODE_MASK	RTC_PDN1_FAST_BOOT
+
+static int mtk_rtc_reboot_mode_write(struct reboot_mode_driver *reboot,
+				     unsigned int magic)
+{
+	struct mt6397_rtc *rtc = container_of(reboot, struct mt6397_rtc, reboot);
+	int ret;
+
+	if (magic & ~MTK_RTC_REBOOT_MODE_MASK)
+		return -EINVAL;
+
+	mutex_lock(&rtc->lock);
+	ret = regmap_update_bits(rtc->regmap, rtc->addr_base + RTC_PDN1,
+				 MTK_RTC_REBOOT_MODE_MASK, magic);
+	if (!ret)
+		ret = mtk_rtc_write_trigger(rtc);
+	mutex_unlock(&rtc->lock);
+
+	return ret;
+}
+
 static int mtk_rtc_probe(struct platform_device *pdev)
 {
 	struct resource *res;
@@ -286,6 +313,14 @@ static int mtk_rtc_probe(struct platform_device *pdev)
 	}
 
 	device_init_wakeup(&pdev->dev, true);
+
+	if (IS_REACHABLE(CONFIG_REBOOT_MODE)) {
+		rtc->reboot.dev = &pdev->dev;
+		rtc->reboot.write = mtk_rtc_reboot_mode_write;
+		ret = devm_reboot_mode_register(&pdev->dev, &rtc->reboot);
+		if (ret)
+			dev_warn(&pdev->dev, "reboot modes not registered: %d\n", ret);
+	}
 
 	rtc->rtc_dev->ops = &mtk_rtc_ops;
 	rtc->rtc_dev->range_min = RTC_TIMESTAMP_BEGIN_1900;
