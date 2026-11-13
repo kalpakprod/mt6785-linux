@@ -830,6 +830,17 @@ config CHARGER_BQ25890
 	help
 	  Say Y to enable support for the TI BQ25890 battery charger.
 
+config CHARGER_LN8000
+	tristate "Lion Semiconductor LN8000 charge pump (Rust)"
+	depends on RUST
+	depends on I2C
+	help
+	  Say Y to enable support for the Lion Semiconductor LN8000
+	  direct-charge pump (a fast-charging companion of the main
+	  charger, found in some Xiaomi phones). It is written in Rust,
+	  puts the chip into standby with its protections enabled and
+	  reports it as a mains power supply.
+
 config CHARGER_BQ25980
 	tristate "TI BQ25980 battery charger driver"
 	depends on I2C
