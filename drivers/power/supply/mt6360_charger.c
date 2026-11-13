@@ -38,6 +38,7 @@
 #define MT6360_OPA_MODE_SHFT	(0)
 #define MT6360_OPA_MODE_MASK	BIT(MT6360_OPA_MODE_SHFT)
 /* MT6360_PMU_CHG_CTRL2 */
+#define MT6360_CHG_EN_MASK	BIT(0)
 #define MT6360_IINLMTSEL_SHFT	(2)
 #define MT6360_IINLMTSEL_MASK	GENMASK(3, 2)
 /* MT6360_PMU_CHG_CTRL3 */
@@ -371,6 +372,42 @@ static int mt6360_charger_set_online(struct mt6360_chg_info *mci,
 				  force_sleep << MT6360_FSLP_SHFT);
 }
 
+static int mt6360_charger_get_charge_behaviour(struct mt6360_chg_info *mci,
+					       union power_supply_propval *val)
+{
+	unsigned int regval;
+	int ret;
+
+	ret = regmap_read(mci->regmap, MT6360_PMU_CHG_CTRL2, &regval);
+	if (ret)
+		return ret;
+
+	val->intval = (regval & MT6360_CHG_EN_MASK) ?
+		      POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO :
+		      POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+	return 0;
+}
+
+static int mt6360_charger_set_charge_behaviour(struct mt6360_chg_info *mci,
+					       const union power_supply_propval *val)
+{
+	unsigned int en;
+
+	switch (val->intval) {
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+		en = MT6360_CHG_EN_MASK;
+		break;
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+		en = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return regmap_update_bits(mci->regmap, MT6360_PMU_CHG_CTRL2,
+				  MT6360_CHG_EN_MASK, en);
+}
+
 static int mt6360_charger_set_ichg(struct mt6360_chg_info *mci,
 				   const union power_supply_propval *val)
 {
@@ -487,6 +524,9 @@ static int mt6360_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		val->intval = mci->psy_usb_type;
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		ret = mt6360_charger_get_charge_behaviour(mci, val);
+		break;
 	default:
 		ret = -ENODATA;
 	}
@@ -522,6 +562,9 @@ static int mt6360_charger_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
 		ret = mt6360_charger_set_ieoc(mci, val);
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		ret = mt6360_charger_set_charge_behaviour(mci, val);
+		break;
 	default:
 		ret = -EINVAL;
 	}
@@ -539,6 +582,7 @@ static int mt6360_charger_property_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
 	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
 		return 1;
 	default:
 		return 0;
@@ -558,6 +602,7 @@ static enum power_supply_property mt6360_charger_properties[] = {
 	POWER_SUPPLY_PROP_PRECHARGE_CURRENT,
 	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT,
 	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
 };
 
 static const struct power_supply_desc mt6360_charger_desc = {
@@ -567,6 +612,8 @@ static const struct power_supply_desc mt6360_charger_desc = {
 	.get_property		= mt6360_charger_get_property,
 	.set_property		= mt6360_charger_set_property,
 	.property_is_writeable	= mt6360_charger_property_is_writeable,
+	.charge_behaviours	= BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+				  BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE),
 	.usb_types		= BIT(POWER_SUPPLY_USB_TYPE_SDP) |
 				  BIT(POWER_SUPPLY_USB_TYPE_CDP) |
 				  BIT(POWER_SUPPLY_USB_TYPE_DCP) |
