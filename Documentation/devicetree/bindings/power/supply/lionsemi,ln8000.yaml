@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/lionsemi,ln8000.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Lion Semiconductor LN8000 direct-charge pump
+
+maintainers:
+  - Poco M5s Linux port <noreply@example.invalid>
+
+description: |
+  The LN8000 is a switched-capacitor direct-charge pump used for fast charging
+  next to the main charger. It has a standby mode, a 2:1 switching mode and a
+  1:1 bypass mode, protections for input over-voltage, input over-current,
+  battery over-voltage and die temperature, and an ADC for the input voltage
+  and current and the die temperature. There is no public datasheet; the
+  register map is taken from the GPL v2 vendor driver.
+
+  Every property below is optional; when one is absent the value the chip
+  powers up with is kept.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: lionsemi,ln8000
+
+  reg:
+    maxItems: 1
+
+  lionsemi,float-voltage-microvolt:
+    description: |
+      Battery float voltage in micro volts, in steps of 5000 micro volts.
+    minimum: 3725000
+    maximum: 5000000
+
+  lionsemi,input-current-limit-microamp:
+    description: |
+      Input current limit in micro amps, in steps of 50000 micro amps.
+    minimum: 500000
+    maximum: 5000000
+
+  lionsemi,input-overvoltage-microvolt:
+    description: |
+      Input over-voltage threshold in micro volts. The chip offers the levels
+      6.5 V, 11 V, 12 V and 13 V; the largest level not above this value is
+      used.
+    minimum: 6500000
+    maximum: 13000000
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        charger@51 {
+            compatible = "lionsemi,ln8000";
+            reg = <0x51>;
+            lionsemi,float-voltage-microvolt = <4350000>;
+            lionsemi,input-current-limit-microamp = <2000000>;
+            lionsemi,input-overvoltage-microvolt = <11000000>;
+        };
+    };
