@@ -93,6 +93,8 @@ c_enum! {
         CONSTANT_CHARGE_VOLTAGE = power_supply_property_POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE;
         /// `POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT`: in microamperes.
         INPUT_CURRENT_LIMIT = power_supply_property_POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT;
+        /// `POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT`: in microvolts.
+        INPUT_VOLTAGE_LIMIT = power_supply_property_POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT;
     }
 }
 
@@ -135,6 +137,10 @@ c_enum! {
         TRICKLE = power_supply_charge_type_POWER_SUPPLY_CHARGE_TYPE_TRICKLE;
         /// Fast charge.
         FAST = power_supply_charge_type_POWER_SUPPLY_CHARGE_TYPE_FAST;
+        /// Normal speed charge.
+        STANDARD = power_supply_charge_type_POWER_SUPPLY_CHARGE_TYPE_STANDARD;
+        /// The charger is bypassed (input passes straight to the battery side).
+        BYPASS = power_supply_charge_type_POWER_SUPPLY_CHARGE_TYPE_BYPASS;
     }
 }
 
@@ -149,6 +155,12 @@ c_enum! {
         OVERHEAT = POWER_SUPPLY_HEALTH_OVERHEAT;
         /// Too cold.
         COLD = POWER_SUPPLY_HEALTH_COLD;
+        /// Over voltage.
+        OVERVOLTAGE = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
+        /// Over current.
+        OVERCURRENT = POWER_SUPPLY_HEALTH_OVERCURRENT;
+        /// The charger watchdog timer expired.
+        WATCHDOG_TIMER_EXPIRE = POWER_SUPPLY_HEALTH_WATCHDOG_TIMER_EXPIRE;
     }
 }
 
