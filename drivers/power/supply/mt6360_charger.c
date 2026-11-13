@@ -414,7 +414,7 @@ static int mt6360_charger_set_mivr(struct mt6360_chg_info *mci,
 
 	linear_range_get_selector_within(&mt6360_chg_range[MT6360_RANGE_VMIVR], val->intval, &sel);
 	return regmap_update_bits(mci->regmap,
-				  MT6360_PMU_CHG_CTRL3,
+				  MT6360_PMU_CHG_CTRL6,
 				  MT6360_VMIVR_MASK,
 				  sel << MT6360_VMIVR_SHFT);
 }
