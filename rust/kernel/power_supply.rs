@@ -11,7 +11,7 @@
 use crate::{
     bindings,
     device::{self, Bound},
-    error::{from_err_ptr, from_result},
+    error::{from_err_ptr, from_result, VTABLE_DEFAULT_ERROR},
     prelude::*,
     types::Opaque, //
 };
