@@ -95,6 +95,19 @@ config SAMPLE_RUST_DRIVER_I2C
 
 	  If unsure, say N.
 
+config SAMPLE_RUST_DRIVER_POWER_SUPPLY
+	tristate "Power supply driver on an I2C chip"
+	depends on I2C=y
+	depends on POWER_SUPPLY=y
+	help
+	  This option builds the Rust power supply driver sample: a made-up
+	  battery gauge on I2C, meant to be emulated with the i2c-stub module.
+
+	  To compile this as a module, choose M here:
+	  the module will be called rust_driver_power_supply.
+
+	  If unsure, say N.
+
 config SAMPLE_RUST_I2C_CLIENT
 	tristate "I2C Client Registration"
 	depends on I2C=y
