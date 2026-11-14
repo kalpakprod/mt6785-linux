@@ -1028,7 +1028,14 @@
 		watchdog: watchdog@10007000 {
 			compatible = "mediatek,mt6785-wdt";
 			reg = <0 0x10007000 0 0x1000>;
-			interrupts = <GIC_SPI 72 IRQ_TYPE_LEVEL_LOW>;
+			/*
+			 * No interrupts: the bark interrupt (GIC_SPI 72) is taken by the
+			 * secure firmware, which resets the SoC at once, and never reaches
+			 * Linux. With it listed, mtk_wdt runs in dual mode and programs the
+			 * counter to timeout - pretimeout (15 s for systemd's 30 s), so the
+			 * SoC resets 15 s after a ping while userspace, pinging at timeout/2,
+			 * believes it has 30 s.
+			 */
 			#reset-cells = <1>;
 		};
 
