@@ -79,6 +79,16 @@ config MTK_SVS
 	  chip process corner, temperatures and other factors. Then DVFS
 	  driver could apply SVS bank voltage to PMIC/Buck.
 
+config MTK_CPUHP_SIP
+	bool "MediaTek CPU hotplug power-down through the ATF"
+	depends on ARCH_MEDIATEK && ARM64 && HAVE_ARM_SMCCC
+	default ARCH_MEDIATEK
+	help
+	  After PSCI CPU_OFF, ask the MediaTek ATF to power the core down
+	  (SIP 0x212), as the vendor kernels do. Without it MT6785 / MT6885
+	  phones hang when a core taken offline is brought online again
+	  (CPU hotplug, kexec).
+
 config MTK_SOCINFO
 	tristate "MediaTek SoC Information"
 	default y
