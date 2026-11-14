@@ -126,6 +126,21 @@
  * Enabled so the alias resolves and the console exists if the UART turns out
  * to be reachable at all; if it is not, this line costs nothing.
  */
+/*
+ * The display engine stays the loader's: no upstream driver for this panel
+ * (dsi_panel_k7_38_0c_0a_fhdp_video), so the screen is the simple-framebuffer
+ * the loader keeps scanning out. These blocks reach memory through the MM
+ * IOMMU; with them enabled the IOMMU binds larb0 at ~8 s, turns translation on
+ * for their ports and the running scan-out faults ("mtk-iommu: fault ...
+ * larb=0 port=3 ... read", 14.11.2026) and the screen turns to noise. Disabled,
+ * their ports stay in bypass and the console stays readable.
+ */
+&ovl0 { status = "disabled"; };
+&ovl_2l0 { status = "disabled"; };
+&ovl_2l1 { status = "disabled"; };
+&rdma0 { status = "disabled"; };
+&rdma1 { status = "disabled"; };
+
 &uart0 {
 	status = "okay";
 };
