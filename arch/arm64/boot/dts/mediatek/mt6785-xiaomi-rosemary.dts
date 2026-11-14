@@ -1,0 +1,595 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Xiaomi POCO M5s / Redmi Note 10S — rosemary
+ *
+ * First board description for the upstream MT6785 kernel, written
+ * 2026-11-12 from three sources that agree with each other:
+ *   1. the live device tree the phone boots with
+ *      (poco-m5s/device-dump-2026-11-12/device-tree.dts, and the same DT
+ *      inside its boot image),
+ *   2. the vendor 4.19 board files (rosemary.dts, rosemary/cust.dtsi),
+ *   3. the begonia board port in this same tree, used as the layout template
+ *      because it is the only other MT6785 board already described upstream.
+ *
+ * SCOPE: storage (UFS/SD), USB, power key and PMIC supplies. Display, touch,
+ * volume keys, charging, audio and radios are deliberately absent — see
+ * poco-m5s/port/README.md for why and in what order.
+ *
+ * The empty nodes at the end are anchors for the bootloader's overlay, not
+ * hardware descriptions; the comment there explains why they exist.
+ *
+ * Every pin, supply and address below is taken from one of the sources listed
+ * above; where nothing in those sources answers a question, the value is left
+ * at its default and the comment says so rather than inventing one.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/regulator/mediatek,mt6360-regulator.h>
+
+#include "mt6785.dtsi"
+#include "mt6359.dtsi"
+
+/ {
+	model = "Xiaomi POCO M5s (rosemary)";
+	compatible = "xiaomi,rosemary", "mediatek,mt6785";
+	chassis-type = "handset";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen: chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * Needed by Little Kernel, which stays in the boot chain and
+		 * overwrites this at boot. Kept empty here rather than guessed.
+		 */
+		bootargs = "";
+
+		/*
+		 * The screen as the boot loader left it, for a text console before
+		 * any display driver exists. Evidence (13.11.2026):
+		 *  - the region: the loader reserves mblock-20-framebuffer at
+		 *    0x7bd20000 size 0x22e0000 and the stock kernel logs
+		 *    disp_hal_allocate_framebuffer pa_start=0x7bd20000
+		 *    pa_end=0x7dffffff (device-dump-2026-11-13/stock/
+		 *    fb-and-panel-dmesg.txt);
+		 *  - 1080x2400: the panel dsi_panel_k7_38_0c_0a_fhdp_video;
+		 *  - stride 4352 = ALIGN(1080, 32) * 4: the vendor mtkfb line length
+		 *    MTK_FB_LINE = ALIGN_TO(XRES, MTK_FB_ALIGNMENT) * BYPP;
+		 *  - a8r8g8b8 and scan-out from the start of the region: NOT measured,
+		 *    a lead. Wrong values give a garbled or black screen, never a write
+		 *    outside the reserved region.
+		 * The display clocks and power domains must stay on, hence
+		 * clk_ignore_unused pd_ignore_unused on the boot image command line.
+		 */
+		framebuffer0 {
+			compatible = "simple-framebuffer";
+			reg = <0 0x7bd20000 0 0x22e0000>;	/* reserved by the loader (mblock framebuffer) */
+			width = <1080>;
+			height = <2400>;
+			stride = <4352>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	/*
+	 * A way to see the first boot. USB is the intended channel, but until a
+	 * gadget is up there is nothing to watch on this phone: no display
+	 * driver, and the serial console the bootloader passes
+	 * (console=ttyS0,921600n1, mtk_printk_ctrl.disable_uart=1) needs a
+	 * header this device does not expose. pstore over the RAM already
+	 * reserved by Little Kernel costs nothing and survives a crash.
+	 */
+	reserved_memory: reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * Nothing here on purpose (session 1, 14.11.2026): this loader stops in
+		 * `reserved_memory_conflict_check fatal error keep while (1)` when a node here
+		 * overlaps one of its own reservations — pstore at 0x4d010000 and the
+		 * framebuffer at 0x7bd20000 hung every boot before the kernel started. The
+		 * loader adds all its reservations itself (`mblock-<n>-<name>` nodes, no-map),
+		 * so ramoops gets its region from the kernel command line instead.
+		 */
+	};
+
+	scp: scp {
+		compatible = "mediatek,scp";
+	};
+
+	/*
+	 * Haptics. Kept because it is one line and harmless, but which part the
+	 * phone actually uses is unconfirmed: the vendor DT has both this
+	 * vibrator and an `aw8622` node.
+	 */
+	vibrator {
+		compatible = "regulator-haptic";
+		haptic-supply = <&mt6359_vibr_ldo_reg>;
+		max-microvolt = <2800000>;
+		min-microvolt = <1200000>;
+	};
+};
+
+/*
+ * The serial console. The vendor DT leaves uart0 disabled and the bootloader's
+ * `console=ttyS0,921600n1` therefore points at a node that never registers.
+ * Enabled so the alias resolves and the console exists if the UART turns out
+ * to be reachable at all; if it is not, this line costs nothing.
+ */
+&uart0 {
+	status = "okay";
+};
+
+/*
+ * CPU cluster supplies are deliberately NOT described in this first
+ * version. Reasons, all verified 2026-11-12 after review:
+ *
+ *  - The vendor device tree carries no processor-to-buck mapping at all:
+ *    neither the cpu@N nodes nor a populated mt_cpufreq node name a rail,
+ *    so there is no source for "vproc1 feeds the big cluster here".
+ *  - begonia's board file assigns cpu0..5 to vproc2 and cpu6/7 to vproc1,
+ *    exactly the split an earlier version of this file claimed was reversed.
+ *  - The board has a separate external buck, `mediatek,vproc_buck` on I2C9
+ *    at 0x6b, whose cluster is unknown and which is not described here.
+ *
+ * With ARM_MEDIATEK_CPUFREQ enabled the kernel actively drives whatever rail
+ * these properties name, so guessing wrong changes real voltage on real
+ * silicon. Leaning on the bootloader's fixed operating point for the first
+ * boot is the safe choice; the mapping gets established by measurement.
+ *
+ * GPU/MFG supplies stay because they belong to the GPU device, not to the
+ * cluster mapping, and panfrost needs them. The GPU itself is left disabled
+ * for this step: bringing up 3D before there is a console adds a failure mode
+ * without helping the first milestone.
+ */
+/*
+ * The CCI (cache-coherent interconnect) node requires a supply by binding, and
+ * its schema enforces it. begonia wires it to vproc2, the little-cluster buck,
+ * which is the same PMIC output and the same SoC — the one rail assignment
+ * that both the binding and the sibling board agree on. Nothing claims CCI
+ * otherwise, so leaving it unfed would trip the same late-cleanup path that
+ * affects UFS.
+ */
+&cci {
+	proc-supply = <&mt6359_vproc2_buck_reg>;
+};
+
+&gpu {
+	mali-supply = <&mt6359_vgpu11_buck_reg>;
+	status = "disabled";
+};
+
+&mfg {
+	domain-supply = <&mt6359_vpu_buck_reg>;
+};
+
+&mfg_async {
+	domain-supply = <&mt6359_vgpu11_buck_reg>;
+};
+
+/* ---------------------------------------------------------------- storage */
+
+/*
+ * UFS. Host and PHY addresses are the SoC's (0x11270000 / 0x11fa0000), the
+ * same as begonia and the same as this phone's live DT.
+ *
+ * Supplies: the vendor DT names only `vcc-supply = <vemc>`, but mainline
+ * disables every enabled regulator that no driver claims, about 30 s into
+ * boot (regulator_late_cleanup: only `always_on` and in-use rails survive,
+ * and a DT system counts as having full constraints). The vendor kernel does
+ * not do that, which is why its DT can afford to name one rail.
+ *
+ * So va09 (analog) and vufs (I/O, the `vccq2` rail) are claimed here exactly
+ * as begonia does for the same SoC, PMIC and UFS part. Without this, both are
+ * switched off mid-boot and UFS dies under a running kernel - a soft hang with
+ * no message on a phone that has no console yet.
+ */
+&ufshci {
+	status = "okay";
+
+	/* One lane each way: the link reports PA_CONNECTEDTXDATALANES = 1 (session 1). */
+	lanes-per-direction = <1>;
+
+	mediatek,ufs-disable-mcq;
+	mediatek,ufs-support-va09;
+
+	vcc-supply = <&mt6359_vemc_ldo_reg>;
+	va09-supply = <&mt6359_va09_ldo_reg>;
+	vccq2-supply = <&mt6359_vufs_ldo_reg>;
+};
+
+&ufsphy {
+	status = "okay";
+};
+
+/*
+ * eMMC (mmc0) stays disabled, and the reason is measured rather than assumed:
+ * on the running phone `/proc/partitions` and `/dev/block/by-name` resolve
+ * every partition (super, boot_a…) to `sdc*`/`sda`, and the kernel log is full
+ * of `ufshpb_*` activity — the phone runs from UFS. The vendor device tree
+ * enables mmc0 anyway, but nothing is behind it on this board. Enabling it also
+ * has a concrete cost the schema check reports: an enabled mmc0 must name
+ * vqmmc and two pinctrl states this phone does not wire on that controller.
+ */
+&mmc0 {
+	status = "disabled";
+};
+
+/*
+ * microSD. Card detect is GPIO8 active-high; the rails are the MT6360's own
+ * LDO3 (VMC) and LDO5 (VMCH) — resolved from the live DT: phandles 0x6c/0x6d
+ * point into the mt6360_ldo node on I2C5, not into the MT6359. Pin list below
+ * is this phone's (GPIO134..139, detect GPIO8).
+ */
+&mmc1 {
+	status = "okay";
+
+	bus-width = <4>;
+	max-frequency = <200000000>;
+	cd-gpios = <&pio 8 GPIO_ACTIVE_HIGH>;
+	disable-wp;
+	cap-sd-highspeed;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-ddr50;
+	sd-uhs-sdr104;
+	no-mmc;
+	no-sdio;
+
+	vmmc-supply = <&mt6360_vmch_ldo_reg>;
+	vqmmc-supply = <&mt6360_vmc_ldo_reg>;
+
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc1_pins>, <&mmc1_pins_detect>;
+	pinctrl-1 = <&mmc1_pins>;
+};
+
+/*
+ * MT6360 sub-PMIC on I2C5 at 0x34, interrupt on GPIO16 — read from the live DT
+ * (mt6360_pmu_dts, mt6360,intr_gpio = <&pio 16 …>) and agreeing with begonia.
+ * Only the regulator block and the ADC are described for now: they are what
+ * the SD card and later the charger need. Charger, Type-C and the LED block
+ * come with the power milestone, see board-port-from-upstream.md.
+ */
+&i2c5 {
+	status = "okay";
+	clock-frequency = <3400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c5_pins>;
+
+	pmic@34 {
+		compatible = "mediatek,mt6360";
+		reg = <0x34>;
+
+		interrupts-extended = <&pio 16 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "IRQB";
+		interrupt-controller;
+		#interrupt-cells = <1>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&mt6360_irq_pins>;
+
+		adc {
+			compatible = "mediatek,mt6360-adc";
+			#io-channel-cells = <1>;
+		};
+
+		/*
+		 * Main charger. 6.5 V input over-voltage: the phone runs from a 5 V
+		 * USB port as a server and nothing here negotiates a higher voltage;
+		 * the vendor tree's fast-charge path (LN8000/BQ2597x pumps) stays
+		 * unused. The loader's values (ICHG 2 A, AICR 0.5 A, CV 4.45 V, read
+		 * from the vendor DT mt6360 node) remain until user space changes
+		 * them; the charge limit uses charge_behaviour (CHG_EN).
+		 */
+		charger {
+			compatible = "mediatek,mt6360-chg";
+			richtek,vinovp-microvolt = <6500000>;
+		};
+
+		/*
+		 * The regulator container MUST be named `regulator` (singular): that
+		 * is the string the driver looks up (regulators_node in
+		 * mt6360-regulator.c), and the regulator binding's own example names
+		 * its node the same way. The parent MFD schema happens to name the
+		 * subnode `regulators` (plural) and permits arbitrary child names, so
+		 * a tree matching the schema can still fail to bind — this was caught
+		 * in review, after an earlier version trusted the schema.
+		 *
+		 * Only LDO3/LDO5 are described: the SD card rails (VMC/VMCH in the
+		 * vendor DT, phandles 0x6d/0x6c). The other MT6360 rails are left
+		 * absent on purpose — a rail the tree does not mention cannot be
+		 * switched off by the kernel, and the DRAM rails (buck1/buck2,
+		 * ldo6/ldo7) are always-on in the vendor DT for good reason.
+		 */
+		regulator {
+			compatible = "mediatek,mt6360-regulator";
+
+			mt6360_vmc_ldo_reg: ldo3 {
+				regulator-name = "vmc";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <3600000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+			};
+
+			mt6360_vmch_ldo_reg: ldo5 {
+				regulator-name = "vmch";
+				regulator-min-microvolt = <2700000>;
+				regulator-max-microvolt = <3600000>;
+				regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+							   MT6360_OPMODE_LP>;
+			};
+		};
+	};
+};
+
+/*
+ * Charge pump 1, Lion Semiconductor LN8000, at I2C7 0x51 (live DT: i2c7@1101a000,
+ * ln8000_charger@51, 400 kHz, SCL/SDA on GPIO198/199 = scl-gpio-id 0xc6,
+ * sda-gpio-id 0xc7). Described so our driver can hold it in standby with its
+ * protections on: the server never fast-charges. Its interrupt is left out
+ * (the driver does not use one yet). The BQ2597x at 0x65 on the same bus has
+ * no driver and is not described.
+ */
+&i2c7 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c7_pins>;
+
+	charge-pump@51 {
+		compatible = "lionsemi,ln8000";
+		reg = <0x51>;
+	};
+};
+
+/* -------------------------------------------------------------------- USB */
+
+/*
+ * USB. Two facts decide this block, both from the driver and the binding:
+ *
+ *  - With `usb-role-switch` and no `role-switch-default-mode`, the driver
+ *    takes "host" as the default role (mtu3_dr.c reads the property and
+ *    otherwise picks host). Nothing in this first version describes a Type-C
+ *    controller, so the port would stay a host and the phone would never
+ *    appear as a USB device — no console, which is the whole point of this
+ *    milestone. `role-switch-default-mode = "peripheral"` is allowed by
+ *    mediatek,mtu3.yaml and is the smallest correct statement for now.
+ *  - The full Type-C chain (TCPC at I2C5 0x4e, its interrupt on GPIO7, and a
+ *    connector with role switching) belongs to the power milestone together
+ *    with the charger; the vendor DT describes it, this version does not.
+ *
+ * maximum-speed "high-speed" is what the vendor DT says verbatim, so it is
+ * copied rather than inferred.
+ */
+&ssusb {
+	status = "okay";
+
+	maximum-speed = "high-speed";
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
+};
+
+&xhci {
+	status = "okay";
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
+};
+
+/* ------------------------------------------------------------- PMIC / keys */
+
+/*
+ * PMIC interrupt is GPIO 193, level high — from the live DT
+ * (mt6359-pmic: interrupt-parent pio, interrupts <0xc1 0x04 …>).
+ *
+ * `mediatek,long-press-mode` and `power-off-time-sec` are copied from the
+ * vendor DT on purpose: without the property the driver sets LP_DISABLE, which
+ * clears the hardware reset bits in the PMIC. On a phone with no console, no
+ * working display driver and a possibly hung kernel, the long-press power
+ * reset is the last way back — removing it would be a real loss.
+ *
+ * Only the power key is described. The volume keys are intentionally absent:
+ * see the note further down.
+ */
+&pmic {
+	interrupts-extended = <&pio 193 IRQ_TYPE_LEVEL_HIGH>;
+
+	/*
+	 * Boot modes for the loader, in RTC_PDN1 (research/lk-boot-modes.md):
+	 * bit 13 = fastboot (vendor rtc_mark_fast). mode-normal clears it, so a
+	 * plain reboot never leaves the phone stuck in fastboot.
+	 */
+	rtc {
+		mode-normal = <0x0>;
+		mode-bootloader = <0x2000>;
+	};
+
+	keys {
+		compatible = "mediatek,mt6359-keys";
+		mediatek,long-press-mode = <1>;
+		power-off-time-sec = <0>;
+
+		power {
+			linux,keycodes = <KEY_POWER>;
+			wakeup-source;
+		};
+	};
+};
+
+/*
+ * Rails deliberately marked always-on.
+ *
+ * mainline disables every enabled regulator that no driver claims, roughly
+ * 30 s after init (regulator_late_cleanup). A DT system counts as having full
+ * constraints, so "the bootloader left it on" protects nothing. These three
+ * feed the CPU clusters and SRAM; marking them here keeps the bootloader's
+ * operating point instead of letting the kernel drop a rail nothing has
+ * claimed yet.
+ *
+ * The GPU bucks are NOT marked always-on: the GPU is disabled in this
+ * version, and their coupling is only meaningful once panfrost runs.
+ */
+&mt6359_vcore_buck_reg {
+	regulator-always-on;
+};
+
+&mt6359_vproc1_buck_reg {
+	regulator-name = "vproc_b";
+	regulator-always-on;
+};
+
+&mt6359_vproc2_buck_reg {
+	regulator-name = "vproc_l";
+	regulator-always-on;
+};
+
+&mt6359_vsram_others_ldo_reg {
+	regulator-name = "vsram_core";
+	regulator-always-on;
+};
+/* --------------------------------------------------------------- pinctrl */
+
+/*
+ * Pin numbers are the same numbers `mediatek,mt6785-pinfunc.h` uses, and the
+ * live DT's raw cells agree with them: MSDC1_CLK 134, CMD 135, DAT0 137,
+ * DAT1 139, DAT2 138, DAT3 136, card detect GPIO8, I2C5 SCL 28 / SDA 29,
+ * MT6360 interrupt GPIO16.
+ *
+ * Pull and drive values follow the vendor DT rather than begonia: for the SD
+ * bus it sets only `input-enable` plus `drive-strength = <3>` on cmd/clk/dat,
+ * and a pull-up on the detect pin, with no bias on the data lines. Those
+ * drive-strength values are raw driver codes, not mA, so they are copied
+ * verbatim instead of translated.
+ *
+ * The volume keys are not described here. Evidence is contradictory: the
+ * vendor boot table muxes GPIO59/60 to keypad columns and the vendor keypad
+ * matrix holds one key with code 114, while the vendor PMIC keys node maps
+ * the home key to 115 (KEY_VOLUMEUP). Which mechanism is the volume key on
+ * this board is unresolved, and a wrongly muxed key group can leave the
+ * keypad block unusable. It gets settled by measuring the pins on the phone.
+ */
+&pio {
+	i2c7_pins: i2c7-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO198__FUNC_SCL7>,
+				 <PINMUX_GPIO199__FUNC_SDA7>;
+			bias-pull-up;
+		};
+	};
+
+	i2c5_pins: i2c5-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO28__FUNC_SCL5>,
+				 <PINMUX_GPIO29__FUNC_SDA5>;
+			bias-pull-up;
+		};
+	};
+
+	mt6360_irq_pins: mt6360-irq-pins {
+		pins-irq {
+			pinmux = <PINMUX_GPIO16__FUNC_GPIO16>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	mmc1_pins: mmc1-pins {
+		pins-cmd-dat {
+			pinmux = <PINMUX_GPIO135__FUNC_MSDC1_CMD>,
+				 <PINMUX_GPIO137__FUNC_MSDC1_DAT0>,
+				 <PINMUX_GPIO139__FUNC_MSDC1_DAT1>,
+				 <PINMUX_GPIO138__FUNC_MSDC1_DAT2>,
+				 <PINMUX_GPIO136__FUNC_MSDC1_DAT3>;
+			input-enable;
+			/*
+			 * The vendor DT says 3, but mainline's binding allows only
+			 * 2/4/6/8/10/12/14/16 for drive-strength in this pinctrl, so
+			 * the vendor number cannot be copied verbatim: it is a
+			 * different scale. The lowest legal value is used, which is
+			 * the closest to the vendor's "3" and the least aggressive
+			 * electrically; if the bus proves unreliable at 200 MHz the
+			 * value goes up, not down.
+			 */
+			drive-strength = <2>;
+		};
+
+		pins-clk {
+			pinmux = <PINMUX_GPIO134__FUNC_MSDC1_CLK>;
+			drive-strength = <2>;
+		};
+	};
+
+	mmc1_pins_detect: mmc1-detect-pins {
+		pins-insert {
+			pinmux = <PINMUX_GPIO8__FUNC_GPIO8>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};
+
+/ {
+/*
+ * Anchors for the bootloader's overlay.
+ *
+ * The loader applies a vendor overlay from the `dtbo` partition onto whatever
+ * DTB the boot image carries, and refuses to boot ("system not bootable") when
+ * a fragment cannot find its target. The overlay resolves its targets by
+ * symbol name, so the names below have to exist even though a mainline kernel
+ * has no use for the vendor nodes behind them.
+ *
+ * Each stub is deliberately empty: the overlay writes vendor-only properties
+ * into it, mainline ignores nodes it has no driver for, and importantly these
+ * stubs keep vendor settings away from the real nodes this port relies on
+ * (the PMIC, pinctrl and the regulators are not used as overlay targets).
+ */
+	accdet: accdet { };
+	auxadc: auxadc { };
+	charger: charger { };
+	consys: consys { };
+	dsi_te: dsi_te { };
+	fpsensor_finger: fpsensor_finger { };
+	fpsensor_fp_eint: fpsensor_fp_eint { };
+	gpio: gpio { };
+	gpio_usage_mapping: gpio_usage_mapping { };
+	irq_nfc: irq_nfc { };
+	irtx_pwm: irtx_pwm { };
+	kd_camera_hw1: kd_camera_hw1 { };
+	keypad: keypad { };
+	lk_charger: lk_charger { };
+	main_pmic: main_pmic { };
+	md1_sim1_hot_plug_eint: md1_sim1_hot_plug_eint { };
+	md_auxadc: md_auxadc { };
+	mrdump_ext_rst: mrdump_ext_rst { };
+	msdc1_ins: msdc1_ins { };
+	mt6360_pmic: mt6360_pmic { };
+	mt6360_pmu: mt6360_pmu { };
+	mt6360_typec: mt6360_typec { };
+	mt_pmic_vcamio_ldo_reg: mt_pmic_vcamio_ldo_reg { };
+	mt_pmic_vfp_ldo_reg: mt_pmic_vfp_ldo_reg { };
+	mt_pmic_vtp_ldo_reg: mt_pmic_vtp_ldo_reg { };
+	mtkfb: mtkfb { };
+	odm: odm { };
+	pmic_clock_buffer_ctrl: pmic_clock_buffer_ctrl { };
+	smart_pa: smart_pa { };
+	subpmic_pmu_eint: subpmic_pmu_eint { };
+	tcpc_pd: tcpc_pd { };
+	thermal_message: thermal_message { };
+	touch: touch { };
+	xiaomi_touch: xiaomi_touch { };
+};
+
