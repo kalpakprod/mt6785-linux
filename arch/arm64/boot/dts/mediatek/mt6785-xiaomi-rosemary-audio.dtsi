@@ -14,6 +14,7 @@
  */
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/leds/common.h>
 
@@ -60,6 +61,70 @@
 					    0x5 0x3 0x3 0x5 0xe>;
 		mediatek,three-key-thr = <0 80 220 400>;	/* [L] 0 0x50 0xdc 0x190 */
 		mediatek,four-key-thr = <0 58 121 192 400>;	/* [L] 0 0x3a 0x79 0xc0 0x190 */
+	};
+};
+
+/* ------------------------------------------------------------ volume keys */
+
+/*
+ * The two volume keys are plain GPIOs on the pins the SoC's keypad block (KPD)
+ * would otherwise scan. Begonia — the same MT6785 and the only other board of
+ * this SoC described upstream — reads exactly these two pins through gpio-keys
+ * with this pinctrl group, and that works, so the same description is used
+ * here instead of writing a driver for the keypad block.
+ *
+ * What the phone's own sources say about the pins:
+ *  - the SoC's pin functions put GPIO59 on KPCOL0 and GPIO60 on KPCOL1
+ *    [K: include/dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h], which is the
+ *    keypad matrix wiring the vendor kernel relies on;
+ *  - on the stock phone the keys do come from the keypad block: the device
+ *    list has the input device "mtk-kpd" as event2 [L:
+ *    device-dump-2026-11-13/stock/hw-inventory.txt], the vendor key map puts
+ *    KEY_VOLUMEDOWN (114) at hardware key 0 and KEY_VOLUMEUP (115) at
+ *    hardware key 17 (the reset/download key) [L: device-tree.dts, keypad
+ *    node, mediatek,kpd-hw-init-map and mediatek,kpd-sw-rstkey], and the
+ *    loader reads the same key 17 to offer fastboot;
+ *  - the only pin the stock tree muxes for the keypad is GPIO80 as
+ *    BPI_BUS8 [L: device-tree.dts, kpdgpiodefault, pinmux 0x5001; V:
+ *    rosemary.dts kpd_pins_default]. There is no pinmux setting for GPIO59 or
+ *    GPIO60 anywhere in the live tree (no 0x3b01/0x3c01 cell, and no
+ *    gpio_usage_mapping entry for either pin), so the pins sit in whatever
+ *    state the loader left them in and the kernel has to mux them itself —
+ *    which is what the group below does, exactly as begonia's does.
+ *
+ * Numbers: GPIO60 is volume down and GPIO59 volume up, active low.
+ */
+&{/} {
+	volume_buttons: volume-buttons {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&volume_button_pins>;
+
+		button-volume-down {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			debounce-interval = <100>;
+
+			gpios = <&pio 60 GPIO_ACTIVE_LOW>;
+		};
+
+		button-volume-up {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <100>;
+
+			gpios = <&pio 59 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&pio {
+	volume_button_pins: volume-button-pins {
+		pins-volume {
+			pinmux = <PINMUX_GPIO59__FUNC_KPCOL0>,
+				 <PINMUX_GPIO60__FUNC_KPCOL1>;
+			input-enable;
+		};
 	};
 };
 
