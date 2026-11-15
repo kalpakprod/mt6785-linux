@@ -21,6 +21,7 @@
 
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <sound/jack.h>
 #include <sound/soc.h>
