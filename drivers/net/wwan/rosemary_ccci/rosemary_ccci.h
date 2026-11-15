@@ -367,6 +367,7 @@ struct ccci_port {
 	u16 rx_ch, tx_ch;
 	u8 txq;
 	bool user_header;
+	bool cdev_added;		/* the char device went into the kernel */
 	struct ccci_md *md;
 	struct cdev cdev;
 	struct device *dev;
