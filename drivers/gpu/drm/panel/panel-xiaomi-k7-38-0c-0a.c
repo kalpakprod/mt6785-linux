@@ -209,21 +209,24 @@ static int k7_unprepare(struct drm_panel *panel)
 }
 
 /*
- * Exactly 60 Hz with the loader's porches: 1159 x 2448 x 60 = 170241 kHz.
- * DRM wants the front porch first, then the sync pulse, then the back porch,
- * so the loader's hfp 43 / hsa 14 / hbp 22 land in that order, as do its
- * vfp 37 / vsa 2 / vbp 9.
+ * The mode is the vendor LCM's, which is what the panel's own driver asks for
+ * (lcm_get_params(), poco-m5s/research/native/1-display-touch.md 2): hfp 48,
+ * hsa 14, hbp 22 and vfp 21, vsa 2, vbp 9. The loader's log reports hfp 43 /
+ * vfp 37 because LK recomputes the porches against its own PLL for exactly
+ * 60 Hz (pl_lk.txt line 1460); with the vendor's numbers and the clock below,
+ * the frame is 1164 x 2432 at 60.0 Hz, 169850 kHz, i.e. 1019 Mbps per lane.
+ * DRM wants the front porch first, then the sync pulse, then the back porch.
  */
 static const struct drm_display_mode k7_mode = {
-	.clock = (1080 + 43 + 14 + 22) * (2400 + 37 + 2 + 9) * 60 / 1000,
+	.clock = (1080 + 48 + 14 + 22) * (2400 + 21 + 2 + 9) * 60 / 1000,
 	.hdisplay = 1080,
-	.hsync_start = 1080 + 43,
-	.hsync_end = 1080 + 43 + 14,
-	.htotal = 1080 + 43 + 14 + 22,
+	.hsync_start = 1080 + 48,
+	.hsync_end = 1080 + 48 + 14,
+	.htotal = 1080 + 48 + 14 + 22,
 	.vdisplay = 2400,
-	.vsync_start = 2400 + 37,
-	.vsync_end = 2400 + 37 + 2,
-	.vtotal = 2400 + 37 + 2 + 9,
+	.vsync_start = 2400 + 21,
+	.vsync_end = 2400 + 21 + 2,
+	.vtotal = 2400 + 21 + 2 + 9,
 	.width_mm = 67,		/* vendor LCM_PHYSICAL_WIDTH 67000 um */
 	.height_mm = 149,	/* vendor LCM_PHYSICAL_HEIGHT 149000 um */
 	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
