@@ -248,6 +248,14 @@ struct ap_query_md_feature_v2_1 {
 
 /* ---- one modem ------------------------------------------------------- */
 
+enum ccci_state {
+	MD_STATE_OFF,
+	MD_STATE_BOOTING,
+	MD_STATE_HS1,
+	MD_STATE_READY,
+	MD_STATE_EXCEPTION,
+};
+
 /**
  * struct ccci_md - the modem, as the AP sees it
  *
@@ -336,14 +344,6 @@ struct ccci_md {
 	dev_t devt;
 
 	struct ccci_dpmaif *dp;		/* the packet data path */
-};
-
-enum ccci_state {
-	MD_STATE_OFF,
-	MD_STATE_BOOTING,
-	MD_STATE_HS1,
-	MD_STATE_READY,
-	MD_STATE_EXCEPTION,
 };
 
 /* a channel pair handed to userspace */
