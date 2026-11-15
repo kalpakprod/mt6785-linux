@@ -65,4 +65,15 @@ config GNSS_USB
 
 	  If unsure, say N.
 
+config MTK_STPGPS
+	tristate "MediaTek GNSS bridge over the CONNSYS STP transport"
+	depends on MTK_WMT_DRV
+	help
+	  Character-device bridge for the MediaTek CONNSYS GNSS engine, which is
+	  a task on the conn MCU and ships its NMEA sentences as STP frames of
+	  type 2. Provides /dev/stpgps for the data path and /dev/gps_emi as the
+	  EMI window placeholder the vendor userspace daemon expects.
+
+	  Say M here to build it as the stpgps module.
+
 endif # GNSS
