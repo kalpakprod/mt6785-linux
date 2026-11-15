@@ -308,3 +308,43 @@
 		};
 	};
 };
+
+/* --------------------------------------------------- speaker amplifiers */
+
+/*
+ * Two Awinic AW87xxx Class-D amplifiers on I2C9: the bottom speaker and the
+ * earpiece, which together make the phone's stereo pair
+ * (CONFIG_SND_SOC_DSPK_LOL_HP=y in the stock kernel, and the vendor machine
+ * driver routes "LINEOUT L" to one amp and "Receiver" to the other).
+ *
+ * Addresses, reset pin and channels are the phone's own [L: device-tree.dts,
+ * i2c9@11015000, aw87xxx_pa_5B@5b and aw87xxx_pa_58@58; the vendor board file
+ * cust_aw87xxx_audio.dtsi says the same]:
+ *   0x5b  reset-gpio GPIO24, pa-channel 0
+ *   0x58  no reset gpio,      pa-channel 1
+ * The part itself is detected by the driver from register 0x00, so no part
+ * name is claimed here: the profile files are named with the id the chip
+ * reports and with its channel.
+ *
+ * sound-name-prefix makes the two amplifiers' DAPM widgets distinguishable in
+ * the card's routes ("Spk Amp" and "Rcv Amp").
+ */
+&i2c9 {
+	status = "okay";
+	clock-frequency = <400000>;		/* [L] */
+
+	spk_amp: amplifier@58 {
+		compatible = "awinic,aw87xxx";
+		reg = <0x58>;
+		awinic,pa-channel = <1>;		/* [L] */
+		sound-name-prefix = "Spk";
+	};
+
+	rcv_amp: amplifier@5b {
+		compatible = "awinic,aw87xxx";
+		reg = <0x5b>;
+		reset-gpios = <&pio 24 GPIO_ACTIVE_LOW>;	/* [L] */
+		awinic,pa-channel = <0>;		/* [L] */
+		sound-name-prefix = "Rcv";
+	};
+};
