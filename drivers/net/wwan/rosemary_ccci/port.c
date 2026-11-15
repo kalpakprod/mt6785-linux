@@ -30,6 +30,8 @@
 #include <linux/uaccess.h>
 #include <linux/wwan.h>
 
+#include <asm/pgtable.h>
+
 #include "rosemary_ccci.h"
 
 #define CCCI_MTU		(3584 - 128)

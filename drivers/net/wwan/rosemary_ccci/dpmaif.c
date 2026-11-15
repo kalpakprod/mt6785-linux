@@ -34,10 +34,14 @@
  * exactly the seven windows the board's device tree describes.
  */
 #include <linux/bitfield.h>
+#include <linux/bits.h>
 #include <linux/dma-mapping.h>
 #include <linux/if_arp.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/kernel.h>
+#include <linux/of.h>
+#include <linux/sizes.h>
 #include <linux/irq.h>
 #include <linux/netdevice.h>
 #include <linux/platform_device.h>
@@ -656,9 +660,11 @@ static const struct wwan_ops dpmaif_wwan_ops = {
 static void hw_reset(struct ccci_dpmaif *dp)
 {
 	rmw(dp->infra_mem, INFRA_PROT_DPMAIF, 0);
-	/* DPMAIF AO reset BIT(6), PD reset BIT(2): infracfg +0x140..0x154 */
-	writel(BIT(6) | BIT(2), dp->md->infra + INFRA_RST0_AO);
-	writel(BIT(6) | BIT(2), dp->md->infra + INFRA_RST1_AO);
+	/* DPMAIF AO reset BIT(6) and PD reset BIT(2): infracfg +0x140..0x154 */
+	writel(BIT(6), dp->md->infra + INFRA_RST0_AO);
+	writel(BIT(6), dp->md->infra + INFRA_RST1_AO);
+	writel(BIT(2), dp->md->infra + INFRA_RST0_PD);
+	writel(BIT(2), dp->md->infra + INFRA_RST1_PD);
 }
 
 /*
