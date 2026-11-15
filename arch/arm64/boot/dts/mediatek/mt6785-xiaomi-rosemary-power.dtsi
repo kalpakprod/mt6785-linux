@@ -114,3 +114,11 @@
 		};
 	};
 };
+
+/*
+ * 3D: the Mali-G76 MC4 through panfrost (mediatek_mt6785_data). The supplies are already in the main dts
+ * (mali VGPU11, MFG domain VPU buck, as on begonia, where the same node is enabled upstream).
+ */
+&gpu {
+	status = "okay";
+};
