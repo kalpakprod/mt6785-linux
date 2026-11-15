@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/nvmem/mediatek,mt6785-devinfo.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek eFuse copy passed by the bootloader (devinfo)
+
+maintainers:
+  - kalpak <kalpak@users.noreply.github.com>
+
+description: |
+  On MT6785 phones the eFuse block can be read only from the secure world.
+  The bootloader copies the eFuse words the kernel needs into the /chosen
+  property "atag,devinfo" (a u32 count, then the words). This node exposes
+  that copy as NVMEM; word i of the vendor get_devinfo_with_index() array is
+  at byte offset 4 * i.
+
+allOf:
+  - $ref: nvmem.yaml#
+  - $ref: nvmem-deprecated-cells.yaml#
+
+properties:
+  $nodename:
+    pattern: "^devinfo$"
+
+  compatible:
+    const: mediatek,mt6785-devinfo
+
+required:
+  - compatible
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    devinfo {
+        compatible = "mediatek,mt6785-devinfo";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        lvts-calib@1c0 {
+            reg = <0x1c0 0x4>;
+        };
+    };
