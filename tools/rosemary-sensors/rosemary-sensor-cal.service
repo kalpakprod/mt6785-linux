@@ -1,0 +1,15 @@
+[Unit]
+Description=Replay the factory sensor calibration into the SCP sensor hub (Poco M5s)
+Documentation=file:///usr/local/share/doc/rosemary-sensors/README.md
+After=systemd-modules-load.service
+Before=iio-sensor-proxy.service
+ConditionPathExists=/dev/hf_manager
+ConditionPathExists=/lib/firmware/rosemary/nvcfg/sensor
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rosemary-sensor-cal
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
