@@ -1,5 +1,36 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Poco M5s (rosemary): board nodes of the fingerprint area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Poco M5s (rosemary, MT6785): board nodes of the fingerprint area (poco-m5s/plan-full-phone.md).
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * The sensor is a Goodix capacitive side/power-button sensor (oswego_m family, GF3626ZS1 most
+ * likely), not an under-display optical one: the vendor build.prop says
+ * persist.vendor.fingerprint.type=side and the phone's Goodix TA is built for GF3626ZS1/GF3626HM
+ * with gf_oswego_m_* entry points (poco-m5s/research/native/6-fingerprint.md, section 1).
+ *
+ * The secure world (Microtrust SOTER) drives SPI0 itself; Linux only powers the sensor, resets it,
+ * forwards its interrupt and keeps the SPI controller's clock alive.
  */
+
+/*
+ * VFP, the sensor's own 3.3 V rail: MT6360 LDO1.
+ *
+ * The live stock device tree (poco-m5s/device-dump-2026-11-12/device-tree.dts, i2c5@11016000/
+ * mt6360_ldo_dts/ldo1, label mt_pmic_vfp_ldo_reg) describes it as `regulator-name = "VFP"`,
+ * 1200000..3600000 uV. Both the vendor Goodix driver and the ported one call
+ * regulator_set_voltage(buck, 3300000, 3300000), so the rail is described here as the fixed
+ * 3.3 V it must be: a range would leave the voltage the bootloader happened to leave behind.
+ *
+ * Node name `ldo1` is the name the mainline driver matches (drivers/regulator/mt6360-regulator.c,
+ * MT6360_REGULATOR_DESC("ldo1", ...)). The parent `regulator` node is the one in
+ * mt6785-xiaomi-rosemary.dts, addressed by path because the main dts gives it no label.
+ */
+&{/soc/i2c@11016000/pmic@34/regulator} {
+	mt6360_vfp: ldo1 {
+		regulator-name = "vfp";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+					   MT6360_OPMODE_LP>;
+	};
+};
