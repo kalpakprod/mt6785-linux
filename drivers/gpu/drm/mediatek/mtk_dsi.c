@@ -702,23 +702,49 @@ static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 				     unsigned int timeout)
 {
-	s32 ret = 0;
-	unsigned long jiffies = msecs_to_jiffies(timeout);
 	struct drm_device *drm = dsi->bridge.dev;
+	unsigned int waited = 0;
+	u32 status;
 
-	ret = wait_event_interruptible_timeout(dsi->irq_wait_queue,
-					       dsi->irq_data & irq_flag,
-					       jiffies);
-	if (ret == 0) {
-		drm_warn(drm, "Wait DSI IRQ(0x%08x) Timeout\n", irq_flag);
+	for (;;) {
+		if (wait_event_interruptible_timeout(dsi->irq_wait_queue,
+						     dsi->irq_data & irq_flag,
+						     msecs_to_jiffies(10)) > 0)
+			return 1;
 
-		mtk_dsi_dump_state(dsi);
+		/*
+		 * The engine reports the same completion in DSI_INTSTA whether or
+		 * not its interrupt reaches us, and on this SoC it does not: trial 5
+		 * timed out waiting for CMD_DONE with INTSTA bit 1 already set and
+		 * INTEN bit 1 enabled, the packet sitting in the queue and the panel
+		 * answering. The vendor never depends on that interrupt for command
+		 * completion - ddp_dsi.c polls the register instead
+		 * (DSI_POLLREG32(cmdq, &DSI_REG[i]->DSI_INTSTA, 0x2, 0x2) after every
+		 * command, and the VM command path polls 0x20). So read the register
+		 * and treat a set completion bit as done.
+		 */
+		status = readl(dsi->regs + DSI_INTSTA);
+		if (status & irq_flag) {
+			dev_warn_once(dsi->host.dev,
+				      "dsi completion 0x%08x seen in INTSTA without an interrupt\n",
+				      status & irq_flag);
+			mtk_dsi_mask(dsi, DSI_INTSTA, status & irq_flag, 0);
+			return 1;
+		}
 
-		mtk_dsi_enable(dsi);
-		mtk_dsi_reset_engine(dsi);
+		waited += 10;
+		if (waited >= timeout)
+			break;
 	}
 
-	return ret;
+	drm_warn(drm, "Wait DSI IRQ(0x%08x) Timeout\n", irq_flag);
+
+	mtk_dsi_dump_state(dsi);
+
+	mtk_dsi_enable(dsi);
+	mtk_dsi_reset_engine(dsi);
+
+	return 0;
 }
 
 static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
