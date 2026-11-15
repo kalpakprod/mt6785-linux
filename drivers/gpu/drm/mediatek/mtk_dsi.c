@@ -939,15 +939,7 @@ static void mtk_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
 		drm_err(drm, "failed to power on dsi\n");
 
 	mtk_dsi_lane_ready(dsi);
-	/*
-	 * A panel that asked for a non-continuous clock takes its high speed clock
-	 * from the video engine, per line, and has to see the clock lane in low
-	 * power for its own low power init commands, so do not force the lane high
-	 * for it. The vendor makes the same choice from the panel's cont_clock
-	 * (ddp_dsi.c, DSI_TXRX_Control).
-	 */
-	if (!(dsi->mode_flags & MIPI_DSI_CLOCK_NON_CONTINUOUS))
-		mtk_dsi_clk_hs_mode(dsi, 1);
+	mtk_dsi_clk_hs_mode(dsi, 1);
 }
 
 static void mtk_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
