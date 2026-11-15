@@ -210,7 +210,7 @@ static int k7_unprepare(struct drm_panel *panel)
 
 /*
  * Exactly 60 Hz with the loader's porches: 1159 x 2448 x 60 = 170241 kHz.
- * DRM expects the front porch first, then the sync pulse, then the back porch,
+ * DRM wants the front porch first, then the sync pulse, then the back porch,
  * so the loader's hfp 43 / hsa 14 / hbp 22 land in that order, as do its
  * vfp 37 / vsa 2 / vbp 9.
  */
@@ -297,11 +297,17 @@ static int k7_probe(struct mipi_dsi_device *dsi)
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->hs_rate = 1098000000UL;	/* PLL 549 MHz -> 1098 Mbps per lane */
 	/*
-	 * Video mode with sync pulses, exactly as the loader drives it. The
-	 * clock lane stays continuous, as the vendor driver's
-	 * clk_lp_per_line_enable = 0 does, so no MIPI_DSI_CLOCK_NON_CONTINUOUS.
+	 * Video mode with sync pulses, exactly as the loader drives it, and the
+	 * clock lane back to low power on every line: the loader's DSI_TXRX_CTRL
+	 * has HSTX_CKLP_EN set (bit 16, poco-m5s/evidence/disp-trial2/
+	 * dsi-mipitx-regs-loader.txt, 0x018 = 0x0001003c) and the vendor's
+	 * DSI_TXRX_Control() derives that bit as "cont_clock ? 0 : 1". With the
+	 * clock driven continuously instead, an LP escape command cannot be
+	 * framed and the engine never reports CMD_DONE (trial 2: EXIT_SLEEP_MODE
+	 * timed out).
 	 */
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+			  MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
 	ctx->panel.prepare_prev_first = true;
 	ctx->panel.backlight = devm_backlight_device_register(dev, dev_name(dev),
