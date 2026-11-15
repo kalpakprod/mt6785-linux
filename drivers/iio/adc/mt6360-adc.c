@@ -146,6 +146,13 @@ static int mt6360_adc_read_scale(struct mt6360_adc_data *mad, int channel, int *
 	int ret;
 
 	switch (channel) {
+	/*
+	 * The IIO ABI reports voltage in mV and current in mA. The step sizes of the
+	 * MT6360 datasheet are in uV and uA, so each scale is that step / 1000: a
+	 * consumer that reads the processed value (generic-adc-battery multiplies it
+	 * by 1000 to uV) overflowed int32 with the old uV scale (VBAT 4.336 V read
+	 * as 41.28 V on the Xiaomi Poco M5s, 15.11.2026).
+	 */
 	case MT6360_CHAN_USBID:
 	case MT6360_CHAN_VSYS:
 	case MT6360_CHAN_VBAT:
@@ -153,14 +160,17 @@ static int mt6360_adc_read_scale(struct mt6360_adc_data *mad, int channel, int *
 	case MT6360_CHAN_VREF_TS:
 	case MT6360_CHAN_TS:
 		*val = 1250;
-		return IIO_VAL_INT;
+		*val2 = 1000;
+		return IIO_VAL_FRACTIONAL;
 	case MT6360_CHAN_VBUSDIV5:
 		*val = 6250;
-		return IIO_VAL_INT;
+		*val2 = 1000;
+		return IIO_VAL_FRACTIONAL;
 	case MT6360_CHAN_VBUSDIV2:
 	case MT6360_CHAN_IBUS:
 	case MT6360_CHAN_IBAT:
 		*val = 2500;
+		*val2 = 1000;
 
 		if (channel == MT6360_CHAN_IBUS) {
 			/* IBUS will be affected by input current limit for the different Ron */
@@ -174,7 +184,7 @@ static int mt6360_adc_read_scale(struct mt6360_adc_data *mad, int channel, int *
 				*val = 1900;
 		}
 
-		return IIO_VAL_INT;
+		return IIO_VAL_FRACTIONAL;
 	case MT6360_CHAN_TEMP_JC:
 		*val = 105;
 		*val2 = 100;
