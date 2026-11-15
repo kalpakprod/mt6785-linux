@@ -35,3 +35,19 @@
 		monitored-battery = <&battery>;
 	};
 };
+
+/*
+ * CPU and CCI supplies, as the begonia board on the same SoC and PMIC wires them
+ * (mt6785-xiaomi-begonia-common.dtsi): little cores 0-5 and the CCI on MT6359 VPROC2 ("vproc_l" in
+ * the rosemary dts), big cores 6-7 on VPROC1 ("vproc_b"). Without them mediatek-cpufreq and
+ * mtk-ccifreq never probe (no cpufreq on the phone, ccifreq deferred, 15.11.2026).
+ */
+&cci { proc-supply = <&mt6359_vproc2_buck_reg>; };
+&cpu0 { proc-supply = <&mt6359_vproc2_buck_reg>; };
+&cpu1 { proc-supply = <&mt6359_vproc2_buck_reg>; };
+&cpu2 { proc-supply = <&mt6359_vproc2_buck_reg>; };
+&cpu3 { proc-supply = <&mt6359_vproc2_buck_reg>; };
+&cpu4 { proc-supply = <&mt6359_vproc2_buck_reg>; };
+&cpu5 { proc-supply = <&mt6359_vproc2_buck_reg>; };
+&cpu6 { proc-supply = <&mt6359_vproc1_buck_reg>; };
+&cpu7 { proc-supply = <&mt6359_vproc1_buck_reg>; };
