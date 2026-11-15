@@ -28,6 +28,8 @@
 /* begonia fwport: register the BTIF HIF with the WMT core (wmt_dev.c) before the
  * first func_on - replaces the userspace launcher's WMT_IOCTL_SET_STP_MODE. */
 int wmt_dev_set_hif_btif(void);
+struct work_struct;
+static void wmt_late_wlan_load(struct work_struct *work);
 
 static ssize_t wmt_wifi_trigger_write(struct file *filp, const char __user *buf,
 				      size_t count, loff_t *ppos)
