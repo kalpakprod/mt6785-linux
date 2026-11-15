@@ -654,10 +654,21 @@ static int gc02m1_probe(struct i2c_client *client)
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_idle(dev);
 
-	ret = gc02m1_identify(gc02m1);
+	/*
+	 * The chip only answers on I2C once its rails and its clock are on, so
+	 * identification has to run with the device resumed: reading 0xf0 on a
+	 * powered-down sensor returns ENXIO, which is what the first phone boot
+	 * showed ("Error reading reg 0x00f0: -6"). OV64B40 does the same.
+	 */
+	ret = pm_runtime_resume_and_get(dev);
 	if (ret)
-		dev_warn(dev, "no chip id: %d (power state is the runtime PM's)\n",
-			 ret);
+		goto err_pm;
+	ret = gc02m1_identify(gc02m1);
+	pm_runtime_put(dev);
+	if (ret) {
+		dev_err_probe(dev, ret, "no chip id\n");
+		goto err_pm;
+	}
 
 	ret = v4l2_async_register_subdev_sensor(sd);
 	if (ret) {
