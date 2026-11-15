@@ -333,7 +333,8 @@ static void tags_read_cacheable(struct ccci_md *md)
 {
 	struct csmem_item *raw;
 	u8 buf[sizeof(struct csmem_item)];
-	u32 items, i;
+	u64 window_base;
+	u32 window_size, items, i;
 	int ret;
 
 	/*
@@ -347,11 +348,21 @@ static void tags_read_cacheable(struct ccci_md *md)
 		dev_warn(md->dev, "no md1_bank4_cache_info tag (%d)\n", ret);
 		return;
 	}
-	md->c_total_base = le64_to_cpu(get_unaligned_le64(buf));
-	md->c_total_size = le32_to_cpu(get_unaligned_le32(buf + 12));
+	window_base = le64_to_cpu(get_unaligned_le64(buf));
+	window_size = le32_to_cpu(get_unaligned_le32(buf + 12));
 	items = le32_to_cpu(get_unaligned_le32(buf + 16));
 	dev_info(md->dev, "md1_bank4_cache_info: buffer %#llx + %#x, %u items\n",
-		 md->c_total_base, md->c_total_size, items);
+		 window_base, window_size, items);
+	/*
+	 * This is the loader's own statement of the window's extent: if it
+	 * disagrees with the reservation the driver mapped, the mapped size is
+	 * the smaller of the two and every write is checked against that.
+	 */
+	if (window_size && window_base == md->c_phys && window_size < md->c_size) {
+		dev_info(md->dev, "the loader's cacheable window is %#x, the reservation %#llx: using the smaller\n",
+			 window_size, (u64)md->c_size);
+		md->c_size = window_size;
+	}
 	if (!items || items > CSMEM_ITEM_MAX) {
 		dev_warn(md->dev, "%u cacheable items is outside what the loader can describe\n",
 			 items);
