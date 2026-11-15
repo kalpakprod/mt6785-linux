@@ -294,15 +294,21 @@ static void tags_read_ccb(struct ccci_md *md)
 }
 
 /*
- * struct _csmem_item (ccci_util_lib_fo.c:380-386):
- *	u64 csmem_buffer_addr;
- *	u32 md_offset;
- *	u32 csmem_buffer_size;
- *	u32 item_cnt;		-- the SMEM_USER_ID this entry describes
- * Note the field order: the size comes AFTER md_offset, which is not the order
- * the struct reads at first glance.
+ * One entry of the loader's cacheable layout, struct _csmem_item
+ * (ccci_util_lib_fo.c:380-386). Spelled with fixed-width types and left
+ * unpacked, exactly as the loader writes it: u64 address, then md_offset,
+ * csmem_buffer_size and item_cnt (the SMEM_USER_ID). The struct is not packed,
+ * so its size is 24 with four bytes of tail padding -- taking the stride from
+ * sizeof(*item) rather than adding the fields is what keeps entry n at the
+ * right place.
  */
-#define CSMEM_ITEM_SIZE		20
+struct csmem_item {
+	__le64 addr;
+	__le32 md_offset;
+	__le32 size;
+	__le32 id;
+};
+
 #define CSMEM_ITEM_MAX		32
 
 /**
@@ -325,10 +331,17 @@ static void tags_read_ccb(struct ccci_md *md)
  */
 static void tags_read_cacheable(struct ccci_md *md)
 {
-	u8 buf[CSMEM_ITEM_SIZE], *raw;
+	struct csmem_item *raw;
+	u8 buf[sizeof(struct csmem_item)];
 	u32 items, i;
 	int ret;
 
+	/*
+	 * The info tag is one struct _csmem_item too: address and size of the
+	 * whole cacheable window, and how many descriptors the layout tag
+	 * holds. Its size is what the vendor's get_md_resv_csmem_info()
+	 * returns for the window.
+	 */
 	ret = tag_read(md, "md1_bank4_cache_info", buf, sizeof(buf));
 	if (ret < sizeof(buf)) {
 		dev_warn(md->dev, "no md1_bank4_cache_info tag (%d)\n", ret);
@@ -336,8 +349,6 @@ static void tags_read_cacheable(struct ccci_md *md)
 	}
 	md->c_total_base = le64_to_cpu(get_unaligned_le64(buf));
 	md->c_total_size = le32_to_cpu(get_unaligned_le32(buf + 12));
-	if (!md->c_total_size)
-		md->c_total_size = le32_to_cpu(get_unaligned_le32(buf + 8));
 	items = le32_to_cpu(get_unaligned_le32(buf + 16));
 	dev_info(md->dev, "md1_bank4_cache_info: buffer %#llx + %#x, %u items\n",
 		 md->c_total_base, md->c_total_size, items);
@@ -352,24 +363,22 @@ static void tags_read_cacheable(struct ccci_md *md)
 	 * size it is given, so the buffer is sized from the count the loader
 	 * just declared, capped so a bad count cannot overrun anything.
 	 */
-	raw = kcalloc(items, CSMEM_ITEM_SIZE, GFP_KERNEL);
+	raw = kcalloc(items, sizeof(*raw), GFP_KERNEL);
 	if (!raw)
 		return;
 	ret = tag_read(md, "md1_bank4_cache_layout", raw,
-		       items * CSMEM_ITEM_SIZE);
-	if (ret != items * CSMEM_ITEM_SIZE) {
-		dev_warn(md->dev, "no usable md1_bank4_cache_layout tag (%d of %u)\n",
-			 ret, items * CSMEM_ITEM_SIZE);
+		       items * sizeof(*raw));
+	if (ret != items * sizeof(*raw)) {
+		dev_warn(md->dev, "no usable md1_bank4_cache_layout tag (%d of %zu)\n",
+			 ret, items * sizeof(*raw));
 		kfree(raw);
 		return;
 	}
 	for (i = 0; i < items; i++) {
-		const u8 *it = raw + i * CSMEM_ITEM_SIZE;
-
-		md->c_item[i].addr = le64_to_cpu(get_unaligned_le64(it));
-		md->c_item[i].md_off = le32_to_cpu(get_unaligned_le32(it + 8));
-		md->c_item[i].size = le32_to_cpu(get_unaligned_le32(it + 12));
-		md->c_item[i].id = le32_to_cpu(get_unaligned_le32(it + 16));
+		md->c_item[i].addr = le64_to_cpu(raw[i].addr);
+		md->c_item[i].md_off = le32_to_cpu(raw[i].md_offset);
+		md->c_item[i].size = le32_to_cpu(raw[i].size);
+		md->c_item[i].id = le32_to_cpu(raw[i].id);
 		dev_info(md->dev, "cacheable[%u] id %u: %#llx + %#x, md offset %#x\n",
 			 i, md->c_item[i].id, md->c_item[i].addr,
 			 md->c_item[i].size, md->c_item[i].md_off);
