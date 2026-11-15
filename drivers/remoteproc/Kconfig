@@ -75,6 +75,17 @@ config MTK_SCP
 
 	  It's safe to say N here.
 
+config MTK_SCP_CM4
+	tristate "Mediatek SCP (Cortex-M4, tinysys CM4 firmware) support"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Say y here to load and start Mediatek's System Companion Processor
+	  when it is a Cortex-M4 running the tinysys "CM4" firmware, as on the
+	  MT6785.  The SCP drives the phone's motion and environment sensors on
+	  its own I2C buses, so nothing sensor-related works without it.
+
+	  It's safe to say N here.
+
 config OMAP_REMOTEPROC
 	tristate "OMAP remoteproc support"
 	depends on ARCH_OMAP4 || SOC_OMAP5 || SOC_DRA7XX

@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# MediaTek SCP sensor hub (sensors behind the SCP)
+#
+
+config MTK_SCP_SENSORS
+	tristate "Mediatek SCP sensor hub"
+	depends on IIO
+	depends on MTK_SCP_CM4 || COMPILE_TEST
+	help
+	  Say y (or M) here to use the motion and environment sensors that are
+	  attached to MediaTek's System Companion Processor instead of the AP:
+	  on the MT6785 that is the accelerometer, the gyroscope, the
+	  magnetometer, the ambient light sensors and the proximity sensor.
+	  The SCP firmware drives the parts and this driver brings their data
+	  out through /dev/hf_manager and as IIO devices.
+
+	  It needs the SCP driver (MTK_SCP_CM4) to have loaded the firmware.
+
+	  To compile this driver as a module, choose M here: the module is
+	  called mtk-scp-sensors.

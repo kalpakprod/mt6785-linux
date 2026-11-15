@@ -1,5 +1,77 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the sensors area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
  */
+
+#include <dt-bindings/clock/mediatek,mt6785-clk.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/*
+ * The sensor co-processor.  Every motion and environment sensor of this phone
+ * (ICM-40607 accel/gyro, AK09918 magnetometer, BU27030NUC rear and TSL2540
+ * front light sensor with proximity) sits on the SCP's own I2C buses, so the
+ * SCP has to be running before any of them exists.
+ *
+ * The node itself is the empty "scp" anchor of the board file.  The registers
+ * and the interrupt come from the phone's live device tree
+ * (poco-m5s/device-dump-2026-11-12/device-tree.dts, scp@10500000): SRAM
+ * 0x10500000 0xc0000, cfg 0x105c0000 0x3000, clkctrl 0x105c4000 0x1000, L1
+ * cache control 0x105d4000 0x6000, GIC SPI 201 level-high.
+ *
+ * The second compatible and the properties named "read by the bootloader"
+ * below are not decoration: the phone's own bootloader (LK) looks the SCP up
+ * by compatible "mediatek,scp" and by its status, and reads core_1,
+ * scp_sramSize, scp_mpuRegionId, scp_feature_tbl, scp_mem_key and scp_mem_tbl
+ * from this node.  With the anchor's bare compatible and no status, LK logged
+ * "scp get status from dtb fail", "get_scp_status disabled", "DISABLE SCP" and
+ * never loaded the firmware (poco-m5s/evidence/try-force1/boot-force1.lk.txt
+ * lines 1985-1987).  With them it reserves 0x9fc00000+0x300000 and stages the
+ * image itself (poco-m5s/evidence/try-noresv1/pl_lk.txt lines 2306-2401).
+ *
+ * Values copied verbatim from the live device tree lines 2975-2986.
+ */
+&scp {
+	compatible = "mediatek,mt6785-scp", "mediatek,scp";
+	reg = <0 0x10500000 0 0xc0000>,
+	      <0 0x105c0000 0 0x3000>,
+	      <0 0x105c4000 0 0x1000>,
+	      <0 0x105d4000 0 0x6000>;
+	reg-names = "sram", "cfg", "clkctrl", "l1cctrl";
+	interrupts = <GIC_SPI 201 IRQ_TYPE_LEVEL_HIGH>;
+	clocks = <&topckgen CLK_TOP_SCP>, <&infracfg CLK_INFRA_SCP>;
+	clock-names = "main", "infra";
+	mediatek,infracfg = <&infracfg>;
+	/* the share memory below, where the hub's FIFO and the logger live */
+	memory-region = <&scp_share>;
+
+	/* read by the bootloader, not by Linux */
+	core_1 = "enable";
+	scp_sramSize = <0xc0000>;
+	scp_mpuRegionId = <0x07>;
+	scp_feature_tbl = <0x00 0x05 0x01 0x164 0x02 0x3e 0x03 0x2f 0x04 0x1a
+			   0x05 0x00 0x06 0xc8 0x07 0x00 0x08 0x78 0x09 0x0a
+			   0x0a 0x2b 0x0b 0x2b 0x0c 0x16>;
+	scp_mem_key = "mediatek,reserve-memory-scp_share";
+	scp_mem_tbl = <0x00 0x49200 0x01 0x100000 0x03 0x1000 0x04 0x180000
+		       0x05 0x19000 0x08 0x5a00>;
+
+	status = "okay";
+};
+
+/*
+ * The SCP's share memory in DRAM (sensor FIFO, logger), named by scp_mem_key above. Copied from the stock DT
+ * (poco-m5s/device-dump-2026-11-12/device-tree.dts:738): dynamic (no reg), so it cannot overlap one of the
+ * loader's mblock reservations (the loader hangs on such an overlap, see the board file); 4 MiB, 16 MiB
+ * aligned, from the window the SCP's MPU can reach.
+ */
+&reserved_memory {
+	scp_share: scp-share {
+		compatible = "mediatek,reserve-memory-scp_share";
+		no-map;
+		size = <0x00 0x400000>;
+		alignment = <0x00 0x1000000>;
+		alloc-ranges = <0x00 0x40000000 0x00 0x50000000>;
+	};
+};
