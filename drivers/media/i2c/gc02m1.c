@@ -42,7 +42,15 @@
 #define GC02M1_STREAMING_REG		CCI_REG8(0x0100)
 #define GC02M1_STREAMING_MASK		BIT(0)
 
-#define GC02M1_REG_CHIP_ID		CCI_REG16(0xf0)
+/*
+ * The chip id is two consecutive 8-bit registers, not one 16-bit word: the
+ * vendor reads read_cmos_sensor(0xf0) << 8 | read_cmos_sensor(0xf1)
+ * (gc02m1ofilm_mipi_raw_Sensor.c, return_sensor_id()). Reading it as a
+ * 16-bit address sends a different transaction to the part, which answers
+ * nothing - ENXIO, the "-6" seen in both phone trials.
+ */
+#define GC02M1_REG_CHIP_ID_H		CCI_REG8(0xf0)
+#define GC02M1_REG_CHIP_ID_L		CCI_REG8(0xf1)
 #define GC02M1_CHIP_ID			0x02e0
 
 #define GC02M1_EXPOSURE_REG		CCI_REG16(0x0202)
@@ -276,18 +284,25 @@ static int gc02m1_write_regs(struct gc02m1 *gc02m1,
 
 static int gc02m1_identify(struct gc02m1 *gc02m1)
 {
-	u64 id = 0;
+	u64 hi = 0, lo = 0;
+	u32 id;
 	int ret;
 
-	ret = cci_read(gc02m1->regmap, GC02M1_REG_CHIP_ID, &id, NULL);
+	ret = cci_read(gc02m1->regmap, GC02M1_REG_CHIP_ID_H, &hi, NULL);
+	if (ret)
+		return ret;
+	ret = cci_read(gc02m1->regmap, GC02M1_REG_CHIP_ID_L, &lo, NULL);
 	if (ret)
 		return ret;
 
+	id = (hi << 8) | lo;
 	if (id != GC02M1_CHIP_ID) {
-		dev_err(gc02m1->dev, "chip id 0x%llx, expected 0x%x\n", id,
+		dev_err(gc02m1->dev, "chip id 0x%x, expected 0x%x\n", id,
 			GC02M1_CHIP_ID);
 		return -ENODEV;
 	}
+
+	dev_info(gc02m1->dev, "GC02M1 chip id 0x%x\n", id);
 	return 0;
 }
 
