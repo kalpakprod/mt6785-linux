@@ -27,6 +27,7 @@
 #include <sound/soc-dapm.h>
 
 #include "../common/mtk-soundcard-driver.h"
+#include "../../codecs/mt6359-accdet.h"
 #include "../../codecs/mt6359.h"
 
 #define CARD_NAME	"mt6785_mt6359"
@@ -50,6 +51,23 @@ SND_SOC_DAILINK_DEFS(capture,
 		     DAILINK_COMP_ARRAY(COMP_CODEC("mt6359-sound",
 						   "mt6359-snd-codec-aif2")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+/* The headset jack the codec's accessory detection reports into */
+static struct snd_soc_jack mt6785_mt6359_jack;
+
+static struct snd_soc_jack_pin mt6785_mt6359_jack_pins[] = {
+	{
+		.pin = "Headphone Jack",
+		.mask = SND_JACK_HEADPHONE,
+	},
+	{
+		.pin = "Headset Mic",
+		.mask = SND_JACK_MICROPHONE,
+	},
+};
+
+/* The codec's accessory detection, found through mediatek,accdet at probe */
+static struct snd_soc_component *mt6785_mt6359_accdet;
 
 /*
  * The board's own jacks and microphones. The codec has the electrical ends of
@@ -78,11 +96,31 @@ static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_component *cmpnt_codec =
 		snd_soc_rtd_to_codec(rtd, 0)->component;
+	int ret;
 
 	/* The AFE and the PMIC codec talk over MTKAIF protocol 2, clock phase 2 */
 	mt6359_set_mtkaif_protocol(cmpnt_codec, MT6359_MTKAIF_PROTOCOL_2_CLK_P2);
 
-	return 0;
+	/*
+	 * The headset jack belongs to the codec's accessory detection block: the
+	 * card publishes it and hands it to that block, which reports plug,
+	 * unplug and the headset's buttons through it.
+	 */
+	if (!mt6785_mt6359_accdet)
+		return 0;
+
+	ret = snd_soc_card_jack_new_pins(rtd->card, "Headset Jack",
+					 SND_JACK_HEADSET | SND_JACK_BTN_0 |
+					 SND_JACK_BTN_1 | SND_JACK_BTN_2 |
+					 SND_JACK_BTN_3,
+					 &mt6785_mt6359_jack,
+					 mt6785_mt6359_jack_pins,
+					 ARRAY_SIZE(mt6785_mt6359_jack_pins));
+	if (ret)
+		return ret;
+
+	return mt6359_accdet_enable_jack_detect(mt6785_mt6359_accdet,
+						&mt6785_mt6359_jack);
 }
 
 static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
@@ -106,7 +144,6 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.num_codecs = ARRAY_SIZE(capture_codecs),
 		.platforms = capture_platforms,
 		.num_platforms = ARRAY_SIZE(capture_platforms),
-		.init = mt6785_mt6359_init,
 	},
 };
 
@@ -137,7 +174,8 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &mt6785_mt6359_card;
 	struct device *dev = &pdev->dev;
-	struct device_node *platform_node;
+	struct device_node *platform_node, *accdet_node;
+	struct platform_device *accdet_pdev;
 	struct snd_soc_dai_link *link;
 	int i, ret;
 
@@ -154,6 +192,21 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 
 	for_each_card_prelinks(card, i, link)
 		link->platforms->of_node = platform_node;
+
+	/*
+	 * The codec's accessory detection is an MFD child of the PMIC, so it is
+	 * reached through the node the board names, not through a link.
+	 */
+	accdet_node = of_parse_phandle(dev->of_node, "mediatek,accdet", 0);
+	if (accdet_node) {
+		accdet_pdev = of_find_device_by_node(accdet_node);
+		if (accdet_pdev) {
+			mt6785_mt6359_accdet =
+				snd_soc_lookup_component(&accdet_pdev->dev, NULL);
+			put_device(&accdet_pdev->dev);
+		}
+		of_node_put(accdet_node);
+	}
 
 	if (of_property_present(dev->of_node, "audio-routing")) {
 		ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
