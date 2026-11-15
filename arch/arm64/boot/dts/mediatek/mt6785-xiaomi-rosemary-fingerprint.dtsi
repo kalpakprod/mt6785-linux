@@ -34,3 +34,66 @@
 					   MT6360_OPMODE_LP>;
 	};
 };
+
+/*
+ * The sensor on SPI0, chip select 0.
+ *
+ * Address, bus and interrupt come from the live stock device tree
+ * (poco-m5s/device-dump-2026-11-12/device-tree.dts): spi0@1100a000 with the sensor as its only
+ * child, and fpsensor_fp_eint { int-gpios = <&pio 5 0>; interrupts = <5 2 5 0>; } = GPIO5, rising
+ * edge. The reset pin is GPIO30, a plain GPIO pulsed low and released (vendor
+ * cust_mt6785_fingerprint.dtsi, fpsensor_fpc_rst_low/_high, and gf_hw_power_enable(),
+ * gf_spi_tee.c:289). The supply is the MT6360 LDO1 "VFP" described above.
+ *
+ * The mainline SPI driver already matches this controller (mediatek,mt6785-spi falls back to
+ * mt6765_compat in drivers/spi/spi-mt65xx.c), so only the child and the enable are needed here.
+ *
+ * Speed: 1 MHz. The vendor node asks 10 MHz, but its normal-world path runs at 1 MHz
+ * (vendor mtk_spi.c spi_ctrdata.high_time = 50) and the secure world does the real transfers, so
+ * this only sets the chip-id read.
+ *
+ * There is deliberately no second fingerprint node: the stock tree also describes an FPC sensor
+ * ("fpc,fpc_spi") on the same bus, but that part is absent on this unit — its driver read chip id 0
+ * and exited (stock dmesg). Describing it would only invite a probe that fights for the same pins.
+ */
+&spi0 {
+	status = "okay";
+
+	fingerprint@0 {
+		compatible = "goodix,gf3626-fp";
+		reg = <0>;
+
+		spi-max-frequency = <1000000>;
+
+		interrupt-parent = <&pio>;
+		interrupts = <5 IRQ_TYPE_EDGE_RISING>;
+
+		reset-gpios = <&pio 30 GPIO_ACTIVE_LOW>;
+
+		vfp-supply = <&mt6360_vfp>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&fingerprint_pins>;
+	};
+};
+
+/*
+ * GPIO30 as a plain GPIO (the driver drives it through the descriptor), and GPIO5 muxed to GPIO and
+ * left an input for the EINT block: mainline's MediaTek pinctrl has no request-time remux, so the
+ * pin has to be in GPIO mode before the interrupt is requested (mtk-eint then switches it to its
+ * own function, pinctrl-mtk-common-v2.c mtk_xt_set_gpio_as_eint()). The sensor drives its interrupt
+ * line push-pull, so no bias is applied.
+ */
+&pio {
+	fingerprint_pins: fingerprint-pins {
+		pins-rst {
+			pinmux = <PINMUX_GPIO30__FUNC_GPIO30>;
+		};
+
+		pins-eint {
+			pinmux = <PINMUX_GPIO5__FUNC_GPIO5>;
+			bias-disable;
+			input-enable;
+		};
+	};
+};
