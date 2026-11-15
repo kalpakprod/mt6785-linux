@@ -1,5 +1,117 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the modem area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * The modem is MediaTek MT6785 MD1, generation 6295: control over CCIF, packet
+ * data over DPMAIF, no CLDMA, no second modem. The bootloader reserves its
+ * share memory and hands it to Linux under names of its own
+ * (mblock-<n>-ap_md_c_smem, -ap_md_nc_smem, -md_mem_usage, -ccci_tag_mem, with
+ * <n> changing between boots), so nothing of that is described here: the
+ * driver looks the regions up by name. Declaring them would also make the
+ * loader panic on the overlap, which is why this board file keeps its
+ * reserved-memory node empty.
+ *
+ * Stage M0 (already proven): the modem's MTCMOS domain can be powered from
+ * Linux and its power status read. M1 reads the loader's boot information
+ * read-only. Nothing here writes to the modem.
  */
+
+/ {
+	ccci: modem@10209000 {
+		compatible = "xiaomi,rosemary-ccci";
+		status = "okay";
+
+		/* AP side and the modem's own view of CCIF0 */
+		reg = <0 0x10209000 0 0x1000>,
+		      <0 0x1020a000 0 0x1000>;
+		reg-names = "ap-ccif", "md-ccif";
+
+		/*
+		 * CCIF's own interrupts. These are the numbers that make this
+		 * phone different from the MT6885 port (194/195/78 there), and
+		 * the type is level LOW here, not level high. Source: the live
+		 * stock device tree, ccifdriver@10209000 ("interrupts = <0 0xae
+		 * 8 0 0xaf 8>", cell 8 = IRQ_TYPE_LEVEL_LOW) and the mddriver
+		 * node for the watchdog (GIC SPI 77, cell 2 = EDGE_FALLING);
+		 * vendor dts mt6785.dts:923-962 says the same.
+		 */
+		interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 175 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 77 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "ccif", "ccif-exception", "md-wdt";
+
+		/*
+		 * The CCIF gates. There is no CLK_INFRA_CCIF5_MD in this SoC's
+		 * binding (the group ends at CLK_INFRA_CCIF4_MD = 104) and rosemary
+		 * has no second modem, which is what CCIF5 would serve.
+		 *
+		 * The vendor's other clock here, "scp-sys-md1-main", has no
+		 * mainline counterpart: it is the modem's MTCMOS gate clock in the
+		 * SCPSYS block, which mainline drives inside its own power sequence
+		 * (scpsys_modem_pwrseq_on in drivers/pmdomain/mediatek/
+		 * mtk-pm-domains.c), not through the clock framework.
+		 */
+		clocks = <&infracfg CLK_INFRA_CCIF_AP>,
+			 <&infracfg CLK_INFRA_CCIF_MD>,
+			 <&infracfg CLK_INFRA_CCIF1_AP>,
+			 <&infracfg CLK_INFRA_CCIF1_MD>,
+			 <&infracfg CLK_INFRA_CCIF2_AP>,
+			 <&infracfg CLK_INFRA_CCIF2_MD>,
+			 <&infracfg CLK_INFRA_CCIF4_MD>;
+		clock-names = "infra-ccif-ap", "infra-ccif-md",
+			      "infra-ccif1-ap", "infra-ccif1-md",
+			      "infra-ccif2-ap", "infra-ccif2-md",
+			      "infra-ccif4-md";
+
+		/*
+		 * Mainline already has the complete MT6785 modem power
+		 * sequence for this domain: drivers/pmdomain/mediatek/
+		 * mt6785-pm-domains.h, MT6785_POWER_DOMAIN_MD, sta_mask
+		 * BIT(0), ctl_offs 0x318, pwr_sta_offs 0x160, ext_buck_iso
+		 * 0x3b0, caps EXT_BUCK_ISO | MODEM_PWRSEQ.
+		 */
+		power-domains = <&spm MT6785_POWER_DOMAIN_MD>;
+		vmodem-supply = <&mt6359_vmodem_buck_reg>;
+		vsram-md-supply = <&mt6359_vsram_md_ldo_reg>;
+
+		/* syscon@10006000: PWR_STATUS at +0x160 is bit 0 of this domain */
+		mediatek,spm = <&scpsys>;
+
+		/* the modem's DRAM window is the loader's md_mem_usage region */
+		mediatek,dpmaif = <&dpmaif>;
+	};
+
+	/*
+	 * The packet data path. Seven register windows, where cezanne's MT6885
+	 * driver maps five (vendor hif/dpmaif_reg.h:52-90 with MT6297
+	 * undefined): the AP's AO group carries uplink at +0 and downlink at
+	 * +0x400, the PD group uplink at +0, downlink at +0x100 and the AP
+	 * misc block at +0x400, then the modem's own view and the SRAM.
+	 * Interrupt GIC SPI 199 (level high), not cezanne's 209.
+	 */
+	dpmaif: dpmaif@10014000 {
+		compatible = "xiaomi,rosemary-dpmaif";
+		status = "okay";
+
+		reg = <0 0x10014000 0 0x1000>,	/* AP AO: UL and DL */
+		      <0 0x1022d000 0 0x1000>,	/* AP PD: UL, DL and MISC */
+		      <0 0x1022c000 0 0x1000>,	/* the modem's own view */
+		      <0 0x1022e000 0 0x1000>;	/* SRAM */
+		reg-names = "ao-ul", "pd-ul", "pd-md-misc", "sram";
+
+		interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "dpmaif";
+
+		clocks = <&infracfg CLK_INFRA_DPMAIF>,
+			 <&topckgen CLK_TOP_DPMAIF>;
+		clock-names = "infra-dpmaif", "top-dpmaif";
+
+		/*
+		 * 6, not cezanne's 14: the higher capability bits select the
+		 * MT6297-only BAT/PIT reorder workarounds, which this chip does
+		 * not have (vendor dpmaif_reg.h gates them on #ifdef MT6297).
+		 */
+		mediatek,dpmaif-capability = <6>;
+	};
+};
