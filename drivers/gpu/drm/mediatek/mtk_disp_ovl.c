@@ -722,6 +722,35 @@ static const struct mtk_disp_ovl_data mt8192_ovl_driver_data = {
 	.num_formats = ARRAY_SIZE(mt8173_formats),
 };
 
+/*
+ * MT6785 keeps the MT8192 register layout but, like MT8195, has the per-layer
+ * bit depth field in OVL_CLRFMT_EXT (0x2d0), and the vendor writes it on every
+ * layer configuration:
+ *
+ *   drivers/misc/mediatek/video/mt6785/dispsys/ddp_ovl.c:647-661
+ *       value = 0 for every 8-bit RGB format, 1 for RGBA1010102, 3 for FP16
+ *       fld   = FLD_Ln_CLRFMT_NB(cfg->phy_layer)
+ *       write the field to DISP_REG_OVL_CLRFMT_EXT
+ *
+ * with FLD_Ln_CLRFMT_NB(n) = REG_FLD_MSB_LSB(n*4+1, n*4) in ddp_reg_ovl.h:403.
+ * Without it the field keeps whatever the previous owner left, so an 8-bit
+ * layer can be read as 10-bit - the pipeline then carries more bits per pixel
+ * than RDMA and the DSI expect.
+ */
+static const struct mtk_disp_ovl_data mt6785_ovl_driver_data = {
+	.addr = DISP_REG_OVL_ADDR_MT8173,
+	.gmc_bits = 10,
+	.layer_nr = 4,
+	.fmt_rgb565_is_0 = true,
+	.smi_id_en = true,
+	.blend_modes = BIT(DRM_MODE_BLEND_PREMULTI) |
+		       BIT(DRM_MODE_BLEND_COVERAGE) |
+		       BIT(DRM_MODE_BLEND_PIXEL_NONE),
+	.formats = mt8173_formats,
+	.num_formats = ARRAY_SIZE(mt8173_formats),
+	.supports_clrfmt_ext = true,
+};
+
 static const struct mtk_disp_ovl_data mt8192_ovl_2l_driver_data = {
 	.addr = DISP_REG_OVL_ADDR_MT8173,
 	.gmc_bits = 10,
@@ -753,6 +782,8 @@ static const struct mtk_disp_ovl_data mt8195_ovl_driver_data = {
 static const struct of_device_id mtk_disp_ovl_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt2701-disp-ovl",
 	  .data = &mt2701_ovl_driver_data},
+	{ .compatible = "mediatek,mt6785-disp-ovl",
+	  .data = &mt6785_ovl_driver_data},
 	{ .compatible = "mediatek,mt8167-disp-ovl",
 	  .data = &mt8167_ovl_driver_data},
 	{ .compatible = "mediatek,mt8173-disp-ovl",
