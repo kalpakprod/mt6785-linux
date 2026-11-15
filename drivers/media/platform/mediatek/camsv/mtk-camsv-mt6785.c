@@ -481,7 +481,7 @@ static int camsv_buf_prepare(struct vb2_buffer *vb)
 static void camsv_buf_queue(struct vb2_buffer *vb)
 {
 	struct camsv_dev *camsv = vb2_get_drv_priv(vb->vb2_queue);
-	struct camsv_buffer *buf = to_camsv_buffer(vb_to_v4l2_buffer(vb));
+	struct camsv_buffer *buf = to_camsv_buffer(to_vb2_v4l2_buffer(vb));
 	unsigned long flags;
 
 	spin_lock_irqsave(&camsv->qlock, flags);
@@ -819,7 +819,6 @@ static int camsv_probe(struct platform_device *pdev)
 		goto err_entity;
 	}
 
-	camsv->vdev.dev = dev;
 	camsv->vdev.queue = q;
 	camsv->vdev.lock = &camsv->vlock;
 	camsv->vdev.v4l2_dev = &camsv->v4l2_dev;
