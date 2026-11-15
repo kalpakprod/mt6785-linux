@@ -725,16 +725,34 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 {
 	struct mtk_dsi *dsi = dev_id;
-	u32 status, tmp;
+	u32 status, tmp = 0;
 	u32 flag = LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | VM_DONE_INT_FLAG;
+	unsigned int i;
 
 	status = readl(dsi->regs + DSI_INTSTA) & flag;
 
 	if (status) {
-		do {
+		/*
+		 * Acknowledge the read until the engine is idle again. This used to
+		 * be an unbounded `do { } while (tmp & DSI_BUSY)`, which hangs the
+		 * whole machine in interrupt context when the engine never goes
+		 * idle: trial 4 (poco-m5s/evidence/disp-trial4/pstore-console.txt)
+		 * died there with DSI_INTSTA 0x80001790, BUSY still set, and no
+		 * oops or lockup report before the hardware watchdog. Bound it and
+		 * say so instead.
+		 */
+		for (i = 0; i < 1000; i++) {
 			mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
 			tmp = readl(dsi->regs + DSI_INTSTA);
-		} while (tmp & DSI_BUSY);
+			if (!(tmp & DSI_BUSY))
+				break;
+			udelay(4);
+		}
+
+		if (tmp & DSI_BUSY)
+			dev_warn_ratelimited(dsi->dev,
+					     "dsi engine still busy after rack, INTSTA 0x%08x\n",
+					     tmp);
 
 		mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
 		mtk_dsi_irq_data_set(dsi, status);
