@@ -51,4 +51,18 @@ hci_uart-$(CONFIG_BT_HCIUART_MRVL)	+= hci_mrvl.o
 hci_uart-$(CONFIG_BT_HCIUART_AML)	+= hci_aml.o
 hci_uart-objs				:= $(hci_uart-y)
 
+obj-$(CONFIG_BT_MTKBTIF)		+= btmtkbtif.o
+# The HCI transport talks to the WMT/STP stack; its public headers live in
+# the connectivity driver's own include directory.
+# Same STP export surface the WMT core is built with (common/Makefile).
+CFLAGS_btmtkbtif.o += -DMTK_WCN_WMT_STP_EXP_SYMBOL_ABSTRACT
+# The WMT headers test these switches with -Wundef; set them the way the WMT
+# core's own Makefile does, so the shared headers are seen identically.
+CFLAGS_btmtkbtif.o += -DWMT_IDC_SUPPORT=0
+CFLAGS_btmtkbtif.o += -DWMT_PLAT_ALPS=1
+CFLAGS_btmtkbtif.o += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/include
+CFLAGS_btmtkbtif.o += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/linux/include
+CFLAGS_btmtkbtif.o += -I$(srctree)/drivers/misc/mediatek/connectivity/compat/include
+CFLAGS_btmtkbtif.o += -include $(srctree)/drivers/misc/mediatek/connectivity/compat/include/mtk-bsp-compat.h
+
 CONTEXT_ANALYSIS := y
