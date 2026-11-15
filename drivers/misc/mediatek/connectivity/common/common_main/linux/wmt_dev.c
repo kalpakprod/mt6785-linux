@@ -72,6 +72,10 @@
 /* begonia fwport: /dev/wmtWifi WiFi on/off trigger node (wmt_wifi_trigger.c). */
 int wmt_wifi_trigger_init(void);
 void wmt_wifi_trigger_exit(void);
+
+/* Headless stand-in for the launcher's WMT_IOCTL_SET_STP_MODE; defined below
+ * and called from WMT_init() to register the BTIF HIF before power-on. */
+int wmt_dev_set_hif_btif(void);
 #include "wmt_proc_dbg.h"
 #include "wmt_alarm.h"
 
@@ -1734,6 +1738,28 @@ static INT32 WMT_init(VOID)
 	WMT_DBG_FUNC("success\n");
 
 	/* begonia: STP-UART / STP-SDIO transports removed (BTIF-only SoC) */
+
+	/*
+	 * Register BTIF as the STP transport now, at init time.
+	 *
+	 * On stock Android the userspace wmt_launcher opens /dev/stpwmt and issues
+	 * WMT_IOCTL_SET_STP_MODE (0x23 = STP_BTIF_FULL | WMT_FM_COMM << 4) before
+	 * anything powers the chip on. That ioctl does two things: it fills
+	 * rWmtHifConf through wmt_lib_set_hif() and posts a WMT_OPID_HIF_CONF
+	 * operation carrying WMT_OP_HIF_BIT, which is what sets the HIF bit in
+	 * gMtkWmtCtx.wmtInfoBit. Our headless port has no launcher, so nothing set
+	 * that bit, and the first func_on aborted in wmt_core_stp_init() with
+	 * "no hif info!" before it ever reached the chip - the whole bring-up then
+	 * unwound through wmt_core_stp_deinit() and the -2 timeouts.
+	 *
+	 * wmt_dev_set_hif_btif() is exactly that ioctl, in kernel form, and it is
+	 * idempotent (hif_info guard). It was previously reachable only through
+	 * /dev/wmtWifi, i.e. only if someone wrote '1' there - which is too late
+	 * and too fragile to depend on. Doing it here makes every later entry
+	 * point (FUNC_CTRL for Wi-Fi, Bluetooth and GNSS) work on its own.
+	 */
+	if (wmt_dev_set_hif_btif())
+		WMT_ERR_FUNC("headless HIF registration (BTIF) failed\n");
 
 	/* begonia fwport: create /dev/wmtWifi (the stock WiFi on/off trigger the
 	 * un-ported wlan adaptor would otherwise provide). Non-fatal on failure. */
