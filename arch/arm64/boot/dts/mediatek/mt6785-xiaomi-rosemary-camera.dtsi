@@ -135,6 +135,13 @@
 		};
 	};
 
+	cam4_mclk_pins: cam4-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO117__FUNC_CMMCLK1>;
+			drive-strength = <4>;
+		};
+	};
+
 	i2c2_pins: i2c2-pins {
 		pins {
 			pinmux = <PINMUX_GPIO112__FUNC_SCL2>,
@@ -263,6 +270,47 @@
 			};
 		};
 	};
+
+	/*
+	 * Macro camera, GC02M1 at 7-bit 0x37 (vendor .i2c_addr_table
+	 * {0x6e, 0x20, 0xff} in 8-bit form), one D-PHY lane, 1600x1200 at
+	 * 30 fps. Its MCLK pin is GPIO117 (camera4_mclk_*@gpio117, CMMCLK1,
+	 * hence CAMTG1) and its reset GPIO119, and it draws AVDD from the
+	 * shared wl2866d_avdd1 with its own DOVDD switch on GPIO22 (live DT
+	 * cam4_vcama and camera4_vcamio_on).
+	 *
+	 * The vendor also lists the OV02B1B as the alternative depth module
+	 * on the same bus, which is why the study calls the depth camera "one
+	 * of two candidates"; only the GC02M1 is described until the lead
+	 * confirms what is fitted.
+	 */
+	macro_cam: camera@37 {
+		compatible = "galaxycore,gc02m1";
+		reg = <0x37>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG1>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG1>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd1>;
+		dvdd-supply = <&cam_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 119 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam4_mclk_pins>;
+
+		status = "okay";
+
+		port {
+			macro_cam_out: endpoint {
+				remote-endpoint = <&seninf_macro_in>;
+				data-lanes = <1>;
+			};
+		};
+	};
 };
 
 /* ------------------------------------------------------- CAMSV (raw capture) */
@@ -363,6 +411,15 @@
 				};
 			};
 
+			port@2 {
+				reg = <2>;
+
+				seninf_macro_in: endpoint {
+					remote-endpoint = <&macro_cam_out>;
+					data-lanes = <1>;
+				};
+			};
+
 			/* cam mux 3: the first capture engine, CAMSV0 */
 			port@5 {
 				reg = <5>;
@@ -374,3 +431,4 @@
 		};
 	};
 };
+
