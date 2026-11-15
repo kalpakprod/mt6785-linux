@@ -488,7 +488,11 @@ static int seninf_parse_endpoint(struct seninf_dev *seninf,
 	switch (vep.bus_type) {
 	case V4L2_MBUS_CSI2_CPHY:
 		seninf->cfg[pad].cphy = true;
-		fallthrough;
+		seninf->cfg[pad].lanes = vep.bus.mipi_csi2.num_data_lanes;
+		dev_warn(seninf->dev,
+			 "pad %u is C-PHY; this driver programs D-PHY only\n",
+			 pad);
+		break;
 	case V4L2_MBUS_CSI2_DPHY:
 		seninf->cfg[pad].lanes = vep.bus.mipi_csi2.num_data_lanes;
 		break;
