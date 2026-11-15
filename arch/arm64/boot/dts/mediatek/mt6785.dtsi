@@ -838,6 +838,30 @@
 			     <GIC_PPI 10 IRQ_TYPE_LEVEL_LOW 0>;
 	};
 
+	/*
+	 * The eFuse block (0x11c10000) reads as zeroes from the normal world;
+	 * LK passes the words the kernel needs in /chosen atag,devinfo. Offsets
+	 * are 4 * the vendor get_devinfo_with_index() index (tscpu_lvts_config.h:
+	 * 112 golden temperature, 118-119 and 160-165 sensor count_r).
+	 */
+	devinfo {
+		compatible = "mediatek,mt6785-devinfo";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		lvts_efuse_data1: lvts1-calib@1c0 {
+			reg = <0x1c0 0x4>;
+		};
+
+		lvts_efuse_data2: lvts2-calib@1d8 {
+			reg = <0x1d8 0x8>;
+		};
+
+		lvts_efuse_data3: lvts3-calib@280 {
+			reg = <0x280 0x18>;
+		};
+	};
+
 	soc {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -1461,25 +1485,6 @@
 			reset-names = "hci_rst", "unipro_rst", "crypto_rst";
 
 			status = "disabled";
-		};
-
-		efuse: efuse@11c10000 {
-			compatible = "mediatek,mt6785-efuse", "mediatek,efuse";
-			reg = <0 0x11c10000 0 0x1000>;
-			#address-cells = <1>;
-			#size-cells = <1>;
-
-			lvts_efuse_data1: lvts1-calib@1b0 {
-				reg = <0x1b0 0x4>;
-			};
-
-			lvts_efuse_data2: lvts2-calib@1c8 {
-				reg = <0x1c8 0x8>;
-			};
-
-			lvts_efuse_data3: lvts3-calib@93c {
-				reg = <0x93c 0x34>;
-			};
 		};
 
 		u3phy: t-phy@11e40000 {
