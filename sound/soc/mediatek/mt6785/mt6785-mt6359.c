@@ -44,6 +44,18 @@ SND_SOC_DAILINK_DEFS(capture,
 		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+/*
+ * The codec side: the MT6359's two AIFs, one per direction. The phandle is
+ * filled in from the board's mediatek,audio-codec property at probe time.
+ */
+static struct snd_soc_dai_link_component mt6785_mt6359_playback_codec = {
+	.dai_name = "mt6359-snd-codec-aif1",
+};
+
+static struct snd_soc_dai_link_component mt6785_mt6359_capture_codec = {
+	.dai_name = "mt6359-snd-codec-aif2",
+};
+
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_component *cmpnt_afe =
@@ -63,11 +75,10 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.stream_name = "Playback",
 		.cpus = playback_cpus,
 		.num_cpus = ARRAY_SIZE(playback_cpus),
-		.codecs = playback_codecs,
-		.num_codecs = ARRAY_SIZE(playback_codecs),
+		.codecs = &mt6785_mt6359_playback_codec,
+		.num_codecs = 1,
 		.platforms = playback_platforms,
 		.num_platforms = ARRAY_SIZE(playback_platforms),
-		.codec_dai_name = "mt6359-snd-codec-aif1",
 		.init = mt6785_mt6359_init,
 	},
 	{
@@ -75,11 +86,10 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.stream_name = "Capture",
 		.cpus = capture_cpus,
 		.num_cpus = ARRAY_SIZE(capture_cpus),
-		.codecs = capture_codecs,
-		.num_codecs = ARRAY_SIZE(capture_codecs),
+		.codecs = &mt6785_mt6359_capture_codec,
+		.num_codecs = 1,
 		.platforms = capture_platforms,
 		.num_platforms = ARRAY_SIZE(capture_platforms),
-		.codec_dai_name = "mt6359-snd-codec-aif2",
 		.init = mt6785_mt6359_init,
 	},
 };
