@@ -25,6 +25,7 @@
  * share_memory_info_parsing, md_mem_info_parsing, md_chk_hdr_info_parse) in
  * LineageOS android_kernel_xiaomi_mt6785 30485853fa89.
  */
+#include <linux/ctype.h>
 #include <linux/io.h>
 #include <linux/mm.h>
 #include <linux/of.h>
@@ -52,6 +53,8 @@
 /* the loader's own tag count and version on this phone */
 #define LK_VERSION_V2		2
 #define LK_MAX_TAGS		64
+/* MAX_LK_INFO_SIZE in ccci_util_lib_fo.c: the loader's block is 64 KiB */
+#define LK_MAX_INFO_SIZE	0x10000
 
 /* image_type sits at this offset in every check-header version (v3..v6) */
 #define MD_CHK_IMAGE_TYPE	20
@@ -172,11 +175,11 @@ static int tag_read(struct ccci_md *md, const char *name, void *dst,
 	u32 off = 0;
 	int i;
 
-	for (i = 0; i < LK_MAX_TAGS; i++) {
+	for (i = 0; i < md->lk_tag_num; i++) {
 		char tag_name[LK_TAG_NAME_LEN_V2];
 		u32 data_off, data_size, next_off;
 
-		if (off + LK_TAG_V2_HDR_SIZE > md->tag_size)
+		if (off + LK_TAG_V2_HDR_SIZE > md->lk_size)
 			return -ENOENT;
 		memcpy_fromio(tag_name, md->tags + off, LK_TAG_NAME_LEN_V2);
 		tag_name[sizeof(tag_name) - 1] = '\0';
@@ -185,8 +188,8 @@ static int tag_read(struct ccci_md *md, const char *name, void *dst,
 		next_off = readl(md->tags + off + 72);
 		if (!tag_name[0])
 			return -ENOENT;
-		if (data_size > md->tag_size || data_off > md->tag_size - data_size ||
-		    next_off > md->tag_size)
+		if (data_size > md->lk_size || data_off > md->lk_size - data_size ||
+		    next_off > md->lk_size)
 			return -ENOENT;
 		if (!strcmp(tag_name, name)) {
 			size_t n = min(size, (size_t)data_size);
@@ -216,7 +219,7 @@ static int tag_u32(struct ccci_md *md, const char *name, u32 *val)
  * field through the raw bytes so a padding difference cannot shift the
  * addresses.
  */
-static void tags_read_md_mem(struct ccci_md *md)
+tags_read_md_mem(struct ccci_md *md)
 {
 	u8 buf[32];
 	int ret;
@@ -338,59 +341,155 @@ static void tags_read_capability(struct ccci_md *md)
  * and prints them. Nothing here writes to a modem register or to share
  * memory, so it is safe whatever state the modem is in.
  */
+/* the ULONG-sized fields the loader writes as a struct, in its own byte order */
+static u32 lk_u32(const u8 *p)
+{
+	return get_unaligned_le32(p);
+}
+
+static u64 lk_u64(const u8 *p)
+{
+	return get_unaligned_le64(p);
+}
+
+/**
+ * lk_header_from_chosen() - take the tag list's header from /chosen
+ * @md: the modem
+ *
+ * The bootloader does NOT put the header at the start of the block it reserves.
+ * Base, size, version, tag count and the loader's error words arrive as one
+ * property of /chosen, and only the tag records themselves live at the base it
+ * names. This is how the vendor kernel finds them (ccci_util_lib_fo.c:1052-1090,
+ * collect_lk_boot_arguments(): of_get_flat_dt_prop(chosen,
+ * "ccci,modem_info_v2")), and it is what the first phone trial proved: reading
+ * the header from offset 0 of the block printed 0x2e474ccc / 0x9c7d6010, which
+ * is the first tag record's name bytes, not a header.
+ *
+ * The property holds the struct as raw bytes in the loader's own order, so the
+ * fields are decoded from a byte buffer instead of from an aligned struct.
+ */
+static int lk_header_from_chosen(struct ccci_md *md)
+{
+	struct device_node *chosen;
+	const u8 *p;
+	int len;
+
+	chosen = of_find_node_by_path("/chosen");
+	if (!chosen) {
+		dev_err(md->dev, "no /chosen node: cannot find the CCCI boot information\n");
+		return -ENOENT;
+	}
+	p = of_get_property(chosen, "ccci,modem_info_v2", &len);
+	if (!p) {
+		dev_err(md->dev, "/chosen has no ccci,modem_info_v2: this boot has no CCCI boot information\n");
+		of_node_put(chosen);
+		return -ENOENT;
+	}
+	if (len < LK_INFO_LD_MD_ERRNO + 16) {
+		dev_err(md->dev, "ccci,modem_info_v2 is %d bytes, too short for a v2 header\n",
+			len);
+		of_node_put(chosen);
+		return -EINVAL;
+	}
+
+	md->lk_base = lk_u64(p + LK_INFO_BASE);
+	md->lk_size = lk_u32(p + LK_INFO_SIZE);
+	md->lk_err_no = lk_u32(p + LK_INFO_ERR_NO);
+	md->lk_version = lk_u32(p + LK_INFO_VERSION);
+	md->lk_tag_num = lk_u32(p + LK_INFO_TAG_NUM);
+	md->lk_ld_flag = lk_u32(p + LK_INFO_LD_FLAG);
+	md->lk_ld_md_errno = lk_u32(p + LK_INFO_LD_MD_ERRNO);
+	of_node_put(chosen);
+
+	dev_info(md->dev,
+		 "/chosen ccci,modem_info_v2: block %#llx + %#x, version %u, %u tags, ld_flag %u, err %u, ld_md_errno %u\n",
+		 md->lk_base, md->lk_size, md->lk_version, md->lk_tag_num,
+		 md->lk_ld_flag, md->lk_err_no, md->lk_ld_md_errno);
+	return 0;
+}
+
+/**
+ * rosemary_ccci_tags_init() - read the loader's CCCI boot information
+ * @md: the modem
+ *
+ * Read-only: it takes the header from /chosen, maps the tag block it names and
+ * reads the tags out of it. Nothing here writes to a modem register or to share
+ * memory, so it is safe whatever state the modem is in.
+ */
 int rosemary_ccci_tags_init(struct ccci_md *md)
 {
-	struct device_node *rmem, *child;
-	u32 version, tag_num, ld_flag, err_no, tag_base32;
 	phys_addr_t base;
 	resource_size_t size;
 	int ret;
 
-	rmem = of_find_node_by_path("/reserved-memory");
-	if (rmem) {
-		for_each_child_of_node(rmem, child)
-			if (!strcmp(region_basename(child->name),
-				    "ccci_tag_mem")) {
-				struct resource res;
-				int err = of_address_to_resource(child, 0, &res);
+	/* the header first: it tells us whether there is a block at all */
+	ret = lk_header_from_chosen(md);
+	if (ret)
+		return ret;
 
-				if (!err) {
-					md->tag_base = res.start;
-					md->tag_size = resource_size(&res);
-				}
-				break;
-			}
-		of_node_put(rmem);
+	if (!md->lk_base) {
+		/* the loader ran no modem image this boot (charger, recovery) */
+		if (!md->lk_err_no) {
+			dev_warn(md->dev, "the loader left no CCCI boot information: no modem this boot\n");
+			return -ENODEV;
+		}
+		dev_err(md->dev, "the loader reports no modem image (%u)\n",
+			md->lk_err_no);
+		return -ENODEV;
 	}
-	/* fall back on the address the board describes, for a boot without it */
-	if (!md->tag_base &&
-	    !of_property_read_u32(md->dev->of_node, "mediatek,ccci-tag-base",
-				  &tag_base32))
-		md->tag_base = tag_base32;
-	if (!md->tag_size)
-		md->tag_size = 0x10000;
-	if (!md->tag_base) {
-		dev_err(md->dev, "no ccci_tag_mem reservation\n");
-		return -ENOENT;
+	if (md->lk_ld_md_errno) {
+		dev_warn(md->dev, "the loader failed to load the modem image (%u)\n",
+			 md->lk_ld_md_errno);
+		return -ENODEV;
 	}
-	if (!tags_map(md))
-		return -ENOMEM;
-
-	err_no = readl(md->tags + LK_INFO_ERR_NO);
-	version = readl(md->tags + LK_INFO_VERSION);
-	tag_num = readl(md->tags + LK_INFO_TAG_NUM);
-	ld_flag = readl(md->tags + LK_INFO_LD_FLAG);
-	dev_info(md->dev, "lk info at %#llx + %#llx: version %u, %u tags, ld_flag %u, err %u\n",
-		 md->tag_base, (u64)md->tag_size, version, tag_num, ld_flag, err_no);
-	if (version < LK_VERSION_V2) {
+	if (md->lk_size > LK_MAX_INFO_SIZE) {
+		dev_err(md->dev, "the loader's tag block claims %#x bytes, more than the reservation\n",
+			md->lk_size);
+		return -EINVAL;
+	}
+	if (md->lk_version < LK_VERSION_V2) {
 		dev_err(md->dev, "tag version %u is older than the 64-byte-name format\n",
-			version);
+			md->lk_version);
 		return -EINVAL;
 	}
-	if (!tag_num || tag_num > LK_MAX_TAGS) {
+	if (!md->lk_tag_num || md->lk_tag_num > LK_MAX_TAGS) {
 		dev_err(md->dev, "%u tags is outside what the loader can write\n",
-			tag_num);
+			md->lk_tag_num);
 		return -EINVAL;
+	}
+
+	/* the block itself: the loader's own reservation, or the board's address */
+	md->tag_base = md->lk_base;
+	md->tag_size = md->lk_size;
+	ret = region_lookup(md, "ccci_tag_mem", &base, &size);
+	if (!ret && base != md->lk_base)
+		dev_warn(md->dev, "the ccci_tag_mem reservation %#llx is not where the header says (%#llx)\n",
+			 base, md->lk_base);
+	if (!tags_map(md)) {
+		dev_err(md->dev, "cannot map the tag block at %#llx\n",
+			md->tag_base);
+		return -ENOMEM;
+	}
+	/*
+	 * The block starts with the first tag record, not with a header: its name
+	 * must be printable and its data must lie inside the block. A boot where
+	 * the loader wrote nothing is refused here instead of at the first tag.
+	 */
+	{
+		char first[LK_TAG_NAME_LEN_V2];
+		u32 data_off;
+
+		memcpy_fromio(first, md->tags, sizeof(first));
+		first[sizeof(first) - 1] = '\0';
+		data_off = readl(md->tags + LK_TAG_NAME_LEN_V2);
+		if (!first[0] || !isprint(first[0]) ||
+		    data_off > md->lk_size) {
+			dev_err(md->dev, "the tag block at %#llx holds no tag list (first record %*phN)\n",
+				md->tag_base, 16, md->tags);
+			return -EINVAL;
+		}
+		dev_info(md->dev, "tag block at %#llx: first tag \"%s\"\n",
+			 md->tag_base, first);
 	}
 
 	/* the reservations the driver will use, found by the loader's names */
