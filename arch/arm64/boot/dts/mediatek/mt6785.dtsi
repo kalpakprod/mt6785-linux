@@ -2001,8 +2001,9 @@
 			reg = <0 0x17010000 0 0x1000>;
 			mediatek,smi = <&smi_common>;
 			mediatek,larb-id = <3>;
-			clocks = <&vencsys CLK_VENC_LARB>, <&vencsys CLK_VENC_LARB>;
-			clock-names = "apb", "smi";
+			clocks = <&vencsys CLK_VENC_LARB>, <&vencsys CLK_VENC_LARB>,
+				 <&vencsys CLK_VENC_GALS>;
+			clock-names = "apb", "smi", "gals";
 			power-domains = <&spm MT6785_POWER_DOMAIN_VENC>;
 		};
 
