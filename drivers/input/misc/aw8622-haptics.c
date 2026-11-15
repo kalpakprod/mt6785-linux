@@ -216,7 +216,7 @@ static int aw8622_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret,
 				     "cannot register the input device\n");
 
-	platform_set_drvdata(&pdev->dev, haptic);
+	platform_set_drvdata(pdev, haptic);
 
 	return 0;
 }
