@@ -34,13 +34,13 @@ not "Works".
 | Volume keys, power key | Works | evtest: GPIO volume-down, PMIC home key = volume-up |
 | Haptics (AW8622) | Works | felt on the phone; strength scaling still open |
 | Camera flash (MT6360 FLED) | Partial | channel 1 lights; channel 2 not seen yet |
-| Screen (k7 AMOLED, DSI) | In progress | pipeline binds, first DCS command times out |
-| Touchscreen (FT3418) | In progress | input device registers; waits for the screen |
-| Audio | In progress | sound card registers; no playback checked yet |
+| Screen (k7 AMOLED, DSI) | In progress | panel lights and takes the framebuffer (seen by camera); colours and line length wrong |
+| Touchscreen (FT3418) | In progress | controller answers on I2C; waits for the screen |
+| Audio | In progress | sound card with a playback device registers; no playback checked yet |
 | Cameras | In progress | camsv video nodes and sensor drivers probe; no image yet |
-| Wi-Fi (gen4m) | In progress | firmware download and adapter start reached |
-| Bluetooth | In progress | WMT core starts; BT power-on fails |
-| Modem (calls, SMS, data) | In progress | modem device probes; boot fails |
+| Wi-Fi (gen4m) | In progress | `wlan0` comes up and scans real networks; the TX-power code then corrupts memory |
+| Bluetooth | In progress | `hci0` powers on; the controller firmware then asserts |
+| Modem (calls, SMS, data) | In progress | modem passes boot ROM and is released; first handshake times out |
 | Sensors (via SCP) | In progress | SCP bring-up |
 | SD card, IR, GPS, NFC, 3D (Mali-G76/Panfrost), FDE, USB OTG | Untested | |
 
