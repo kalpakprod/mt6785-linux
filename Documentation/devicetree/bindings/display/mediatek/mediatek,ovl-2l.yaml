@@ -36,6 +36,15 @@ properties:
   interrupts:
     maxItems: 1
 
+  mediatek,larb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      The SMI local arbiter (larb) that this block's DMA ports belong to. A
+      driver links itself to it so that the larb is kept runtime-resumed while
+      the block fetches, which matters where no IOMMU binds that larb: nothing
+      else would resume it, and its ports come back with translation enabled
+      after the display power domain was cycled.
+
   power-domains:
     description: A phandle and PM domain specifier as defined by bindings of
       the power controller specified by phandle. See
