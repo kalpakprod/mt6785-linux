@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# MediaTek vendor connectivity (WMT/STP/connsys) forward-port.
+# Stage-1 of the begonia (MT6785) vendor-stack forward-port: get the
+# 4.14 vendor WMT bring-up layer + vendor BTIF to compile on mainline.
+#
+
+config MTK_WMT_FWPORT
+	tristate "MediaTek WMT/connsys vendor forward-port (begonia MT6785)"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF
+	default n
+	help
+	  Forward-port of the MediaTek vendor connectivity stack
+	  (WMT / STP / connsys platform + vendor BTIF) from the 4.14
+	  begonia vendor kernel to mainline. This builds the wmt_drv
+	  module (and the vendor BTIF as its own module) for conn-MCU
+	  bring-up on the Xiaomi begonia (MT6785 / Helio G90T).
+
+	  This is a work-in-progress bring-up vehicle, not an
+	  upstreamable driver. Say N unless you are working on the
+	  begonia connectivity forward-port.
+
+if MTK_WMT_FWPORT
+
+source "drivers/misc/mediatek/connectivity/Kconfig"
+source "drivers/misc/mediatek/btif/Kconfig"
+
+endif # MTK_WMT_FWPORT
