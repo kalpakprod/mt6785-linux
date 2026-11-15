@@ -455,6 +455,22 @@
 /* ------------------------------------------------------- autofocus VCM */
 
 /*
+ * The AF rail's switch is a board-level fixed regulator, not an I2C device, so
+ * it sits under the root node rather than under i2c2 where the actuator is.
+ */
+/ {
+	cam_af_switch: regulator-cam-af {
+		compatible = "regulator-fixed";
+		regulator-name = "cam0_ldo_vcamaf";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&pio 34 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&cam_avdd1>;
+	};
+};
+
+/*
  * The main camera has a voice-coil autofocus actuator on I2C2 at 7-bit 0x0c
  * (live DT camera_main_af@0c; study section 1.1), behind its own 2.8 V switch
  * on GPIO34 (live DT cam0_ldo_vcamaf_0/1, and the vendor lens driver's
@@ -523,16 +539,6 @@
 				link-frequencies = /bits/ 64 <570000000>;
 			};
 		};
-	};
-
-	cam_af_switch: regulator-cam-af {
-		compatible = "regulator-fixed";
-		regulator-name = "cam0_ldo_vcamaf";
-		regulator-min-microvolt = <2800000>;
-		regulator-max-microvolt = <2800000>;
-		gpio = <&pio 34 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-		vin-supply = <&cam_avdd1>;
 	};
 
 	vcm: lens@c {
