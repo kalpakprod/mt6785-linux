@@ -120,6 +120,13 @@ const struct of_device_id mtk_axi_of_ids[] = {
 	{.compatible = "mediatek,wifi",},
 	{}
 };
+/*
+ * Without this the OF table produces no modalias, so udev never learns that
+ * wlan_gen4m is the driver for 18000000.wifi and nothing loads it at boot.
+ * The vendor tree relied on Android init doing the insmod; MODULE_DEVICE_TABLE
+ * is the standard way to say the same thing to a mainline userspace.
+ */
+MODULE_DEVICE_TABLE(of, mtk_axi_of_ids);
 #endif
 
 /*******************************************************************************

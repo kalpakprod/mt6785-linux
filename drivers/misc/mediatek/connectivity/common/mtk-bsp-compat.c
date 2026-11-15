@@ -90,3 +90,18 @@ void *mtk_wcn_cmb_sdio_pm_data;
  * TUs; keep it here as the module's single license/description record. */
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MediaTek WMT/connsys (wmt_drv) vendor forward-port for begonia MT6785");
+
+/*
+ * Load order, the way Android's init.rc does it by hand.
+ *
+ * wmt_drv owns the STP transport and the bring-up sequence; every other module
+ * of this stack talks to it through exported symbols. wlan_gen4m must be
+ * present before the Wi-Fi function is switched on, because its probe is what
+ * registers the Wi-Fi callbacks with WMT (mtk_wcn_wmt_wlan_reg() in hifAxiProbe)
+ * and without them FUNC_CTRL(WIFI on) has no probe to run. The softdep makes
+ * modprobe bring it in with wmt_drv, so the order is right by construction.
+ *
+ * btmtkbtif and stpgps do not need this: both bind to their own DT nodes and
+ * ask WMT for their channel inside open(), long after wmt_drv is up.
+ */
+MODULE_SOFTDEP("pre: wlan_gen4m");

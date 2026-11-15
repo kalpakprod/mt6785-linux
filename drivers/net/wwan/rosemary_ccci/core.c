@@ -245,11 +245,16 @@ static const struct {
 
 #define CCB_GUARD_END	0xeeff0011
 
-static void ccb_ctrl_init(struct ccci_md *md)
+static int ccb_ctrl_init(struct ccci_md *md)
 {
 	u32 *h = md->nc + NC_CCB_CTRL;
 	int i;
 
+	if (!md->nc || NC_CCB_CTRL + NC_CCB_CTRL_SIZE > md->nc_size) {
+		dev_err(md->dev, "the CCB control block %#x + %#x is outside the mapped %#llx\n",
+			NC_CCB_CTRL, NC_CCB_CTRL_SIZE, (u64)md->nc_size);
+		return -EINVAL;
+	}
 	memset(h, 0, NC_CCB_CTRL_SIZE);
 	for (i = 0; i < ARRAY_SIZE(ccb_slots); i++, h += 16) {
 		h[5] = ccb_slots[i].dl_page;
@@ -260,35 +265,82 @@ static void ccb_ctrl_init(struct ccci_md *md)
 		h[15] = CCB_GUARD_END;
 	}
 	wmb();
+	return 0;
 }
 
 /*
- * Clear what the modem does not keep: the debug heads, NETD and USB, the ring
- * region, and in the cacheable window the NVRAM cache and the CCB buffers. The
- * CCB control block, the audio region, MD-CONSYS and USIP are kept (the control
- * block is rewritten immediately afterwards). Vendor clear_smem_region(),
- * first-boot set.
+ * Every write into a share-memory window goes through this: a region that is
+ * not entirely inside the mapped window is refused with a message naming it,
+ * and nothing is written. The first boot on the phone had a constant table
+ * from another phone put the CCB buffers 64 MiB into a 23.5 MiB window; the
+ * memset ran off the mapping and oopsed at the first page past it.
  */
-static void clear_smem(struct ccci_md *md)
+static int smem_clear(struct ccci_md *md, const char *window, void *base,
+		      resource_size_t mapped, u32 off, u32 size)
+{
+	if (!size)
+		return 0;
+	if (!base || off > mapped || size > mapped - off) {
+		dev_err(md->dev, "%s: %#x + %#x is outside the mapped %#llx, not cleared\n",
+			window, off, size, (u64)mapped);
+		return -EINVAL;
+	}
+	memset(base + off, 0, size);
+	return 0;
+}
+
+/**
+ * clear_smem() - clear what the modem does not keep, before a boot
+ * @md: the modem
+ *
+ * Vendor clear_smem_region() semantics for a first boot: every region without
+ * SMF_NCLR_FIRST is zeroed at its own base and its own size. The regions here
+ * are this generation's (ccci_modem.c:113-155): the non-cacheable debug heads,
+ * NETD, USB and the ring area, and in the cacheable window the NVRAM cache and
+ * the CCB buffers -- and those two are taken from the layout the LOADER
+ * reported, not from a constant table, because the offsets differ per phone
+ * and per boot.
+ */
+static int clear_smem(struct ccci_md *md)
 {
 	static const struct {
+		const char *name;
 		u32 off, size;
 	} nc[] = {
-		{ 0, NC_CCB_CTRL },			/* debug .. CCISM_SCP */
-		{ NC_NETD, NC_AUDIO - NC_NETD },	/* NETD, USB */
-		{ NC_CCISM_MCU, NC_CCISM_MCU_EXP + NC_CCISM_MCU_EXP_SIZE -
-				NC_CCISM_MCU },
-	}, c[] = {
-		{ C_NVRAM_CACHE, C_NVRAM_CACHE_SIZE },
-		{ C_CCB_DHL, C_USIP - C_CCB_DHL },
+		{ "nc debug..ccism_scp", 0, NC_CCB_CTRL },
+		{ "nc netd..audio", NC_NETD, NC_AUDIO - NC_NETD },
+		{ "nc ccism_mcu..exp", NC_CCISM_MCU,
+		  NC_CCISM_MCU_EXP + NC_CCISM_MCU_EXP_SIZE - NC_CCISM_MCU },
 	};
-	int i;
+	int i, errors = 0;
 
 	for (i = 0; i < ARRAY_SIZE(nc); i++)
-		memset(md->nc + nc[i].off, 0, nc[i].size);
-	for (i = 0; i < ARRAY_SIZE(c); i++)
-		memset(md->c + c[i].off, 0, c[i].size);
+		if (smem_clear(md, nc[i].name, md->nc, md->nc_size, nc[i].off,
+			       nc[i].size))
+			errors++;
+
+	/*
+	 * The cacheable window: exactly the CCB buffers, at the address the
+	 * loader's ccb_info tag reports. This generation's table
+	 * (md1_6293_cacheable, ccci_modem.c:142-155) has no separately located
+	 * NVRAM cache -- its CCB_DHL/CCB_MD_MONITOR/CCB_META entries ARE the
+	 * whole cacheable clearing, and the NVRAM cache offset that cezanne's
+	 * table carries would here land on top of the CCB region.
+	 */
+	if (md->ccb_data_base >= md->c_phys &&
+	    md->ccb_data_base < md->c_phys + md->c_size) {
+		u32 off = md->ccb_data_base - md->c_phys;
+
+		if (smem_clear(md, "c ccb buffers", md->c, md->c_size, off,
+			       md->ccb_data_size))
+			errors++;
+	} else if (md->ccb_data_base) {
+		dev_err(md->dev, "the loader's CCB buffers at %#llx are outside the cacheable window %#llx + %#llx, not cleared\n",
+			md->ccb_data_base, (u64)md->c_phys, (u64)md->c_size);
+		errors++;
+	}
 	wmb();
+	return errors ? -EINVAL : 0;
 }
 
 /* ---- the boot state machine ------------------------------------------- */
@@ -315,9 +367,15 @@ static int md_boot(struct ccci_md *md)
 	md->pending = 0;
 	md->ex_channels = 0;
 
-	clear_smem(md);
-	ccb_ctrl_init(md);
-	ccci_ccif_init(md);
+	ret = clear_smem(md);
+	if (ret)
+		goto err_off;
+	ret = ccb_ctrl_init(md);
+	if (ret)
+		goto err_off;
+	ret = ccci_ccif_init(md);
+	if (ret)
+		goto err_off;
 	ccci_ccif_reset(md);
 	ret = clk_bulk_prepare_enable(md->num_clks, md->clks);
 	if (ret)

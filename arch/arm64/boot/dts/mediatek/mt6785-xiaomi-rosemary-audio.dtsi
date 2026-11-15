@@ -467,6 +467,7 @@
 		compatible = "mediatek,mt6785-mt6359-sound";
 		model = "Xiaomi POCO M5s";
 		mediatek,platform = <&afe>;
+		mediatek,accdet = <&pmic>;
 		aux-devs = <&spk_amp>, <&rcv_amp>;
 
 		audio-routing =
