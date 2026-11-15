@@ -1260,37 +1260,60 @@ static int ov13b10_power_off(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
 
+	/* reverse of the power-on order: clock down, then reset, then rails */
+	clk_disable_unprepare(ov13b10->img_clk);
 	gpiod_set_value_cansleep(ov13b10->reset, 1);
 	regulator_bulk_disable(ARRAY_SIZE(ov13b10_supply_names),
 			       ov13b10->supplies);
 
-	clk_disable_unprepare(ov13b10->img_clk);
-
 	return 0;
 }
 
+/*
+ * The vendor's power sequence for this module, kept in its order because the
+ * part does not answer on I2C otherwise (imgsensor_cfg_table.c,
+ * SENSOR_DRVNAME_OV13B10SUNNY_MIPI_RAW):
+ *
+ *	RST low (1 ms) -> AVDD 2.8 V -> DVDD 1.2 V -> DOVDD 1.8 V (1 ms)
+ *	-> RST high (5 ms) -> MCLK on (1 ms)
+ *
+ * Note what is unusual about it: the clock comes up *after* the reset is
+ * released, unlike most parts where the sensor needs its clock to come out of
+ * reset. Bringing MCLK up first, which is what this driver used to do, leaves
+ * the chip unresponsive and the identification read fails with EIO - which is
+ * exactly the "-5" of the first phone boot.
+ */
 static int ov13b10_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov13b10 *ov13b10 = to_ov13b10(sd);
 	int ret;
 
-	ret = clk_prepare_enable(ov13b10->img_clk);
-	if (ret < 0) {
-		dev_err(dev, "failed to enable imaging clock: %d", ret);
-		return ret;
-	}
+	/* keep the part in reset while the rails come up */
+	gpiod_set_value_cansleep(ov13b10->reset, 1);
+	usleep_range(1000, 1500);
+
 	ret = regulator_bulk_enable(ARRAY_SIZE(ov13b10_supply_names),
 				    ov13b10->supplies);
 	if (ret < 0) {
 		dev_err(dev, "failed to enable regulators\n");
-		clk_disable_unprepare(ov13b10->img_clk);
 		return ret;
 	}
+	usleep_range(1000, 1500);
 
+	/* out of reset, then the clock, in the vendor's order */
 	gpiod_set_value_cansleep(ov13b10->reset, 0);
-	/* 5ms to wait ready after XSHUTDN assert */
 	usleep_range(5000, 5500);
+
+	ret = clk_prepare_enable(ov13b10->img_clk);
+	if (ret < 0) {
+		dev_err(dev, "failed to enable imaging clock: %d", ret);
+		regulator_bulk_disable(ARRAY_SIZE(ov13b10_supply_names),
+				       ov13b10->supplies);
+		gpiod_set_value_cansleep(ov13b10->reset, 1);
+		return ret;
+	}
+	usleep_range(1000, 1500);
 
 	return 0;
 }
