@@ -843,11 +843,10 @@ static int camsv_probe(struct platform_device *pdev)
 	return 0;
 
 err_v4l2:
+	pm_runtime_disable(dev);
 	v4l2_device_unregister(&camsv->v4l2_dev);
 err_entity:
 	media_entity_cleanup(&camsv->vdev.entity);
-err_pm:
-	pm_runtime_disable(dev);
 err_free_scratch:
 	dma_free_coherent(dev, SZ_64K, camsv->scratch, camsv->scratch_dma);
 	return ret;
