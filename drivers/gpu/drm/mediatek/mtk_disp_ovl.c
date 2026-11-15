@@ -743,8 +743,24 @@ static const struct mtk_disp_ovl_data mt6785_ovl_driver_data = {
 	.layer_nr = 4,
 	.fmt_rgb565_is_0 = true,
 	.smi_id_en = true,
-	.blend_modes = BIT(DRM_MODE_BLEND_PREMULTI) |
-		       BIT(DRM_MODE_BLEND_COVERAGE) |
+	/*
+	 * No premultiplied blend mode on purpose. With DRM_MODE_BLEND_PREMULTI
+	 * advertised, DRM's default for a plane, mtk_ovl_fmt_convert() returns
+	 * OVL_CON_CLRFMT_PARGB8888 for an XRGB8888 buffer, i.e. CFMT 3 with
+	 * CLRFMT_MAN - and the vendor encoding of the OVL layer format says
+	 * (ddp_info.h:93-100): format 3 counts as the ARGB8888 pair, format 2 as
+	 * the RGBA8888 pair, with byteswap telling 1 from 0 inside each pair. Our
+	 * buffer is B,G,R,A in memory, which is UFMT_BGRA8888 = format 2,
+	 * byteswap 0 - exactly what the loader programs for its own layers
+	 * (pl_lk.txt: "fmt = eBGRA8888"). Reading it as format 3/ABGR swaps red
+	 * and blue. Trial 7 read L0_CON = 0x008030ff: CFMT 3, MAN 1, no swap.
+	 *
+	 * Without PREMULTI, blend_mode falls back to DRM_MODE_BLEND_COVERAGE and
+	 * fmt_convert() returns OVL_CON_CLRFMT_ARGB8888 = CFMT 2, byteswap 0, the
+	 * loader's value. CONST_BLEND is still set for the alpha-less buffer, so
+	 * the plane keeps ignoring its X byte.
+	 */
+	.blend_modes = BIT(DRM_MODE_BLEND_COVERAGE) |
 		       BIT(DRM_MODE_BLEND_PIXEL_NONE),
 	.formats = mt8173_formats,
 	.num_formats = ARRAY_SIZE(mt8173_formats),
