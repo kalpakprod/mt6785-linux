@@ -32,7 +32,7 @@ properties:
   clocks:
     maxItems: 1
     description:
-      The engine's gate: CLK_CAM_SV0 for CAMSV0, CLK_CAM_SV1 for CAMSV1.
+      The engine's gate, CLK_CAM_SV0 for CAMSV0 and CLK_CAM_SV1 for CAMSV1.
 
   clock-names:
     items:
@@ -60,6 +60,7 @@ properties:
     properties:
       endpoint:
         $ref: /schemas/graph.yaml#/$defs/endpoint-base
+        unevaluatedProperties: false
 
         properties:
           data-lanes: true
