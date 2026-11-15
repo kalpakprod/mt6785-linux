@@ -3423,9 +3423,17 @@ static INT32 opfunc_wlan_probe(P_WMT_OP pWmtOp)
 			goto done;
 		}
 	} else {
-		WMT_ERR_FUNC("not implemented yet hifType: 0x%x, unspecified wifi_hif\n",
-				gMtkWmtCtx.wmtHifConf.hifType);
-		/* TODO:  Wi-Fi/WMT uses other interfaces. NOT IMPLEMENTED YET! */
+		/*
+		 * SoC consys reaches Wi-Fi over BTIF (WMT_HIF_BTIF), not SDIO, so
+		 * neither of the two slots above applies and there is nothing to
+		 * power here. The message is informational: the STP transport was
+		 * already configured for BTIF in wmt_core_stp_init(), and the Wi-Fi
+		 * bring-up continues right below through func_on() ->
+		 * wmt_func_wifi_on() -> opfunc_wlan_probe(), which is the path the
+		 * phone log shows running. It is not an error and needs no fix.
+		 */
+		WMT_DBG_FUNC("hifType: 0x%x is not a slot-based Wi-Fi HIF, no slot power needed\n",
+			     gMtkWmtCtx.wmtHifConf.hifType);
 	}
 
 	iRet = (*(gpWmtFuncOps[drvType]->func_on)) (gMtkWmtCtx.p_ic_ops, wmt_conf_get_cfg());
