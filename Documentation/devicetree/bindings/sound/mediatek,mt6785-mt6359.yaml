@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/mediatek,mt6785-mt6359.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6785 sound card with the MT6359 codec
+
+maintainers:
+  - MediaTek SoC Team <linux-mediatek@lists.infradead.org>
+
+description: |
+  A sound card that pairs the MT6785 audio front end with the MT6359 codec in
+  the PMIC, optional auxiliary components (amplifiers that are not DAIs, such as
+  the Awinic AW87xxx), and a headset jack on the codec's accessory detection
+  block.
+
+properties:
+  compatible:
+    const: mediatek,mt6785-mt6359-sound
+
+  model:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: The card's name, as shown to user space.
+
+  mediatek,platform:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The audio front end the card's front-end DAIs belong to.
+
+  mediatek,audio-codec:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The codec component the card's links use.
+
+  mediatek,accdet:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      The PMIC node whose child is the codec's ACCDET block; the machine driver
+      looks the component up through it to attach the headset jack.
+
+  aux-devs:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    description: |
+      Amplifiers that are part of the card's DAPM graph without being DAIs;
+      each one must be a component registering the widgets the card's
+      audio-routing names.
+
+  audio-routing:
+    $ref: /schemas/types.yaml#/definitions/non-unique-string-array
+    description: |
+      A list of (sink, control, source) triples, as the ASoC core's
+      snd_soc_of_parse_audio_routing() reads them.
+
+required:
+  - compatible
+  - mediatek,platform
+  - mediatek,audio-codec
+
+additionalProperties: true
+
+examples:
+  - |
+    sound {
+        compatible = "mediatek,mt6785-mt6359-sound";
+        model = "Xiaomi POCO M5s";
+        mediatek,platform = <&afe>;
+        mediatek,audio-codec = <&mt6359codec>;
+        mediatek,accdet = <&pmic>;
+        aux-devs = <&spk_amp>, <&rcv_amp>;
+
+        audio-routing = "Spk Amp", "LINEOUT L",
+                        "Rcv Amp", "Receiver";
+    };
+
+...
