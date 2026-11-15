@@ -917,12 +917,19 @@ static int dpmaif_probe_one(struct ccci_md *md, struct platform_device *pdev)
 int rosemary_ccci_dpmaif_init(struct ccci_md *md)
 {
 	struct platform_device *pdev;
+	struct device_node *np;
+	int ret;
 
-	pdev = of_find_device_by_node(of_parse_phandle(md->dev->of_node,
-						       "mediatek,dpmaif", 0));
+	np = of_parse_phandle(md->dev->of_node, "mediatek,dpmaif", 0);
+	if (!np)
+		return -ENODEV;
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
 	if (!pdev)
 		return -ENODEV;
-	return dpmaif_probe_one(md, pdev);
+	ret = dpmaif_probe_one(md, pdev);
+	put_device(&pdev->dev);
+	return ret;
 }
 
 void rosemary_ccci_dpmaif_exit(struct ccci_md *md)
