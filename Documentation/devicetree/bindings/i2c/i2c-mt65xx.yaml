@@ -104,6 +104,13 @@ properties:
     description: Platform controls I2C from PMIC side
     type: boolean
 
+  mediatek,channel-offset:
+    description:
+      Offset of the application processor's channel inside a multi-channel
+      controller, which another bus master (the camera control unit) shares.
+      The registers at the start of the block are channel 0.
+    $ref: /schemas/types.yaml#/definitions/uint32
+
   mediatek,use-push-pull:
     description: Use push-pull mode I/O config
     type: boolean
