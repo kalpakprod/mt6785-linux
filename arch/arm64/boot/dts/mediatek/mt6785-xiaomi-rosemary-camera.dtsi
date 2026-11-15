@@ -215,6 +215,14 @@
 		pinctrl-0 = <&cam1_mclk_pins>;
 
 		status = "okay";
+
+		port {
+			front_cam_out: endpoint {
+				remote-endpoint = <&seninf_front_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <560000000>;
+			};
+		};
 	};
 
 	/*
@@ -224,10 +232,8 @@
 	 * pll_op_prediv 2), which gives a 4-lane link frequency of
 	 * 24 MHz * 60 / (2 * 2) = 360 MHz.
 	 *
-	 * No endpoint yet: the sensor's port connects to SENINF, which does
-	 * not exist until step 5. The driver reads its lane count and link
-	 * frequency from that endpoint, so until then it cannot probe: this is
-	 * expected and is why the node carries no port.
+	 * Its endpoint feeds SENINF on the CSI port that pad 1 stands for; the
+	 * link frequency is the driver's own 24 MHz figure (24 MHz * 60 / 4).
 	 */
 	uw_cam: camera@1a {
 		compatible = "sony,imx355";
@@ -248,6 +254,14 @@
 		pinctrl-0 = <&cam2_mclk_pins>;
 
 		status = "okay";
+
+		port {
+			uw_cam_out: endpoint {
+				remote-endpoint = <&seninf_uw_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <360000000>;
+			};
+		};
 	};
 };
 
@@ -280,6 +294,12 @@
 		width = <3280>;
 		height = <2464>;
 		status = "okay";
+
+		port {
+			camsv0_in: endpoint {
+				remote-endpoint = <&seninf_camsv0_out>;
+			};
+		};
 	};
 
 	camsv1: camsv@1a051000 {
@@ -292,5 +312,65 @@
 		width = <3280>;
 		height = <2464>;
 		status = "okay";
+	};
+};
+
+/* ------------------------------------------------------- SENINF (CSI-2 RX) */
+
+/*
+ * Digital window 0x1a040000 + 0xa000 and analog window 0x11c80000 + 0xc000,
+ * both from the live DT (seninf1_csi2@1a040000 ... seninf6_csi2@1a045000,
+ * mipi_rx_ana_csi0a@11c80000 ...) and the vendor SENINF_MAP_BASE_ANA /
+ * SENINF_MAP_LENGTH_ANA constants (study 2.2, 4.1c). The cameras reach the
+ * block through the SENINF receivers: the front camera on receiver 1 and the
+ * ultrawide on receiver 2, one custom endpoint each, which is what the driver
+ * numbers its sensor pads by.
+ *
+ * Two sensor pads are wired now (the two sensors that exist); the pad numbers
+ * follow the endpoint order, so front is pad 0 and ultrawide is pad 1.
+ */
+&{/soc} {
+	seninf: seninf@1a040000 {
+		compatible = "mediatek,mt6785-seninf";
+		reg = <0 0x1a040000 0 0xa000>,
+		      <0 0x11c80000 0 0xc000>;
+		reg-names = "seninf", "ana";
+		interrupts = <GIC_SPI 275 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&camsys CLK_CAM_SENINF>;
+		clock-names = "seninf";
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				seninf_front_in: endpoint {
+					remote-endpoint = <&front_cam_out>;
+					data-lanes = <1 2 3 4>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				seninf_uw_in: endpoint {
+					remote-endpoint = <&uw_cam_out>;
+					data-lanes = <1 2 3 4>;
+				};
+			};
+
+			/* cam mux 3: the first capture engine, CAMSV0 */
+			port@5 {
+				reg = <5>;
+
+				seninf_camsv0_out: endpoint {
+					remote-endpoint = <&camsv0_in>;
+				};
+			};
+		};
 	};
 };

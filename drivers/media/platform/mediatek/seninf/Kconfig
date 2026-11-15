@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MT6785_SENINF
+	tristate "MediaTek MT6785 SENINF CSI-2 receiver"
+	depends on VIDEO_DEV
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF
+	select MEDIA_CONTROLLER
+	select V4L2_FWNODE
+	help
+	  This is a Video4Linux2 sub-device driver for the MediaTek SENINF
+	  block of MT6785: the CSI-2 receiver, the per-receiver mux and the
+	  cam mux that routes a receiver either to the closed image signal
+	  processor or to a CAMSV capture engine.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mtk-seninf-mt6785.
