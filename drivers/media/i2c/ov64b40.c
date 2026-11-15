@@ -108,7 +108,6 @@ struct ov64b40 {
 	bool cphy;	/* the endpoint describes a C-PHY bus */
 };
 
-
 /* 938 writes: the vendor's sensor_init sequence, in its order */
 static const struct cci_reg_sequence ov64b40_init_regs[] = {
 	{ CCI_REG8(0x103), 0x01 }, { CCI_REG8(0x102), 0x01 }, { CCI_REG8(0x102), 0x01 },

@@ -177,9 +177,9 @@ struct camsv_dev {
 	struct video_device vdev;
 	struct media_pad pad;
 	struct vb2_queue queue;
-	struct mutex vlock;
+	struct mutex vlock;	/* serialises ioctls and stream on/off */
 
-	spinlock_t qlock;
+	spinlock_t qlock;	/* the two lists and the streaming state, irq */
 	struct list_head queued;
 	struct list_head inflight;
 	bool streaming;

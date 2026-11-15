@@ -161,7 +161,7 @@ struct seninf_dev {
 	unsigned int cam_mux;
 	struct seninf_port_cfg cfg[SENINF_NUM_SENSOR_PADS];
 
-	struct mutex lock;
+	struct mutex lock;	/* serialises power and the selected routing */
 	bool powered;
 
 	struct dentry *debugfs;

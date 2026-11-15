@@ -120,7 +120,6 @@ struct gc02m1 {
 	bool streaming;
 };
 
-
 /* Register sequence, from tables/gc02m1ofilm_tables.h (vendor init table). */
 static const struct cci_reg_sequence gc02m1_init_regs[] = {
 	{ CCI_REG8(0xfc), 0x01 }, { CCI_REG8(0xf4), 0x41 }, { CCI_REG8(0xf5), 0xc0 },
