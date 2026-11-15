@@ -89,6 +89,11 @@ properties:
       Address of the bootloader's CCCI tag block, used only when the
       reservation it belongs to was not found by name.
 
+  mediatek,dpmaif:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Phandle to the DPMAIF node, the modem's packet data interface.
+
 required:
   - compatible
   - reg

@@ -77,5 +77,41 @@
 
 		/* syscon@10006000: PWR_STATUS at +0x160 is bit 0 of this domain */
 		mediatek,spm = <&scpsys>;
+
+		/* the modem's DRAM window is the loader's md_mem_usage region */
+		mediatek,dpmaif = <&dpmaif>;
+	};
+
+	/*
+	 * The packet data path. Seven register windows, where cezanne's MT6885
+	 * driver maps five (vendor hif/dpmaif_reg.h:52-90 with MT6297
+	 * undefined): the AP's AO group carries uplink at +0 and downlink at
+	 * +0x400, the PD group uplink at +0, downlink at +0x100 and the AP
+	 * misc block at +0x400, then the modem's own view and the SRAM.
+	 * Interrupt GIC SPI 199 (level high), not cezanne's 209.
+	 */
+	dpmaif: dpmaif@10014000 {
+		compatible = "xiaomi,rosemary-dpmaif";
+		status = "okay";
+
+		reg = <0 0x10014000 0 0x1000>,	/* AP AO: UL and DL */
+		      <0 0x1022d000 0 0x1000>,	/* AP PD: UL, DL and MISC */
+		      <0 0x1022c000 0 0x1000>,	/* the modem's own view */
+		      <0 0x1022e000 0 0x1000>;	/* SRAM */
+		reg-names = "ao-ul", "pd-ul", "pd-md-misc", "sram";
+
+		interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "dpmaif";
+
+		clocks = <&infracfg CLK_INFRA_DPMAIF>,
+			 <&topckgen CLK_TOP_DPMAIF>;
+		clock-names = "infra-dpmaif", "top-dpmaif";
+
+		/*
+		 * 6, not cezanne's 14: the higher capability bits select the
+		 * MT6297-only BAT/PIT reorder workarounds, which this chip does
+		 * not have (vendor dpmaif_reg.h gates them on #ifdef MT6297).
+		 */
+		mediatek,dpmaif-capability = <6>;
 	};
 };

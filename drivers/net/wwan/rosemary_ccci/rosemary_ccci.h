@@ -34,6 +34,7 @@
 
 struct ccci_md;
 struct wwan_port;
+struct ccci_dpmaif;
 
 /* ---- CCIF, the control transport (AP side) ---------------------------- */
 
@@ -333,6 +334,8 @@ struct ccci_md {
 	int num_ports;
 	struct mutex ports_lock;
 	dev_t devt;
+
+	struct ccci_dpmaif *dp;		/* the packet data path */
 };
 
 enum ccci_state {
@@ -384,6 +387,12 @@ void ccci_ports_exit(struct ccci_md *md);
 void ccci_ports_online(struct ccci_md *md, bool on);
 bool ccci_port_recv(struct ccci_md *md, const struct ccci_header *h,
 		    const void *pkt, size_t len);
+
+/* dpmaif.c */
+int rosemary_ccci_dpmaif_init(struct ccci_md *md);
+void rosemary_ccci_dpmaif_exit(struct ccci_md *md);
+int ccci_dpmaif_start(struct ccci_md *md);
+void ccci_dpmaif_stop(struct ccci_md *md);
 
 /* core.c */
 void ccci_recv_control(struct ccci_md *md, const struct ccci_header *h,

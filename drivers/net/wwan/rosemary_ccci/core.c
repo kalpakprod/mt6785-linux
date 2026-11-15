@@ -318,6 +318,13 @@ static int md_boot(struct ccci_md *md)
 	ret = clk_bulk_prepare_enable(md->num_clks, md->clks);
 	if (ret)
 		goto err_off;
+	/*
+	 * The data path starts before the modem (the vendor is in
+	 * BOOT_WAITING_FOR_HS1 here), and a modem without one never reaches its
+	 * second handshake -- so a failure is reported and the boot goes on.
+	 */
+	if (ccci_dpmaif_start(md))
+		dev_warn(md->dev, "no packet data path\n");
 	ret = md_power_seq_prepare(md);
 	if (ret)
 		goto err_clk;
@@ -381,6 +388,7 @@ static int md_boot(struct ccci_md *md)
 err_seq:
 	md_power_seq_release(md);
 err_clk:
+	ccci_dpmaif_stop(md);
 	clk_bulk_disable_unprepare(md->num_clks, md->clks);
 err_off:
 	ccci_set_state(md, MD_STATE_OFF);
@@ -607,6 +615,10 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	ret = ccci_ports_init(md);
 	if (ret)
 		return dev_err_probe(dev, ret, "the modem's channels\n");
+
+	ret = rosemary_ccci_dpmaif_init(md);
+	if (ret)
+		dev_warn(dev, "no packet data path: %d\n", ret);
 
 	dev_info(dev, "probed: stop_after %s, the modem stays %s until userspace boots it\n",
 		 stop_after ?: "?", state_names[md->state]);
