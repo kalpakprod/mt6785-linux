@@ -87,11 +87,42 @@ static struct ccci_ringbuf *ring_create(void *buf, u32 rx, u32 tx)
  * exception rings in CCISM_MCU_EXP, at the vendor's offsets for this
  * generation (rosemary_ccci.h: NC_CCISM_MCU, NC_CCISM_MCU_EXP).
  */
-int ccci_ccif_init(struct ccci_md *md)
+/* the bytes the two ring areas need, computed from the tables above */
+static u32 ring_area_size(const u16 *rx, const u16 *tx)
 {
-	void *buf = md->nc + NC_CCISM_MCU;
+	u32 total = 0;
 	int i;
 
+	for (i = 0; i < CCIF_QUEUES; i++)
+		total += RINGBUF_CTL_LEN + (rx[i] + tx[i]) * 1024;
+	return total;
+}
+
+int ccci_ccif_init(struct ccci_md *md)
+{
+	void *buf;
+	u32 need;
+	int i;
+
+	/*
+	 * Both ring areas are written blind, so both are bounds-checked first:
+	 * a ring that does not fit its region is not built at all, with the
+	 * reason in the log, instead of running off the end of the mapping.
+	 */
+	need = ring_area_size(rx_kib, tx_kib);
+	if (!md->nc || NC_CCISM_MCU + need > md->nc_size) {
+		dev_err(md->dev, "the CCIF rings need %#x at %#x, outside the mapped %#llx\n",
+			need, NC_CCISM_MCU, (u64)md->nc_size);
+		return -EINVAL;
+	}
+	need = ring_area_size(rx_exp_kib, tx_exp_kib);
+	if (NC_CCISM_MCU_EXP + need > md->nc_size) {
+		dev_err(md->dev, "the CCIF exception rings need %#x at %#x, outside the mapped %#llx\n",
+			need, NC_CCISM_MCU_EXP, (u64)md->nc_size);
+		return -EINVAL;
+	}
+
+	buf = md->nc + NC_CCISM_MCU;
 	md->rings_size = 0;
 	for (i = 0; i < CCIF_QUEUES; i++) {
 		u32 rx = rx_kib[i] * 1024, tx = tx_kib[i] * 1024;
