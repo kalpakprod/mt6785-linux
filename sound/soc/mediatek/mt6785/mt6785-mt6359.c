@@ -51,6 +51,29 @@ SND_SOC_DAILINK_DEFS(capture,
 						   "mt6359-snd-codec-aif2")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+/*
+ * The board's own jacks and microphones. The codec has the electrical ends of
+ * these paths ("Headphone L"/"Headphone R", "AIN0"/"AIN1"/"AIN2", "LINEOUT L",
+ * "Receiver"); these widgets are the physical connectors the board's
+ * audio-routing hangs those ends on.
+ */
+static const struct snd_soc_dapm_widget mt6785_mt6359_widgets[] = {
+	SND_SOC_DAPM_HP("Headphone Jack", NULL),
+	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+	SND_SOC_DAPM_MIC("Main Mic", NULL),
+	SND_SOC_DAPM_MIC("Second Mic", NULL),
+};
+
+static const struct snd_soc_dapm_route mt6785_mt6359_routes[] = {
+	/* the codec's analog outputs feed the two side paths */
+	{ "Headphone Jack", NULL, "Headphone L" },
+	{ "Headphone Jack", NULL, "Headphone R" },
+	/* and the three microphones feed the codec's analog inputs */
+	{ "AIN1", NULL, "Headset Mic" },
+	{ "AIN0", NULL, "Main Mic" },
+	{ "AIN2", NULL, "Second Mic" },
+};
+
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_component *cmpnt_codec =
@@ -93,6 +116,10 @@ static struct snd_soc_card mt6785_mt6359_card = {
 	.owner = THIS_MODULE,
 	.dai_link = mt6785_mt6359_dai_links,
 	.num_links = ARRAY_SIZE(mt6785_mt6359_dai_links),
+	.dapm_widgets = mt6785_mt6359_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(mt6785_mt6359_widgets),
+	.dapm_routes = mt6785_mt6359_routes,
+	.num_dapm_routes = ARRAY_SIZE(mt6785_mt6359_routes),
 };
 
 /*
