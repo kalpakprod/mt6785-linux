@@ -32,6 +32,10 @@ properties:
     description:
       External clock (XCLK) of the sensor.
 
+  clock-names:
+    items:
+      - const: xclk
+
   avdd-supply:
     description:
       Analog power supply, 2.8 V.

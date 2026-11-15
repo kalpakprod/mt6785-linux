@@ -28,6 +28,10 @@ properties:
   clocks:
     maxItems: 1
 
+  clock-names:
+    items:
+      - const: xclk
+
   avdd-supply:
     description: Analog voltage supply, 2.8 volts
 

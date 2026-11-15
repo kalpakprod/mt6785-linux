@@ -29,6 +29,10 @@ properties:
     maxItems: 1
     description: External clock (XCLK) of the sensor.
 
+  clock-names:
+    items:
+      - const: xclk
+
   avdd-supply:
     description: Analog power supply.
 
