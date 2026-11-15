@@ -219,7 +219,7 @@ static int tag_u32(struct ccci_md *md, const char *name, u32 *val)
  * field through the raw bytes so a padding difference cannot shift the
  * addresses.
  */
-tags_read_md_mem(struct ccci_md *md)
+static void tags_read_md_mem(struct ccci_md *md)
 {
 	u8 buf[32];
 	int ret;
