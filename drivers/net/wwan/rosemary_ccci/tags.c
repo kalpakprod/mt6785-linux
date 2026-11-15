@@ -380,8 +380,8 @@ int rosemary_ccci_tags_init(struct ccci_md *md)
 	version = readl(md->tags + LK_INFO_VERSION);
 	tag_num = readl(md->tags + LK_INFO_TAG_NUM);
 	ld_flag = readl(md->tags + LK_INFO_LD_FLAG);
-	dev_info(md->dev, "lk info at %#llx + %#x: version %u, %u tags, ld_flag %u, err %u\n",
-		 md->tag_base, md->tag_size, version, tag_num, ld_flag, err_no);
+	dev_info(md->dev, "lk info at %#llx + %#llx: version %u, %u tags, ld_flag %u, err %u\n",
+		 md->tag_base, (u64)md->tag_size, version, tag_num, ld_flag, err_no);
 	if (version < LK_VERSION_V2) {
 		dev_err(md->dev, "tag version %u is older than the 64-byte-name format\n",
 			version);
@@ -400,7 +400,7 @@ int rosemary_ccci_tags_init(struct ccci_md *md)
 	else {
 		md->nc_phys = base;
 		md->nc_size = size;
-		dev_info(md->dev, "ap_md_nc_smem %#llx + %#x\n", base, size);
+		dev_info(md->dev, "ap_md_nc_smem %#llx + %#llx\n", base, (u64)size);
 	}
 	ret = region_lookup(md, "ap_md_c_smem", &base, &size);
 	if (ret)
@@ -408,13 +408,13 @@ int rosemary_ccci_tags_init(struct ccci_md *md)
 	else {
 		md->c_phys = base;
 		md->c_size = size;
-		dev_info(md->dev, "ap_md_c_smem %#llx + %#x\n", base, size);
+		dev_info(md->dev, "ap_md_c_smem %#llx + %#llx\n", base, (u64)size);
 	}
 	ret = region_lookup(md, "md_mem_usage", &base, &size);
 	if (ret)
 		dev_err(md->dev, "no md_mem_usage reservation (%d)\n", ret);
 	else
-		dev_info(md->dev, "md_mem_usage %#llx + %#x\n", base, size);
+		dev_info(md->dev, "md_mem_usage %#llx + %#llx\n", base, (u64)size);
 
 	tags_read_md_mem(md);
 	tags_read_smem_layout(md);
