@@ -118,6 +118,12 @@
  * (`MCLK_STATE_ENABLE_4MA` in camera_hw/mclk/mclk.c, drive-strength 1 in the
  * vendor DT). Mainline's mediatek pinctrl wants a mA value, so 4 follows.
  *
+ * Which CAMTG drives which pin is not stated by any source we have: the vendor
+ * DT only muxes the pins to CMMCLK0..4 and hands a timer-generator index in
+ * from userspace at runtime (ACDK_SENSOR_MCLK_STRUCT.TG in seninf_clk.c). The
+ * nodes therefore follow one rule - CMMCLKn is driven by clock CAMTG(n+1) -
+ * and the phone check in the report settles whether the rule is right.
+ *
  * The reset lines are deliberately absent: each sensor driver claims its own
  * reset GPIO as a descriptor and drives it, and a pinctrl state that also
  * drives the same pad would fight it.
@@ -216,9 +222,9 @@
 		compatible = "ovti,ov13b10";
 		reg = <0x36>;
 
-		clocks = <&topckgen CLK_TOP_CAMTG2>;
+		clocks = <&topckgen CLK_TOP_CAMTG3>;
 		clock-names = "xclk";
-		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG3>;
 		assigned-clock-rates = <24000000>;
 
 		avdd-supply = <&cam_avdd1>;
@@ -255,9 +261,9 @@
 		compatible = "sony,imx355";
 		reg = <0x1a>;
 
-		clocks = <&topckgen CLK_TOP_CAMTG3>;
+		clocks = <&topckgen CLK_TOP_CAMTG4>;
 		clock-names = "xclk";
-		assigned-clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG4>;
 		assigned-clock-rates = <24000000>;
 
 		avdd-supply = <&cam_avdd1>;
@@ -297,9 +303,13 @@
 		compatible = "galaxycore,gc02m1";
 		reg = <0x37>;
 
-		clocks = <&topckgen CLK_TOP_CAMTG1>;
+		/*
+		 * CMMCLK1, so CAMTG2 under the same rule as the others: the
+		 * mux whose index matches the pin's CMMCLKn function.
+		 */
+		clocks = <&topckgen CLK_TOP_CAMTG2>;
 		clock-names = "xclk";
-		assigned-clocks = <&topckgen CLK_TOP_CAMTG1>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
 		assigned-clock-rates = <24000000>;
 
 		avdd-supply = <&cam_avdd1>;
@@ -525,9 +535,9 @@
 		compatible = "ovti,ov64b40";
 		reg = <0x10>;
 
-		clocks = <&topckgen CLK_TOP_CAMTG>;
+		clocks = <&topckgen CLK_TOP_CAMTG1>;
 		clock-names = "xclk";
-		assigned-clocks = <&topckgen CLK_TOP_CAMTG>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG1>;
 		assigned-clock-rates = <24000000>;
 
 		avdd-supply = <&cam_avdd2>;
