@@ -60,6 +60,16 @@ config VIDEO_AR0521
 	  To compile this driver as a module, choose M here: the
 	  module will be called ar0521.
 
+config VIDEO_GC02M1
+	tristate "GalaxyCore gc02m1 sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the GalaxyCore gc02m1
+	  camera, a 2 megapixel sensor with a single MIPI CSI-2 lane.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called gc02m1.
+
 config VIDEO_GC0308
 	tristate "GalaxyCore GC0308 sensor support"
 	select V4L2_CCI_I2C
