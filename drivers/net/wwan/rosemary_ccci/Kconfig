@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# MediaTek MT6785 (Poco M5s / rosemary) modem: CCCI over CCIF.
+
+config ROSEMARY_CCCI
+	tristate "MediaTek MT6785 modem (CCCI over CCIF, Poco M5s)"
+	depends on ARCH_MEDIATEK
+	help
+	  The MediaTek MT6785 has a second processor for the modem (MD1,
+	  generation 6295) that the AP reaches only through the CCIF control
+	  transport and the DPMAIF packet transport. This driver powers the
+	  modem's MTCMOS domain, reads the memory layout the bootloader hands
+	  over, restarts the modem, answers its boot handshakes and exposes its
+	  channels: the AT port, the NVRAM file service, the RPC service and
+	  the packet data netdevs.
+
+	  Say M here for the Poco M5s port. If unsure, say N.
