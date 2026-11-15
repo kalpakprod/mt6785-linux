@@ -507,7 +507,7 @@ static int md_map_regs(struct ccci_md *md)
 	md->infra = devm_ioremap(md->dev, INFRA_PHYS, 0x1000);
 	md->spm = devm_ioremap(md->dev, SPM_PHYS, 0x1000);
 	md->sec_ao = devm_ioremap(md->dev, SEC_AO_PHYS, 0x1000);
-	md->pll = devm_ioremap(md->dev, MD_PLL_PHYS, 0x400);
+	md->pll = devm_ioremap(md->dev, MD_PLL_PHYS, 0x1000);
 	md->boot_vector = devm_ioremap(md->dev, MD_BOOT_VECTOR_PHYS, 4);
 	if (!md->infra || !md->spm || !md->sec_ao || !md->pll || !md->boot_vector)
 		return -ENOMEM;
