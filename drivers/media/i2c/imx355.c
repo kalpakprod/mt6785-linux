@@ -945,6 +945,8 @@ static int imx355_identify_module(struct imx355 *imx355)
 			IMX355_CHIP_ID, val);
 		return -EIO;
 	}
+
+	dev_info(imx355->dev, "IMX355 chip id 0x%llx\n", val);
 	return 0;
 }
 

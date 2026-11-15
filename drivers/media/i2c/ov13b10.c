@@ -1251,6 +1251,7 @@ static int ov13b10_identify_module(struct ov13b10 *ov13b)
 	}
 
 	ov13b->identified = true;
+	dev_info(ov13b->dev, "OV13B10 chip id 0x%x\n", val);
 
 	return 0;
 }
