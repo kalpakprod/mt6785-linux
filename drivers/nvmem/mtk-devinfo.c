@@ -76,6 +76,7 @@ static int mtk_devinfo_probe(struct platform_device *pdev)
 	config.id = NVMEM_DEVID_NONE;
 	config.owner = THIS_MODULE;
 	config.read_only = true;
+	config.add_legacy_fixed_of_cells = true;
 	config.word_size = 1;
 	config.stride = 1;
 	config.size = di->size;

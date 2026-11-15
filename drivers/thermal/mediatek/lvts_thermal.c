@@ -1638,12 +1638,13 @@ static const u32 mt7988_init_cmds[] = {
 /*
  * Vendor mtk_lvts_tc.c with LVTS_DEVICE_AUTO_RCK = 1: counting window 20 us,
  * release the counting state machine, TSV2F/TSBG chopper and trims
- * (lvts_Device_Enable_Init_all_Devices()), then single mode
- * (lvts_tscpu_thermal_initial_all_tc()).
+ * (lvts_Device_Enable_Init_all_Devices()), auto RC calibration
+ * (lvts_device_enable_auto_rck(); without it the samples never become
+ * valid), then single mode (lvts_tscpu_thermal_initial_all_tc()).
  */
 static const u32 mt6785_init_cmds[] = {
 	0x81030420, 0x81030500, 0x81030300, 0x810308C3, 0x8103098D,
-	0x81030C7C, 0x81030AA8, 0x81030B04, 0x810306B8
+	0x81030C7C, 0x81030AA8, 0x81030B04, 0x81030E01, 0x810306B8
 };
 
 static const struct lvts_ctrl_data mt6785_lvts_data_ctrl[] = {
