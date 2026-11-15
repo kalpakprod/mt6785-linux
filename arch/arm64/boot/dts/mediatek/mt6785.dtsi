@@ -1178,6 +1178,7 @@
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
 			clock-div = <5>;
+			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1253,6 +1254,7 @@
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
 			clock-div = <5>;
+			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1340,6 +1342,7 @@
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
 			clock-div = <5>;
+			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
