@@ -17,9 +17,20 @@ description:
   Depending on the SoC model, each PHYs can be either CD-PHY or D-PHY only
   capable.
 
+  On MT6785 the analog receiver block starts at 0x11c80000 and holds one
+  4 KB bank per CSI lane group, CSI0A at 0x11c80000, CSI0B at 0x11c81000,
+  CSI1A at 0x11c82000, CSI1B at 0x11c83000, CSI2A at 0x11c84000 and CSI2B
+  at 0x11c85000 (live device tree of the Poco M5s, nodes
+  mipi_rx_ana_csi0a@11c80000 through mipi_rx_ana_csi2b@11c85000, and the
+  ChromeOS isp_50 seninf register header, which annotates the same
+  window). A node covers the A and B bank of one CSI port, that is 0x2000
+  bytes from the port's A bank, because the driver drives the B bank at a
+  fixed offset of 0x1000.
+
 properties:
   compatible:
     enum:
+      - mediatek,mt6785-csi-rx
       - mediatek,mt8365-csi-rx
 
   reg:
@@ -74,6 +85,13 @@ examples:
         phy-type = <PHY_TYPE_DPHY>;
         num-lanes = <2>;
         #phy-cells = <0>;
+      };
+
+      csi_rx: phy@11c80000 {
+        compatible = "mediatek,mt6785-csi-rx";
+        reg = <0 0x11c80000 0 0x2000>;
+        num-lanes = <4>;
+        #phy-cells = <1>;
       };
     };
 ...
