@@ -1607,6 +1607,11 @@ static int lvts_resume(struct device *dev)
 
 static const u32 default_conn_cmds[] = { 0xC103FFFF, 0xC502FF55 };
 static const u32 mt7988_conn_cmds[] = { 0xC103FFFF, 0xC502FC55 };
+/*
+ * MT6785 sensing devices take the 0x81 write prefix (vendor
+ * mtk_lvts_tc.c lvts_device_identification(): reset all, read the ID).
+ */
+static const u32 mt6785_conn_cmds[] = { 0x8103FFFF, 0x8502FF55 };
 
 /*
  * Write device mask: 0xC1030000
@@ -1628,6 +1633,17 @@ static const u32 mt7988_init_cmds[] = {
 	0xC1030300, 0xC1030420, 0xC1030500, 0xC10307A6, 0xC1030CFC,
 	0xC1030A8C, 0xC103098D, 0xC10308F1, 0xC1030B04, 0xC1030E01,
 	0xC10306B8
+};
+
+/*
+ * Vendor mtk_lvts_tc.c with LVTS_DEVICE_AUTO_RCK = 1: counting window 20 us,
+ * release the counting state machine, TSV2F/TSBG chopper and trims
+ * (lvts_Device_Enable_Init_all_Devices()), then single mode
+ * (lvts_tscpu_thermal_initial_all_tc()).
+ */
+static const u32 mt6785_init_cmds[] = {
+	0x81030420, 0x81030500, 0x81030300, 0x810308C3, 0x8103098D,
+	0x81030C7C, 0x81030AA8, 0x81030B04, 0x810306B8
 };
 
 static const struct lvts_ctrl_data mt6785_lvts_data_ctrl[] = {
@@ -2077,11 +2093,17 @@ static const struct lvts_platform_ops lvts_platform_ops_mt8196 = {
 
 static const struct lvts_data mt6785_lvts_data = {
 	.lvts_ctrl	= mt6785_lvts_data_ctrl,
+	.conn_cmd	= mt6785_conn_cmds,
+	.init_cmd	= mt6785_init_cmds,
 	.num_lvts_ctrl	= ARRAY_SIZE(mt6785_lvts_data_ctrl),
+	.num_conn_cmd	= ARRAY_SIZE(mt6785_conn_cmds),
+	.num_init_cmd	= ARRAY_SIZE(mt6785_init_cmds),
 	.temp_factor	= LVTS_COEFF_A_MT7988,
 	.temp_offset	= LVTS_COEFF_B_MT7988,
 	.gt_calib_bit_offset = 0,
 	.def_calibration = 19000,
+	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
+	.ops = &lvts_platform_ops_mt7988,
 };
 
 static const struct lvts_data mt7987_lvts_ap_data = {
