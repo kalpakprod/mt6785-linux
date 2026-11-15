@@ -432,3 +432,46 @@
 	};
 };
 
+
+/* ------------------------------------------------------- autofocus VCM */
+
+/*
+ * The main camera has a voice-coil autofocus actuator on I2C2 at 7-bit 0x0c
+ * (live DT camera_main_af@0c; study section 1.1), behind its own 2.8 V switch
+ * on GPIO34 (live DT cam0_ldo_vcamaf_0/1, and the vendor lens driver's
+ * AF_PINCTRL_STATE_HWEN_HIGH "cam0_ldo_vcamaf_1" plus its
+ * regulator_set_voltage(vcamaf, 2800000, 2800000), drivers/misc/mediatek/
+ * lens/main_lens.c).
+ *
+ * The node is deliberately disabled and carries no compatible yet: which
+ * Dongwoon part it is (DW9719, DW9761, DW9800K, ...) is not in any of our
+ * sources. The vendor lens framework does not identify the chip either - it
+ * picks a driver by name, handed in from userspace (main_lens.c
+ * AF_SetMotorName(), the g_stAF_DrvList table with 40-odd entries). The
+ * mainline dw9719 driver, by contrast, reads the chip's IC-info register at
+ * probe (0xf1 = DW9719, 0xf4 = DW9761) and rejects a mismatch, so the
+ * compatible must be the part that answers, not a guess.
+ *
+ * What settles it, on the phone, is one register read while the AF rail is up:
+ *   i2cget -y 2 0x0c 0x00        (DW9719 family: the info byte at 0x00)
+ * A value of 0xf1 means dongwoon,dw9719, 0xf4 means dongwoon,dw9761. The
+ * check is listed in the report. Until then this node stays disabled with the
+ * switch described, so the rail and the pin are not lost.
+ */
+&i2c2 {
+	cam_af_switch: regulator-cam-af {
+		compatible = "regulator-fixed";
+		regulator-name = "cam0_ldo_vcamaf";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&pio 34 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&cam_avdd1>;
+	};
+
+	vcm: lens@c {
+		reg = <0x0c>;
+		vdd-supply = <&cam_af_switch>;
+		status = "disabled";
+	};
+};
