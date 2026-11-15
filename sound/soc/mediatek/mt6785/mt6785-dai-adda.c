@@ -928,15 +928,15 @@ static const struct snd_soc_dapm_widget mtk_dai_adda_widgets[] = {
 	SND_SOC_DAPM_OUTPUT("STF_OUTPUT"),
 
 	/* clock */
-	SND_SOC_DAPM_CLOCK_SUPPLY("top_mux_audio_h"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("top_audio_hires"),
 
-	SND_SOC_DAPM_CLOCK_SUPPLY("aud_dac_clk"),
-	SND_SOC_DAPM_CLOCK_SUPPLY("aud_dac_predis_clk"),
-	SND_SOC_DAPM_CLOCK_SUPPLY("aud_3rd_dac_clk"),
-	SND_SOC_DAPM_CLOCK_SUPPLY("aud_3rd_dac_predis_clk"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("aud_dac"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("aud_dac_predis"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("aud_3rd_dac"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("aud_3rd_dac_predis"),
 
-	SND_SOC_DAPM_CLOCK_SUPPLY("aud_adc_clk"),
-	SND_SOC_DAPM_CLOCK_SUPPLY("aud_adda6_adc_clk"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("aud_adc"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("aud_adda6_adc"),
 };
 
 static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
@@ -1048,14 +1048,14 @@ static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
 	{"ADDA CH34 Playback", NULL, "Sidetone Filter"},
 
 	/* clk */
-	{"ADDA Playback", NULL, "aud_dac_clk"},
-	{"ADDA Playback", NULL, "aud_dac_predis_clk"},
+	{"ADDA Playback", NULL, "aud_dac"},
+	{"ADDA Playback", NULL, "aud_dac_predis"},
 
-	{"ADDA CH34 Playback", NULL, "aud_3rd_dac_clk"},
-	{"ADDA CH34 Playback", NULL, "aud_3rd_dac_predis_clk"},
+	{"ADDA CH34 Playback", NULL, "aud_3rd_dac"},
+	{"ADDA CH34 Playback", NULL, "aud_3rd_dac_predis"},
 
-	{"ADDA Capture Enable", NULL, "aud_adc_clk"},
-	{"ADDA CH34 Capture Enable", NULL, "aud_adda6_adc_clk"},
+	{"ADDA Capture Enable", NULL, "aud_adc"},
+	{"ADDA CH34 Capture Enable", NULL, "aud_adda6_adc"},
 };
 
 /* dai ops */

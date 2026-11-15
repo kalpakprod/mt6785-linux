@@ -76,14 +76,26 @@ static int aw8622_start(struct aw8622_haptic *haptic, u16 level)
 
 	pwm_init_state(haptic->pwm, &state);
 	state.period = haptic->period_ns;
-	state.duty_cycle = mul_u64_u32_div(haptic->period_ns, level,
-					   AW8622_MAX_MAGNITUDE);
 	/*
-	 * A duty cycle of zero is no drive at all, so never let a non-zero
-	 * request round down to it.
+	 * The actuator is driven by a square wave at its resonance frequency and
+	 * follows the AC part of it: half a period is the strongest drive, no
+	 * drive and a constant level are both silence, and strength falls away
+	 * on either side of 50 %. Measured on the phone with a debugfs look at
+	 * this PWM while an FF_RUMBLE played (15.11): a magnitude of 0xffff gave
+	 * "4807692/4807692 ns" - 100 % duty, a constant level - and the owner
+	 * felt nothing, twice; 0x8000 gave "2403882/4807692 ns" - 50 % - and he
+	 * felt the vibration. The vendor driver runs the same way: its
+	 * aw8622_set_pwm_defalut_state() programs a fixed 50 % duty
+	 * (THRESH = clock / (frequency * 2)) and leaves the strength to the
+	 * waveform it plays.
+	 *
+	 * So the magnitude is mapped onto 0..50 % of the period, and a request
+	 * that rounds below the PWM's smallest step still has to move something.
 	 */
-	if (!state.duty_cycle)
-		state.duty_cycle = haptic->period_ns / 2;
+	state.duty_cycle = div_u64(haptic->period_ns * level,
+				   2 * AW8622_MAX_MAGNITUDE);
+	if (level && !state.duty_cycle)
+		state.duty_cycle = haptic->period_ns / 100;
 	state.enabled = true;
 
 	ret = pwm_apply_might_sleep(haptic->pwm, &state);

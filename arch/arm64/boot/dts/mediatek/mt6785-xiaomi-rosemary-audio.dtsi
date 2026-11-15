@@ -67,32 +67,31 @@
 /* ------------------------------------------------------------ volume keys */
 
 /*
- * The two volume keys are plain GPIOs on the pins the SoC's keypad block (KPD)
- * would otherwise scan. Begonia — the same MT6785 and the only other board of
- * this SoC described upstream — reads exactly these two pins through gpio-keys
- * with this pinctrl group, and that works, so the same description is used
- * here instead of writing a driver for the keypad block.
+ * Volume down is the only key on a GPIO. The owner pressed it on the phone
+ * while the lead logged (15.11): evtest on this device reported KEY_VOLUMEUP,
+ * but /proc/interrupts showed `mt-eint 59 Volume Up` counting up and
+ * `mt-eint 60 Volume Down` staying at zero, and nothing was ever seen on
+ * GPIO60. So the GPIO is GPIO59 and the key it carries is volume *down*; the
+ * label of that interrupt is the vendor's, not the measurement.
  *
- * What the phone's own sources say about the pins:
- *  - the SoC's pin functions put GPIO59 on KPCOL0 and GPIO60 on KPCOL1
- *    [K: include/dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h], which is the
- *    keypad matrix wiring the vendor kernel relies on;
- *  - on the stock phone the keys do come from the keypad block: the device
- *    list has the input device "mtk-kpd" as event2 [L:
- *    device-dump-2026-11-13/stock/hw-inventory.txt], the vendor key map puts
- *    KEY_VOLUMEDOWN (114) at hardware key 0 and KEY_VOLUMEUP (115) at
- *    hardware key 17 (the reset/download key) [L: device-tree.dts, keypad
- *    node, mediatek,kpd-hw-init-map and mediatek,kpd-sw-rstkey], and the
- *    loader reads the same key 17 to offer fastboot;
- *  - the only pin the stock tree muxes for the keypad is GPIO80 as
- *    BPI_BUS8 [L: device-tree.dts, kpdgpiodefault, pinmux 0x5001; V:
- *    rosemary.dts kpd_pins_default]. There is no pinmux setting for GPIO59 or
- *    GPIO60 anywhere in the live tree (no 0x3b01/0x3c01 cell, and no
- *    gpio_usage_mapping entry for either pin), so the pins sit in whatever
- *    state the loader left them in and the kernel has to mux them itself —
- *    which is what the group below does, exactly as begonia's does.
+ * Volume up is not a GPIO at all: held down for three seconds it moved the
+ * MT6359's TOPSTATUS (0x2a) from 0x000e to 0x0006 — the HOMEKEY_DEB bit — while
+ * neither GPIO interrupt moved. That is the PMIC's home key, which the stock
+ * key map also calls the reset key (hardware key 17), and it is described on the
+ * board's `keys` node below.
  *
- * Numbers: GPIO60 is volume down and GPIO59 volume up, active low.
+ * The pins are the keypad matrix's column pins in the SoC's pin functions
+ * (GPIO59 = KPCOL0) [K: include/dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h],
+ * which is why the key comes out of a matrix scan on the stock phone (the
+ * device list has the input device "mtk-kpd" as event2 [L:
+ * device-dump-2026-11-13/stock/hw-inventory.txt], and the vendor key map puts
+ * KEY_VOLUMEDOWN at hardware key 0 [L: device-tree.dts, keypad node]). The stock
+ * tree muxes nothing for GPIO59 itself (no 0x3b01/0x3c01 cell, no
+ * gpio_usage_mapping entry), so the kernel has to mux it, which is what the
+ * group below does, as begonia's does for the same pins.
+ *
+ * Numbers: GPIO59 is volume down, active low. GPIO60 is not described: no
+ * source and no measurement shows anything wired to it.
  */
 &{/} {
 	volume_buttons: volume-buttons {
@@ -105,14 +104,6 @@
 			linux,code = <KEY_VOLUMEDOWN>;
 			debounce-interval = <100>;
 
-			gpios = <&pio 60 GPIO_ACTIVE_LOW>;
-		};
-
-		button-volume-up {
-			label = "Volume Up";
-			linux,code = <KEY_VOLUMEUP>;
-			debounce-interval = <100>;
-
 			gpios = <&pio 59 GPIO_ACTIVE_LOW>;
 		};
 	};
@@ -121,10 +112,21 @@
 &pio {
 	volume_button_pins: volume-button-pins {
 		pins-volume {
-			pinmux = <PINMUX_GPIO59__FUNC_KPCOL0>,
-				 <PINMUX_GPIO60__FUNC_KPCOL1>;
+			pinmux = <PINMUX_GPIO59__FUNC_KPCOL0>;
 			input-enable;
 		};
+	};
+};
+
+/*
+ * Volume up, on the PMIC's home key. The board's keys node already describes the
+ * power key; this adds the second child, which mtk-pmic-keys takes in order and
+ * matches to the PMIC's "homekey" interrupt.
+ */
+&{/soc/pwrap@1000d000/pmic/keys} {
+	home {
+		linux,keycodes = <KEY_VOLUMEUP>;
+		wakeup-source;
 	};
 };
 
@@ -395,6 +397,13 @@
 			 <&audsys CLK_AUD_APLL_TUNER>,
 			 <&audsys CLK_AUD_APLL2_TUNER>,
 			 <&audsys CLK_AUD_NLE>,
+			 <&audsys CLK_AUD_TDM>,
+			 <&audsys CLK_AUD_DAC>,
+			 <&audsys CLK_AUD_DAC_PREDIS>,
+			 <&audsys CLK_AUD_ADC>,
+			 <&audsys CLK_AUD_3RD_DAC>,
+			 <&audsys CLK_AUD_3RD_DAC_PREDIS>,
+			 <&audsys CLK_AUD_ADDA6_ADC>,
 			 <&infracfg CLK_INFRA_AUDIO>,
 			 <&infracfg CLK_INFRA_AUDIO_26M>,
 			 <&topckgen CLK_TOP_AUDIO>,
@@ -424,6 +433,9 @@
 			 <&clk26m>;
 		clock-names = "aud_afe", "aud_tml", "aud_22m", "aud_24m",
 			      "aud_apll_tuner", "aud_apll2_tuner", "aud_nle",
+			      "aud_tdm", "aud_dac", "aud_dac_predis", "aud_adc",
+			      "aud_3rd_dac", "aud_3rd_dac_predis",
+			      "aud_adda6_adc",
 			      "infra_audio", "infra_audio_26m",
 			      "top_audio", "top_audio_intbus", "top_audio1",
 			      "apll1", "top_audio2", "apll2",
@@ -459,11 +471,6 @@
 
 		audio-routing =
 			"Spk Amp", "LINEOUT L",
-			"Rcv Amp", "Receiver",
-			"Headphone Jack", "Headphone L",
-			"Headphone Jack", "Headphone R",
-			"Headset Mic", "AIN1",
-			"Main Mic", "MICBIAS1",
-			"Second Mic", "MICBIAS2";
+			"Rcv Amp", "Receiver";
 	};
 };
