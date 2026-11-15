@@ -246,12 +246,18 @@ static int ft3418_probe(struct i2c_client *client)
 	 * loader left them.
 	 */
 	ts->vdd = devm_regulator_get_optional(dev, "vdd");
-	if (IS_ERR(ts->vdd))
-		return dev_err_probe(dev, PTR_ERR(ts->vdd), "vdd supply\n");
+	if (IS_ERR(ts->vdd)) {
+		if (PTR_ERR(ts->vdd) != -ENODEV)
+			return dev_err_probe(dev, PTR_ERR(ts->vdd), "vdd supply\n");
+		ts->vdd = NULL;
+	}
 
 	ts->iovdd = devm_regulator_get_optional(dev, "iovdd");
-	if (IS_ERR(ts->iovdd))
-		return dev_err_probe(dev, PTR_ERR(ts->iovdd), "iovdd supply\n");
+	if (IS_ERR(ts->iovdd)) {
+		if (PTR_ERR(ts->iovdd) != -ENODEV)
+			return dev_err_probe(dev, PTR_ERR(ts->iovdd), "iovdd supply\n");
+		ts->iovdd = NULL;
+	}
 
 	ts->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ts->reset_gpio))
