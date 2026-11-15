@@ -43,6 +43,8 @@
 	clocks = <&topckgen CLK_TOP_SCP>, <&infracfg CLK_INFRA_SCP>;
 	clock-names = "main", "infra";
 	mediatek,infracfg = <&infracfg>;
+	/* the share memory below, where the hub's FIFO and the logger live */
+	memory-region = <&scp_share>;
 
 	/* read by the bootloader, not by Linux */
 	core_1 = "enable";
