@@ -653,10 +653,9 @@ static void mtk_dsi_irq_data_clear(struct mtk_dsi *dsi, u32 irq_bit)
 }
 
 /*
- * Printed only when an IRQ wait times out, and only with dynamic debug on for
- * this file (`echo 'file mtk_dsi.c +p' > /sys/kernel/debug/dynamic_debug/control`):
- * the engine state at the moment the wait failed, which a register dump taken
- * afterwards cannot show.
+ * Printed on every IRQ wait timeout. Right now unconditionally (dev_info),
+ * because a trial that dies before userspace cannot switch on dynamic debug;
+ * it goes back to dev_dbg once the display path is proven. Temporary on purpose.
  */
 static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
 {
@@ -683,21 +682,21 @@ static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
 	};
 	int i;
 
-	dev_dbg(dsi->dev, "dsi timed out, engine state:\n");
+	dev_info(dsi->dev, "dsi timed out, engine state:\n");
 
 	for (i = 0; i < ARRAY_SIZE(regs); i++)
-		dev_dbg(dsi->dev, "  %-16s 0x%08x\n", regs[i].name,
-			readl(dsi->regs + regs[i].off));
+		dev_info(dsi->dev, "  %-16s 0x%08x\n", regs[i].name,
+			 readl(dsi->regs + regs[i].off));
 
 	/* the engine's own read-back of what it is doing */
 	for (i = 0; i < 9; i++)
-		dev_dbg(dsi->dev, "  STATE_DBG%d      0x%08x\n", i,
-			readl(dsi->regs + DSI_STATE_DBG0 + 4 * i));
+		dev_info(dsi->dev, "  STATE_DBG%d      0x%08x\n", i,
+			 readl(dsi->regs + DSI_STATE_DBG0 + 4 * i));
 
 	/* the packet the engine was handed, as it sits in the command queue */
 	for (i = 0; i < 4; i++)
-		dev_dbg(dsi->dev, "  CMDQ[%d]          0x%08x\n", i,
-			readl(dsi->regs + dsi->driver_data->reg_cmdq_off + 4 * i));
+		dev_info(dsi->dev, "  CMDQ[%d]          0x%08x\n", i,
+			 readl(dsi->regs + dsi->driver_data->reg_cmdq_off + 4 * i));
 }
 
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
