@@ -358,10 +358,10 @@ static void tags_read_capability(struct ccci_md *md)
 		 type, image_cap, md->md_img_cap);
 	if (image_cap & ~MD_CAP_BOARD_MASK)
 		dev_info(md->dev, "the image offers RATs this board has no hardware for: %#x dropped\n",
-			 image_cap & ~MD_CAP_BOARD_MASK);
+			 (u32)(image_cap & ~MD_CAP_BOARD_MASK));
 	if (md->md_img_cap != MD_CAP_ULWG)
 		dev_warn(md->dev, "expected ulwg (%#x) from ro.vendor.mtk_md1_support=9\n",
-			 MD_CAP_ULWG);
+			 (u32)MD_CAP_ULWG);
 }
 
 /**
