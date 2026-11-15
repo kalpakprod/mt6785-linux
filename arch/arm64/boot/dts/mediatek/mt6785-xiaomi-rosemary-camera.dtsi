@@ -60,10 +60,19 @@
 				regulator-max-microvolt = <1200000>;
 			};
 
+			/*
+			 * dvdd2 feeds only the main camera, whose vendor power
+			 * table asks for DVDD 1.1 V. The output's grid is
+			 * 600 mV + n * 60 mV (the vendor driver's
+			 * VSET_BASE_12/VSET_STEP_MV), so 1.1 V does not exist
+			 * on it: the nearest step below the request, 1.08 V
+			 * (selector 80), is used, which is also what the live
+			 * DT's init voltage 0x100590 = 1.05 V sits next to.
+			 */
 			cam_dvdd2: dvdd2 {
 				regulator-name = "wl2866d_dvdd2";
-				regulator-min-microvolt = <1200000>;
-				regulator-max-microvolt = <1200000>;
+				regulator-min-microvolt = <1080000>;
+				regulator-max-microvolt = <1080000>;
 			};
 
 			cam_avdd1: avdd1 {
@@ -420,6 +429,16 @@
 				};
 			};
 
+			port@3 {
+				reg = <3>;
+
+				seninf_main_in: endpoint {
+					remote-endpoint = <&main_cam_out>;
+					bus-type = <1>;
+					data-lanes = <1 2 3>;
+				};
+			};
+
 			/* cam mux 3: the first capture engine, CAMSV0 */
 			port@5 {
 				reg = <5>;
@@ -459,6 +478,53 @@
  * switch described, so the rail and the pin are not lost.
  */
 &i2c2 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins>;
+
+	/*
+	 * Main camera, OV64B40 at 7-bit 0x10 (vendor .i2c_addr_table
+	 * {0x20, 0x46, 0xff} in 8-bit form), the board's only C-PHY device:
+	 * three trios, which is why the endpoint names bus-type 1.
+	 *
+	 * Rails from the live DT kd_camera_hw1 node: cam0_vcama is avdd2 and
+	 * cam0_vcamd is dvdd2, DOVDD from the PMIC's vcamio LDO. The vendor
+	 * power table wants AVDD 2.8 V, DVDD 1.1 V, and MCLK 24 MHz; its reset
+	 * is GPIO118 and its MCLK pin GPIO116 (camera0_mclk_*@gpio116,
+	 * CMMCLK0, hence CAMTG).
+	 */
+	main_cam: camera@10 {
+		compatible = "ovti,ov64b40";
+		reg = <0x10>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd2>;
+		dvdd-supply = <&cam_dvdd2>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 118 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam0_mclk_pins>;
+
+		status = "okay";
+
+		port {
+			main_cam_out: endpoint {
+				remote-endpoint = <&seninf_main_in>;
+				bus-type = <1>;		/* MIPI CSI-2 C-PHY */
+				data-lanes = <1 2 3>;
+				link-frequencies = /bits/ 64 <570000000>;
+			};
+		};
+	};
+
 	cam_af_switch: regulator-cam-af {
 		compatible = "regulator-fixed";
 		regulator-name = "cam0_ldo_vcamaf";
