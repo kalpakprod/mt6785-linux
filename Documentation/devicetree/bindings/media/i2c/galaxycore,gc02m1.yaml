@@ -37,7 +37,10 @@ properties:
     description: Analog power supply.
 
   dvdd-supply:
-    description: Digital core power supply.
+    description:
+      Digital core power supply. Boards that feed the core from an internal
+      regulator, or from the same rail as AVDD, leave this out - the Poco M5s
+      wires only AVDD and DOVDD to its 2 MP modules.
 
   dovdd-supply:
     description: I/O power supply.
@@ -71,8 +74,6 @@ required:
   - reg
   - clocks
   - avdd-supply
-  - dvdd-supply
-  - dovdd-supply
   - reset-gpios
   - port
 
@@ -95,7 +96,6 @@ examples:
             assigned-clock-rates = <24000000>;
 
             avdd-supply = <&cam_avdd1>;
-            dvdd-supply = <&cam_dvdd1>;
             dovdd-supply = <&mt6359_vcamio_ldo_reg>;
 
             reset-gpios = <&pio 119 GPIO_ACTIVE_LOW>;
