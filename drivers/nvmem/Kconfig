@@ -317,6 +317,16 @@ config NVMEM_MICROCHIP_OTPC
 	  This driver enable the OTP controller available on Microchip SAMA7G5
 	  SoCs. It controls the access to the OTP memory connected to it.
 
+config NVMEM_MTK_DEVINFO
+	tristate "MediaTek eFuse copy from the bootloader (devinfo)"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF
+	help
+	  On MediaTek phones whose eFuse block is readable only from the
+	  secure world, the bootloader passes a copy of the eFuse words in
+	  /chosen "atag,devinfo". This driver exposes it as NVMEM, for
+	  example for the LVTS thermal calibration.
+
 config NVMEM_MTK_EFUSE
 	tristate "Mediatek SoCs EFUSE support"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
