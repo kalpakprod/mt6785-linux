@@ -31,7 +31,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c6_pins>;
 
-	camera_ldo: regulator@28 {
+	regulator@28 {
 		compatible = "willsemi,wl2866d";
 		reg = <0x28>;
 
@@ -100,7 +100,7 @@
  * the pair the sensors below are wired to.
  */
 &{/soc} {
-	csi_rx0: phy@11c80000 {
+	phy@11c80000 {
 		compatible = "mediatek,mt6785-csi-rx";
 		reg = <0 0x11c80000 0 0x2000>;
 		num-lanes = <4>;
@@ -218,7 +218,7 @@
 	 * the vendor's 24 MHz table sets 0x46); see the report. CAMTG cannot
 	 * produce 19.2 MHz on this SoC, so the driver needs the 24 MHz entry.
 	 */
-	front_cam: camera@36 {
+	camera@36 {
 		compatible = "ovti,ov13b10";
 		reg = <0x36>;
 
@@ -257,7 +257,7 @@
 	 * Its endpoint feeds SENINF on the CSI port that pad 1 stands for; the
 	 * link frequency is the driver's own 24 MHz figure (24 MHz * 60 / 4).
 	 */
-	uw_cam: camera@1a {
+	camera@1a {
 		compatible = "sony,imx355";
 		reg = <0x1a>;
 
@@ -299,7 +299,7 @@
 	 * of two candidates"; only the GC02M1 is described until the lead
 	 * confirms what is fitted.
 	 */
-	macro_cam: camera@37 {
+	camera@37 {
 		compatible = "galaxycore,gc02m1";
 		reg = <0x37>;
 
@@ -351,7 +351,7 @@
  * CAMSV IMGO uses on MT6785 is not documented anywhere we have.
  */
 &{/soc} {
-	camsv0: camsv@1a050000 {
+	camsv@1a050000 {
 		compatible = "mediatek,mt6785-camsv";
 		reg = <0 0x1a050000 0 0x1000>;
 		interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;	/* 0x117 - 32 */
@@ -369,7 +369,7 @@
 		};
 	};
 
-	camsv1: camsv@1a051000 {
+	camsv@1a051000 {
 		compatible = "mediatek,mt6785-camsv";
 		reg = <0 0x1a051000 0 0x1000>;
 		interrupts = <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;	/* 0x118 - 32 */
@@ -397,7 +397,7 @@
  * follow the endpoint order, so front is pad 0 and ultrawide is pad 1.
  */
 &{/soc} {
-	seninf: seninf@1a040000 {
+	seninf@1a040000 {
 		compatible = "mediatek,mt6785-seninf";
 		reg = <0 0x1a040000 0 0xa000>,
 		      <0 0x11c80000 0 0xc000>;
@@ -530,7 +530,7 @@
 	 * is GPIO118 and its MCLK pin GPIO116 (camera0_mclk_*@gpio116,
 	 * CMMCLK0, hence CAMTG).
 	 */
-	main_cam: camera@10 {
+	camera@10 {
 		compatible = "ovti,ov64b40";
 		reg = <0x10>;
 
@@ -560,7 +560,7 @@
 		};
 	};
 
-	vcm: lens@c {
+	lens@c {
 		reg = <0x0c>;
 		vdd-supply = <&cam_af_switch>;
 		status = "disabled";
