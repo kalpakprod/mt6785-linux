@@ -82,6 +82,20 @@ enum _ENUM_BTIF_TEST_CASE_ {
 };
 #endif
 
+/*
+ * The PDA ROM-patch download MUST go out through the AP DMA, not PIO: on this
+ * SoC the PIO TX path loses bytes of the patch body, the MCU then never starts
+ * the Wi-Fi CPU and RF calibration hangs forever (study 2-connectivity.md
+ * 4.3, begonia RESULT #11). BTIF_DMA_EN bit 1 is the TX enable, bit 0 the RX
+ * enable; hal_btif_tx_mode_ctrl() writes bit 1 for BTIF_MODE_DMA. Keeping both
+ * at 1 means every STP frame - patch_mcu included - goes through the DMA
+ * engine. Do not set them to 0 to simplify: that is the exact failure this
+ * port exists to avoid.
+ *
+ * RX DMA matters for the same reason: a PIO receive drains two MMIO reads per
+ * byte and loses the tail of 512-byte frames, which is what broke the GPS
+ * bridge on begonia (study 2-connectivity.md 4.5 and 5 step 5).
+ */
 #define ENABLE_BTIF_RX_DMA 1
 #define ENABLE_BTIF_TX_DMA 1
 
