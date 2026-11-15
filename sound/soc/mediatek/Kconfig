@@ -57,6 +57,16 @@ config SND_SOC_MT2701_WM8960
 	  Select Y if you have such device.
 	  If unsure select "N".
 
+config SND_SOC_MT6785_MT6359
+	tristate "ASoC Audio driver for MT6785 with MT6359 codec"
+	depends on SND_SOC_MT6785 && MTK_PMIC_WRAP
+	depends on I2C
+	select SND_SOC_MT6359
+	help
+	  This adds the ASoC machine driver for MT6785 boards whose codec is the
+	  MT6359 in the PMIC, with the Awinic AW87xxx speaker amplifiers and a
+	  headset jack on the codec's accessory detection block.
+
 config SND_SOC_MT6797
 	tristate "ASoC support for Mediatek MT6797 chip"
 	depends on ARCH_MEDIATEK

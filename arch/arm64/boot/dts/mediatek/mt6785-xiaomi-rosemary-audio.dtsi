@@ -438,3 +438,35 @@
 			      "top_apll12_div5", "clk26m";
 	};
 };
+
+/* -------------------------------------------------------------- sound card */
+
+/*
+ * The card ties the front end and the codec together. The two amplifiers are
+ * auxiliary components (they are not DAIs), and the routes that feed them —
+ * "Spk Amp" from "LINEOUT L"and "Rcv Amp" from "Receiver", the phone's real
+ * stereo pair — are the vendor machine driver's [V: mt6785-mt6359.c,
+ * mt6785_mt6359_routes], written as the card's audio-routing.
+ *
+ * The headset jack is the codec's ACCDET block; mediatek,accdet points at it so
+ * the machine driver can attach the jack to that component.
+ */
+&{/} {
+	sound: sound {
+		compatible = "mediatek,mt6785-mt6359-sound";
+		model = "Xiaomi POCO M5s";
+		mediatek,platform = <&afe>;
+		mediatek,audio-codec = <&mt6359codec>;
+		mediatek,accdet = <&pmic>;
+		aux-devs = <&spk_amp>, <&rcv_amp>;
+
+		audio-routing =
+			"Spk Amp", "LINEOUT L",
+			"Rcv Amp", "Receiver",
+			"Headphone Jack", "Headphone L",
+			"Headphone Jack", "Headphone R",
+			"Headset Mic", "AIN1",
+			"Main Mic", "MICBIAS1",
+			"Second Mic", "MICBIAS2";
+	};
+};
