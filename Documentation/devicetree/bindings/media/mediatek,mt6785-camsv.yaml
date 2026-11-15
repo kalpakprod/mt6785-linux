@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt6785-camsv.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6785 CAMSV capture engine
+
+maintainers:
+  - devicetree@vger.kernel.org
+
+description: |
+  CAMSV is the small capture engine of the MediaTek camera front end: a
+  timing generator, a packer and one DMA that writes a raw frame to memory.
+  MT6785 has six of them at 0x1a050000 + 0x1000 * n, each with its own
+  interrupt (live device tree of the Poco M5s: camsv1@1a050000 ...
+  camsv6@1a055000). The engine captures the frame that SENINF routes to it,
+  so the frame size is a property of the sensor mode and is described here
+  until the media graph can provide it.
+
+properties:
+  compatible:
+    enum:
+      - mediatek,mt6785-camsv
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+    description:
+      The engine's gate: CLK_CAM_SV0 for CAMSV0, CLK_CAM_SV1 for CAMSV1.
+
+  clock-names:
+    items:
+      - const: camsv
+
+  power-domains:
+    maxItems: 1
+
+  width:
+    description: Frame width the engine captures, in pixels.
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  height:
+    description: Frame height the engine captures, in lines.
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+    description:
+      Input from SENINF. The link is created when the SENINF driver is
+      present; the engine works without it (physical addressing, its own
+      timing generator), which is why a node without a port is valid.
+
+    properties:
+      endpoint:
+        $ref: /schemas/graph.yaml#/$defs/endpoint-base
+
+        properties:
+          data-lanes: true
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - width
+  - height
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/mediatek,mt6785-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/power/mediatek,mt6785-power.h>
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        camsv0: camsv@1a050000 {
+            compatible = "mediatek,mt6785-camsv";
+            reg = <0 0x1a050000 0 0x1000>;
+            interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;
+            clocks = <&camsys CLK_CAM_SV0>;
+            clock-names = "camsv";
+            power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+            width = <3280>;
+            height = <2464>;
+        };
+    };
+...

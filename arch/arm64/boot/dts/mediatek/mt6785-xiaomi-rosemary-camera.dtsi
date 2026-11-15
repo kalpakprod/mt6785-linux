@@ -250,3 +250,47 @@
 		status = "okay";
 	};
 };
+
+/* ------------------------------------------------------- CAMSV (raw capture) */
+
+/*
+ * The six capture engines sit at 0x1a050000 + 0x1000 * n with interrupts at
+ * GIC SPI 0x117..0x11a for the first four (live DT camsv1@1a050000 ...
+ * camsv6@1a055000; camsv5 and camsv6 carry no interrupt there, so they are
+ * left out). Only the first two are enabled: on MT6785 the camera clock tree
+ * gates exactly two of them (CLK_CAM_SV0 and CLK_CAM_SV1 in
+ * clk-mt6785-cam.c), and an engine whose gate cannot be enabled cannot run.
+ *
+ * The frame size is the sensor mode: 3280x2464 is the IMX355 full size, the
+ * first sensor this project brings up. It moves to the media graph once
+ * SENINF routes a sensor into an engine.
+ *
+ * No "iommus": the first milestone uses physical addressing below 4 GiB with
+ * the SMI port in MMU bypass (study section 4.5), because which larb/port a
+ * CAMSV IMGO uses on MT6785 is not documented anywhere we have.
+ */
+&{/soc} {
+	camsv0: camsv@1a050000 {
+		compatible = "mediatek,mt6785-camsv";
+		reg = <0 0x1a050000 0 0x1000>;
+		interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;	/* 0x117 - 32 */
+		clocks = <&camsys CLK_CAM_SV0>;
+		clock-names = "camsv";
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+		width = <3280>;
+		height = <2464>;
+		status = "okay";
+	};
+
+	camsv1: camsv@1a051000 {
+		compatible = "mediatek,mt6785-camsv";
+		reg = <0 0x1a051000 0 0x1000>;
+		interrupts = <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;	/* 0x118 - 32 */
+		clocks = <&camsys CLK_CAM_SV1>;
+		clock-names = "camsv";
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+		width = <3280>;
+		height = <2464>;
+		status = "okay";
+	};
+};
