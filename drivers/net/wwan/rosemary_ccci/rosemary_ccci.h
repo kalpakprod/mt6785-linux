@@ -358,6 +358,7 @@ struct ccci_md {
 	dev_t devt;
 
 	struct ccci_dpmaif *dp;		/* the packet data path */
+	bool no_boot_info;		/* the loader gave us nothing to boot */
 };
 
 /* a channel pair handed to userspace */

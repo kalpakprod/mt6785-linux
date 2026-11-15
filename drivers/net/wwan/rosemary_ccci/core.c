@@ -299,6 +299,10 @@ static int md_boot(struct ccci_md *md)
 	unsigned long deadline;
 	int ret;
 
+	if (md->no_boot_info) {
+		dev_err(md->dev, "cannot boot the modem: the loader left no CCCI boot information\n");
+		return -ENODEV;
+	}
 	if (limit < 2) {
 		dev_info(md->dev, "stop_after %s: booting is not part of this stage\n",
 			 stop_after ?: "?");
@@ -579,9 +583,26 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 	ret = rosemary_ccci_tags_init(md);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "the loader's CCCI boot information\n");
+	if (ret) {
+		/*
+		 * The loader left no CCCI boot information: no modem this boot
+		 * (charger or recovery boot, or a boot whose loader ran no image).
+		 *
+		 * Bind anyway, with no channels and no boot work, on purpose. The
+		 * power controller is this device's supplier, and the kit builds
+		 * with FW_DEVLINK_SYNC_STATE_STRICT, where a supplier whose
+		 * consumer never binds keeps sync_state() pending for good:
+		 * "mtk-power-controller ...: sync_state() pending due to
+		 * 10209000.modem", exactly what the first phone trial printed.
+		 * A driver that binds and then refuses to do anything is the
+		 * honest answer: the modem is reported as unavailable and the
+		 * power controller can finish its own bookkeeping.
+		 */
+		dev_warn(dev, "no modem this boot (%d): the driver binds, the modem stays off\n",
+			 ret);
+		md->no_boot_info = true;
+		return 0;
+	}
 
 	/* the two share-memory windows, mapped uncached like the modem sees them */
 	md->nc = devm_memremap(dev, md->nc_phys, md->nc_size, MEMREMAP_WC);
