@@ -392,7 +392,17 @@
 		reg = <0 0x1a040000 0 0xa000>,
 		      <0 0x11c80000 0 0xc000>;
 		reg-names = "seninf", "ana";
-		interrupts = <GIC_SPI 275 IRQ_TYPE_LEVEL_HIGH>;
+		/*
+		 * NO "interrupts" here on purpose. The live device tree gives
+		 * SENINF no interrupt line of its own: what exists is GCE
+		 * event numbers (seninf_0_fifo_full = 0x147 and up, which are
+		 * CMDQ events, not GIC SPIs) and the per-receiver CSI-2 status
+		 * registers this driver polls. The vendor DT's seninf nodes
+		 * carry no interrupts property either. An invented SPI would
+		 * either fail to register or, worse, claim another block's
+		 * line; the numbering is a lead decision once someone knows
+		 * the right one.
+		 */
 		clocks = <&camsys CLK_CAM_SENINF>;
 		clock-names = "seninf";
 		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
