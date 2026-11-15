@@ -312,8 +312,6 @@ struct ccci_md {
 		u32 id;			/* the SMEM_USER_ID it belongs to */
 	} c_item[32];
 	u32 c_item_num;
-	u64 c_total_base;
-	u32 c_total_size;
 
 	/* logging buffers, from the ccb_info tag */
 	u64 ccb_data_base;
