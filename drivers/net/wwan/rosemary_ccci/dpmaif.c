@@ -41,6 +41,7 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/sizes.h>
 #include <linux/irq.h>
 #include <linux/netdevice.h>
