@@ -1788,6 +1788,12 @@ static const struct of_device_id ov13b10_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, ov13b10_of_match);
 
+static const struct i2c_device_id ov13b10_id_table[] = {
+	{ "ov13b10" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(i2c, ov13b10_id_table);
+
 static struct i2c_driver ov13b10_i2c_driver = {
 	.driver = {
 		.name = "ov13b10",
@@ -1797,6 +1803,7 @@ static struct i2c_driver ov13b10_i2c_driver = {
 	},
 	.probe = ov13b10_probe,
 	.remove = ov13b10_remove,
+	.id_table = ov13b10_id_table,
 	.flags = I2C_DRV_ACPI_WAIVE_D0_PROBE,
 };
 

@@ -1342,6 +1342,18 @@ static const struct of_device_id imx355_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, imx355_match_table);
 
+/*
+ * The i2c id table is what gives the module its i2c: modalias, and without it
+ * udev never autoloads the driver: the board's camera@1a node exists, the
+ * module is built, and nothing binds. Same reason the ACPI table is there -
+ * MODULE_DEVICE_TABLE(i2c, ...) is what modprobe reads.
+ */
+static const struct i2c_device_id imx355_id_table[] = {
+	{ "imx355" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(i2c, imx355_id_table);
+
 static struct i2c_driver imx355_i2c_driver = {
 	.driver = {
 		.name = "imx355",
@@ -1351,6 +1363,7 @@ static struct i2c_driver imx355_i2c_driver = {
 	},
 	.probe = imx355_probe,
 	.remove = imx355_remove,
+	.id_table = imx355_id_table,
 };
 module_i2c_driver(imx355_i2c_driver);
 
