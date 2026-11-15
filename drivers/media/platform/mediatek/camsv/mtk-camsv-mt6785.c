@@ -183,7 +183,6 @@ struct camsv_dev {
 	struct list_head queued;
 	struct list_head inflight;
 	bool streaming;
-	bool powered;		/* clock running: the block can be touched */
 	bool latch_pending;
 	u8 skip;
 	u8 wcnt;
@@ -300,18 +299,6 @@ static irqreturn_t camsv_irq(int irq, void *data)
 	u8 wcnt, n;
 
 	spin_lock(&camsv->qlock);
-
-	/*
-	 * Do not touch the block while its clock is off: the vendor handler
-	 * guards on exactly that (camera_isp.c, ISP_Irq_CAMSV, "Avoid touch
-	 * hwmodule when clock is disable. DEVAPC will moniter this kind of
-	 * err") and still returns IRQ_HANDLED, because the line is level
-	 * triggered and a spurious edge is cheaper than a bus error.
-	 */
-	if (!camsv->powered) {
-		spin_unlock(&camsv->qlock);
-		return IRQ_HANDLED;
-	}
 
 	/*
 	 * Read-clear and level-triggered: the register must be read on every
@@ -547,22 +534,25 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto err_pm;
 
 	/*
-	 * The interrupt line is level-triggered and the status register is
-	 * read-clear, so a source left over from reset (or from whatever the
-	 * bootloader set) keeps the line asserted: the handler then runs back
-	 * to back, which on the first phone boot meant 100000 interrupts in
-	 * about a second and "Disabling IRQ". Mask everything and clear the
-	 * status here, with the clocks on, before programming the engine; the
-	 * vendor does the same when it takes the engine over (camera_isp.c,
-	 * ISP_Irq_CAMSV: read the status, then write CAMSV_REG_INT_EN).
+	 * The line is level-triggered and the status is read-clear, so the
+	 * engine can assert it before anyone is streaming - the bootloader or
+	 * the vendor kernel leaves sources pending, and on the first phone boot
+	 * that meant 100000 interrupts in about a second and "Disabling IRQ".
+	 * Two things keep that from happening: every source is masked and the
+	 * status cleared before the handler is installed, and the handler
+	 * itself is only requested while a stream is running. The vendor guards
+	 * the same way - it reads the status first and does nothing while its
+	 * clock is off (camera_isp.c, ISP_Irq_CAMSV).
 	 */
 	writel(0, camsv->base + CAMSV_INT_EN);
 	readl(camsv->base + CAMSV_INT_STATUS);
 
-	spin_lock_irqsave(&camsv->qlock, flags);
-	camsv->powered = true;
-	camsv->streaming = false;
-	spin_unlock_irqrestore(&camsv->qlock, flags);
+	ret = request_irq(camsv->irq, camsv_irq, 0, dev_name(camsv->dev), camsv);
+	if (ret) {
+		dev_err(camsv->dev, "failed to request irq %d: %d\n",
+			camsv->irq, ret);
+		goto err_clock;
+	}
 
 	camsv_hw_start(camsv);
 
@@ -579,6 +569,8 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	writel(1, camsv->base + CAMSV_TG_VF_CON);
 	return 0;
 
+err_clock:
+	clk_bulk_disable_unprepare(camsv->num_clks, camsv->clks);
 err_pm:
 	pm_runtime_put(camsv->dev);
 err_return:
@@ -597,10 +589,7 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 
 	camsv_hw_stop(camsv);
 	synchronize_irq(camsv->irq);
-
-	spin_lock_irqsave(&camsv->qlock, flags);
-	camsv->powered = false;
-	spin_unlock_irqrestore(&camsv->qlock, flags);
+	free_irq(camsv->irq, camsv);
 
 	clk_bulk_disable_unprepare(camsv->num_clks, camsv->clks);
 	pm_runtime_put(camsv->dev);
@@ -828,12 +817,6 @@ static int camsv_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	platform_set_drvdata(pdev, camsv);
-
-	ret = devm_request_irq(dev, camsv->irq, camsv_irq, 0, dev_name(dev),
-			       camsv);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to request irq %d\n",
-				     camsv->irq);
 
 	q = &camsv->queue;
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
