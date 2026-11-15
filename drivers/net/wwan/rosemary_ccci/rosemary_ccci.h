@@ -267,7 +267,21 @@ enum ccci_state {
 struct ccci_md {
 	struct device *dev;
 
-	/* the loader's CCCI tag block: region ccci_tag_mem */
+	/*
+	 * The loader's CCCI boot information. The header does not live in the
+	 * reserved block: it arrives as the /chosen property
+	 * ccci,modem_info_v2, and it names the block that holds the tag
+	 * records. See lk_header_from_chosen() in tags.c.
+	 */
+	u64 lk_base;
+	u32 lk_size;
+	u32 lk_err_no;
+	u32 lk_version;
+	u32 lk_tag_num;
+	u32 lk_ld_flag;
+	u32 lk_ld_md_errno;
+
+	/* the tag block the header names, mapped for the walk */
 	phys_addr_t tag_base;
 	resource_size_t tag_size;
 	void __iomem *tags;
