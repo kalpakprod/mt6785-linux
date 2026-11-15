@@ -567,7 +567,9 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret, "cannot power the md domain\n");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	pm_runtime_put(dev);
-	dev_info(dev, "rosemary_ccci: M0 md power status %u\n", status & BIT(0));
+	/* BIT() is unsigned long, so the expression is narrowed for the format */
+	dev_info(dev, "rosemary_ccci: M0 md power status %u\n",
+		 (u32)(status & BIT(0)));
 
 	if (stage_limit() < 1)
 		return 0;
