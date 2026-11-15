@@ -150,12 +150,13 @@
  * family line, so mainline's st-nci is the right driver and "st,st21nfcc-i2c"
  * its binding for an I2C part [K].
  *
- * Left disabled: the 26 MHz reference is switched by the PMIC clock buffer in
+ * Left enabled: the 26 MHz reference is switched by the PMIC clock buffer in
  * the vendor design (CONFIG_MTK_NFC_CLKBUF_ENABLE=y in the stock kernel), and
- * no mainline driver drives that buffer yet. With no clock the controller
- * cannot answer its reset response, so enabling the node now would only add a
- * probe that times out. The bus itself is enabled: nothing else is needed to
- * reach the chip, and the node flips to "okay" once the clock is solved.
+ * the lead measured on the phone (15.11) that MT6359 DCXO_CW00 (0x788) reads
+ * 0x4f1d, i.e. the XO_EXTBUF3 field (the third of XO_SOC, XO_WCN, XO_NFC in the
+ * vendor mtk-clkbuf-hw.c XO_NAME order) is in software mode with EN_M = 1: the
+ * loader leaves the NFC 26 MHz buffer on, so the controller has its clock and
+ * this node needs no driver for that buffer.
  */
 &i2c3 {
 	status = "okay";
@@ -168,7 +169,7 @@
 		interrupts = <31 IRQ_TYPE_LEVEL_HIGH>;	/* [L] irq_nfc */
 		reset-gpios = <&pio 32 GPIO_ACTIVE_HIGH>;	/* [L] nfc gpio-rst */
 		firmware-name = "st21nfc_fw7.bin";
-		status = "disabled";	/* no driver for the PMIC 26 MHz buffer */
+		status = "okay";
 	};
 };
 
