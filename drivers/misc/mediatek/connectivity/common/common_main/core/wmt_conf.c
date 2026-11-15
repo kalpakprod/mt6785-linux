@@ -567,8 +567,20 @@ static INT32 wmt_conf_parse(P_DEV_WMT pWmtDev, const PINT8 pInBuf, UINT32 size)
 		if (pa) {
 			WMT_DBG_FUNC("#%d(%s)=>%s\n", i, field->name, pa);
 			osal_free(pa);
-		} else
-			WMT_ERR_FUNC("failed to parse '%s'.\n", field->name);
+		} else {
+			/*
+			 * A field the file does not mention has no value to write out, and
+			 * every consumer treats NULL as "use the default":
+			 * wmt_init_coex_antsel_invert() (wmt_ic_soc.c:2455),
+			 * wmt_init_coex_epa_elna() (:2374) and wmt_init_wifi_config()
+			 * (:2631) all return 0 when their pointer is NULL. rosemary's
+			 * WMT_SOC.cfg simply does not carry these three keys, so the
+			 * vendor's ERR level here reports a non-event. Say it once at
+			 * debug level so the real errors stay visible.
+			 */
+			WMT_DBG_FUNC("'%s' not present in the config file, default used\n",
+				     field->name);
+		}
 	}
 	osal_free(pBuf);
 	return 0;
