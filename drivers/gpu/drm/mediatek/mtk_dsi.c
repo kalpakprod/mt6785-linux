@@ -115,6 +115,9 @@
 #define DSI_MEM_CONTI		0x90
 #define RWMEM_CONTI		0x3c
 
+#define DSI_VM_CMD_CON		0x130	/* the mt8183 and mt6785 offset */
+#define DSI_STATE_DBG0		0x148	/* 0x148..0x168: engine state read-backs */
+
 #define DSI_PHY_LCCON		0x104
 #define LC_HS_TX_EN			BIT(0)
 #define LC_ULPM_EN			BIT(1)
@@ -649,6 +652,54 @@ static void mtk_dsi_irq_data_clear(struct mtk_dsi *dsi, u32 irq_bit)
 	dsi->irq_data &= ~irq_bit;
 }
 
+/*
+ * Printed only when an IRQ wait times out, and only with dynamic debug on for
+ * this file (`echo 'file mtk_dsi.c +p' > /sys/kernel/debug/dynamic_debug/control`):
+ * the engine state at the moment the wait failed, which a register dump taken
+ * afterwards cannot show.
+ */
+static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
+{
+	static const struct {
+		u16 off;
+		const char *name;
+	} regs[] = {
+		{ DSI_START, "DSI_START" },
+		{ DSI_INTEN, "DSI_INTEN" },
+		{ DSI_INTSTA, "DSI_INTSTA" },
+		{ DSI_CON_CTRL, "DSI_CON_CTRL" },
+		{ DSI_MODE_CTRL, "DSI_MODE_CTRL" },
+		{ DSI_TXRX_CTRL, "DSI_TXRX_CTRL" },
+		{ DSI_PSCTRL, "DSI_PSCTRL" },
+		{ DSI_CMDQ_SIZE, "DSI_CMDQ_SIZE" },
+		{ DSI_MEM_CONTI, "DSI_MEM_CONTI" },
+		{ DSI_PHY_LCCON, "DSI_PHY_LCCON" },
+		{ DSI_PHY_LD0CON, "DSI_PHY_LD0CON" },
+		{ DSI_PHY_TIMECON0, "DSI_PHY_TIMECON0" },
+		{ DSI_PHY_TIMECON1, "DSI_PHY_TIMECON1" },
+		{ DSI_PHY_TIMECON2, "DSI_PHY_TIMECON2" },
+		{ DSI_PHY_TIMECON3, "DSI_PHY_TIMECON3" },
+		{ DSI_VM_CMD_CON, "DSI_VM_CMD_CON" },
+	};
+	int i;
+
+	dev_dbg(dsi->dev, "dsi timed out, engine state:\n");
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++)
+		dev_dbg(dsi->dev, "  %-16s 0x%08x\n", regs[i].name,
+			readl(dsi->regs + regs[i].off));
+
+	/* the engine's own read-back of what it is doing */
+	for (i = 0; i < 9; i++)
+		dev_dbg(dsi->dev, "  STATE_DBG%d      0x%08x\n", i,
+			readl(dsi->regs + DSI_STATE_DBG0 + 4 * i));
+
+	/* the packet the engine was handed, as it sits in the command queue */
+	for (i = 0; i < 4; i++)
+		dev_dbg(dsi->dev, "  CMDQ[%d]          0x%08x\n", i,
+			readl(dsi->regs + dsi->driver_data->reg_cmdq_off + 4 * i));
+}
+
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 				     unsigned int timeout)
 {
@@ -661,6 +712,8 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 					       jiffies);
 	if (ret == 0) {
 		drm_warn(drm, "Wait DSI IRQ(0x%08x) Timeout\n", irq_flag);
+
+		mtk_dsi_dump_state(dsi);
 
 		mtk_dsi_enable(dsi);
 		mtk_dsi_reset_engine(dsi);
