@@ -31,7 +31,17 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c6_pins>;
 
-	regulator@28 {
+	/*
+	 * The node name is the vendor's (live DT: i2c6@11005000/wl2866d@28),
+	 * not "regulator@28". The bootloader applies the vendor overlay onto
+	 * this DTB, and a node is merged by name plus unit address: with a
+	 * different name the overlay's wl2866d@28 lands beside mine as a second
+	 * device at 0x28, and the I2C core refuses the second one with EBUSY -
+	 * "Failed to register i2c client wl2866d at 0x28 (-16)" in both phone
+	 * trials, after which no camera rail exists at all. Same name, same
+	 * unit address: one node, whose properties the overlay completes.
+	 */
+	wl2866d@28 {
 		compatible = "willsemi,wl2866d";
 		reg = <0x28>;
 
@@ -312,9 +322,23 @@
 		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
 		assigned-clock-rates = <24000000>;
 
+		/*
+		 * Only AVDD reaches this module directly. The live DT wires
+		 * nothing else for cam4 (cam4_vcama-supply is the only supply
+		 * property) because DOVDD comes from its own switch on GPIO22
+		 * (camera4_vcamio_output_*), which no mainline driver owns yet,
+		 * and the part has no DVDD at all. Asking for rails the board
+		 * does not describe makes regulator_bulk_enable() fail and the
+		 * chip id read come back ENXIO, which is the "-6" of trial 2.
+		 */
 		avdd-supply = <&cam_avdd1>;
-		dvdd-supply = <&cam_dvdd1>;
-		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		/*
+		 * DOVDD is the shared GPIO22 switch, not a PMIC rail; there is
+		 * no DVDD on this part. The driver asks for all three names and
+		 * an undescribed one resolves to a dummy regulator, so only the
+		 * two real ones appear here.
+		 */
+		dovdd-supply = <&cam_2mp_dovdd>;
 
 		reset-gpios = <&pio 119 GPIO_ACTIVE_LOW>;
 
@@ -478,6 +502,24 @@
  * it sits under the root node rather than under i2c2 where the actuator is.
  */
 / {
+	/*
+	 * DOVDD for the two 2 MP modules is not a PMIC rail: it comes through a
+	 * switch on GPIO22, which the vendor drives in its power sequence
+	 * (live DT camera4_vcamio_output_high@gpio22, and camera3_ldo_vcamio_*
+	 * drives the same pin - the two modules share it, so only one of them
+	 * may be powered at a time). Nothing in mainline owned that pin, so the
+	 * chip never saw its I/O rail.
+	 */
+	cam_2mp_dovdd: regulator-cam-2mp-dovdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_2mp_dovdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&pio 22 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&mt6359_vcamio_ldo_reg>;
+	};
+
 	cam_af_switch: regulator-cam-af {
 		compatible = "regulator-fixed";
 		regulator-name = "cam0_ldo_vcamaf";
