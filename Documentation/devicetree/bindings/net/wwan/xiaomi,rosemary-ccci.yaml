@@ -12,13 +12,12 @@ maintainers:
 description: |
   The MediaTek MT6785 has a second processor for the modem (MD1), which the
   application processor reaches through two transports: CCIF for the control
-  channels and DPMAIF for packet data. There is no CLDMA and no second modem
-  on this part. The node collects the modem processor itself and the
-  description of the resources the AP driver needs to power it, to restart it
-  and to reach its control registers.
+  channels and DPMAIF for packet data. There is no CLDMA and no second modem on
+  this part. The node collects the modem processor itself and the resources the
+  AP driver needs to power it, to restart it and to reach its control registers.
 
-  The share memory the modem uses is not described here: the bootloader
-  reserves it and the mapper hands it to Linux with names of its own
+  The share memory the modem uses is not described here: the bootloader reserves
+  it and hands it to Linux with names of its own
   (mblock-<n>-ap_md_c_smem and so on), so the driver looks the regions up by
   name at run time.
 
@@ -36,8 +35,46 @@ properties:
       - const: ap-ccif
       - const: md-ccif
 
+  interrupts:
+    items:
+      - description: CCIF data channels (level low)
+      - description: CCIF exception channels (level low)
+      - description: the modem's watchdog (edge falling)
+
+  interrupt-names:
+    items:
+      - const: ccif
+      - const: ccif-exception
+      - const: md-wdt
+
+  clocks:
+    items:
+      - description: CCIF0 AP gate
+      - description: CCIF0 MD gate
+      - description: CCIF1 AP gate
+      - description: CCIF1 MD gate
+      - description: CCIF2 AP gate
+      - description: CCIF2 MD gate
+      - description: CCIF4 MD gate
+
+  clock-names:
+    items:
+      - const: infra-ccif-ap
+      - const: infra-ccif-md
+      - const: infra-ccif1-ap
+      - const: infra-ccif1-md
+      - const: infra-ccif2-ap
+      - const: infra-ccif2-md
+      - const: infra-ccif4-md
+
   power-domains:
     maxItems: 1
+
+  vmodem-supply:
+    description: The modem's buck supply.
+
+  vsram-md-supply:
+    description: The modem SRAM's LDO, which the vendor sets to 993 750 uV.
 
   mediatek,spm:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -46,17 +83,30 @@ properties:
       PWR_STATUS register at +0x160 reports whether the modem's MTCMOS domain
       is on.
 
+  mediatek,ccci-tag-base:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      Address of the bootloader's CCCI tag block, used only when the
+      reservation it belongs to was not found by name.
+
 required:
   - compatible
   - reg
   - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
   - power-domains
+  - vmodem-supply
+  - vsram-md-supply
   - mediatek,spm
 
 additionalProperties: false
 
 examples:
   - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
     #include <dt-bindings/power/mediatek,mt6785-power.h>
 
     modem@10209000 {
@@ -64,6 +114,19 @@ examples:
         reg = <0 0x10209000 0 0x1000>,
               <0 0x1020a000 0 0x1000>;
         reg-names = "ap-ccif", "md-ccif";
+        interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 175 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 77 IRQ_TYPE_EDGE_FALLING>;
+        interrupt-names = "ccif", "ccif-exception", "md-wdt";
+        clocks = <&infracfg 43>, <&infracfg 46>, <&infracfg 36>,
+                 <&infracfg 37>, <&infracfg 91>, <&infracfg 92>,
+                 <&infracfg 104>;
+        clock-names = "infra-ccif-ap", "infra-ccif-md",
+                      "infra-ccif1-ap", "infra-ccif1-md",
+                      "infra-ccif2-ap", "infra-ccif2-md",
+                      "infra-ccif4-md";
         power-domains = <&spm MT6785_POWER_DOMAIN_MD>;
+        vmodem-supply = <&vmodem>;
+        vsram-md-supply = <&vsram_md>;
         mediatek,spm = <&scpsys>;
     };

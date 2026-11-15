@@ -12,10 +12,9 @@
  * loader panic on the overlap, which is why this board file keeps its
  * reserved-memory node empty.
  *
- * Stage M0: the modem's MTCMOS domain can be powered from Linux and its power
- * status can be read. Nothing reads the CCIF registers yet -- they are only
- * legal while the domain reports on, and a read with the domain off hangs the
- * AXI bus.
+ * Stage M0 (already proven): the modem's MTCMOS domain can be powered from
+ * Linux and its power status read. M1 reads the loader's boot information
+ * read-only. Nothing here writes to the modem.
  */
 
 / {
@@ -29,6 +28,43 @@
 		reg-names = "ap-ccif", "md-ccif";
 
 		/*
+		 * CCIF's own interrupts. These are the numbers that make this
+		 * phone different from the MT6885 port (194/195/78 there), and
+		 * the type is level LOW here, not level high. Source: the live
+		 * stock device tree, ccifdriver@10209000 ("interrupts = <0 0xae
+		 * 8 0 0xaf 8>", cell 8 = IRQ_TYPE_LEVEL_LOW) and the mddriver
+		 * node for the watchdog (GIC SPI 77, cell 2 = EDGE_FALLING);
+		 * vendor dts mt6785.dts:923-962 says the same.
+		 */
+		interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 175 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 77 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "ccif", "ccif-exception", "md-wdt";
+
+		/*
+		 * The CCIF gates. There is no CLK_INFRA_CCIF5_MD in this SoC's
+		 * binding (the group ends at CLK_INFRA_CCIF4_MD = 104) and rosemary
+		 * has no second modem, which is what CCIF5 would serve.
+		 *
+		 * The vendor's other clock here, "scp-sys-md1-main", has no
+		 * mainline counterpart: it is the modem's MTCMOS gate clock in the
+		 * SCPSYS block, which mainline drives inside its own power sequence
+		 * (scpsys_modem_pwrseq_on in drivers/pmdomain/mediatek/
+		 * mtk-pm-domains.c), not through the clock framework.
+		 */
+		clocks = <&infracfg CLK_INFRA_CCIF_AP>,
+			 <&infracfg CLK_INFRA_CCIF_MD>,
+			 <&infracfg CLK_INFRA_CCIF1_AP>,
+			 <&infracfg CLK_INFRA_CCIF1_MD>,
+			 <&infracfg CLK_INFRA_CCIF2_AP>,
+			 <&infracfg CLK_INFRA_CCIF2_MD>,
+			 <&infracfg CLK_INFRA_CCIF4_MD>;
+		clock-names = "infra-ccif-ap", "infra-ccif-md",
+			      "infra-ccif1-ap", "infra-ccif1-md",
+			      "infra-ccif2-ap", "infra-ccif2-md",
+			      "infra-ccif4-md";
+
+		/*
 		 * Mainline already has the complete MT6785 modem power
 		 * sequence for this domain: drivers/pmdomain/mediatek/
 		 * mt6785-pm-domains.h, MT6785_POWER_DOMAIN_MD, sta_mask
@@ -36,6 +72,8 @@
 		 * 0x3b0, caps EXT_BUCK_ISO | MODEM_PWRSEQ.
 		 */
 		power-domains = <&spm MT6785_POWER_DOMAIN_MD>;
+		vmodem-supply = <&mt6359_vmodem_buck_reg>;
+		vsram-md-supply = <&mt6359_vsram_md_ldo_reg>;
 
 		/* syscon@10006000: PWR_STATUS at +0x160 is bit 0 of this domain */
 		mediatek,spm = <&scpsys>;
