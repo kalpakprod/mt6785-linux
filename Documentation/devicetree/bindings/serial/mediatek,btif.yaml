@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/serial/mediatek,btif.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek BTIF (Bluetooth Interface) transport
+
+maintainers:
+  - The poco-m5s port <worker@poco.local>
+
+description:
+  A 16550-shaped register block plus an AP-DMA descriptor pair in each
+  direction. On MT6785 it carries the WMT/STP control channel to the
+  CONNSYS MCU and the Bluetooth H4 data path; the UART and SDIO STP
+  transports do not exist on this SoC.
+
+properties:
+  compatible:
+    const: mediatek,btif
+
+  reg:
+    description: The BTIF register block, then the TX and RX DMA windows.
+    minItems: 3
+    maxItems: 3
+
+  reg-names:
+    items:
+      - const: btif
+      - const: tx_dma
+      - const: rx_dma
+
+  interrupts:
+    description: BTIF, TX DMA done and RX DMA done.
+    minItems: 3
+    maxItems: 3
+
+  clocks:
+    maxItems: 2
+
+  clock-names:
+    items:
+      - const: btifc
+      - const: apdmac
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/clock/mediatek,mt6785-clk.h>
+
+    btif@1100c000 {
+        compatible = "mediatek,btif";
+        reg = <0 0x1100c000 0 0x1000>,
+              <0 0x11000b80 0 0x80>,
+              <0 0x11000c00 0 0x80>;
+        interrupts = <GIC_SPI 138 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 155 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 154 IRQ_TYPE_LEVEL_LOW>;
+        clocks = <&infracfg CLK_INFRA_BTIF>,
+                 <&infracfg CLK_INFRA_AP_DMA>;
+        clock-names = "btifc", "apdmac";
+    };

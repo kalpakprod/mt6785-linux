@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/wireless/mediatek,wifi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek gen4m Wi-Fi HIF
+
+maintainers:
+  - The poco-m5s port <worker@poco.local>
+
+description: |
+  The Wi-Fi MAC and PHY live in the MT6631 companion die behind the SoC's
+  CONNSYS. This node describes the HIF the gen4m driver binds - one CSR
+  window, the WF_HIF interrupt and the DMA pool its buffers come from.
+
+properties:
+  compatible:
+    const: mediatek,wifi
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  memory-region:
+    maxItems: 1
+
+  power-domains:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/power/mediatek,mt6785-power.h>
+
+    wifi@18000000 {
+        compatible = "mediatek,wifi";
+        reg = <0 0x18000000 0 0x100000>;
+        interrupts = <GIC_SPI 322 IRQ_TYPE_LEVEL_LOW>;
+        memory-region = <&wifi_mem>;
+        power-domains = <&spm MT6785_POWER_DOMAIN_CONN>;
+    };
