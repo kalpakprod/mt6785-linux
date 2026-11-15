@@ -4,6 +4,8 @@
  * Included at the end of mt6785-xiaomi-rosemary.dts.
  */
 
+#include <dt-bindings/usb/pd.h>
+
 / {
 	/*
 	 * The pack: 5000 mAh design (the stock gauge reported 4797 mAh full, 12.11.2026). OCV table:
@@ -51,3 +53,64 @@
 &cpu5 { proc-supply = <&mt6359_vproc2_buck_reg>; };
 &cpu6 { proc-supply = <&mt6359_vproc1_buck_reg>; };
 &cpu7 { proc-supply = <&mt6359_vproc1_buck_reg>; };
+
+/*
+ * USB Type-C: the MT6360 TCPC (I2C5 0x4e in the vendor DT, usb_type_c@4e; its PD interrupt on GPIO7,
+ * live DT type_c_port0 mt6360pd,intr_gpio = <&pio 7 0>) drives the role switch of the USB controller
+ * and the OTG boost of the MT6360 charger. Written as on begonia (mt6785-xiaomi-begonia-common.dtsi),
+ * the same SoC with the same MT6360: dual role, sink preferred, 5 V only both ways. Without it the
+ * port is fixed to peripheral and USB OTG cannot work.
+ */
+&{/soc/i2c@11016000/pmic@34/charger} {
+	otg_vbus_regulator: usb-otg-vbus-regulator {
+		regulator-name = "usb-otg-vbus";
+		regulator-min-microvolt = <4425000>;
+		regulator-max-microvolt = <5825000>;
+	};
+};
+
+&{/soc/i2c@11016000/pmic@34} {
+	tcpc {
+		compatible = "mediatek,mt6360-tcpc";
+		interrupts-extended = <&pio 7 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-names = "PD_IRQB";
+		pinctrl-names = "default";
+		pinctrl-0 = <&mt6360_pd_irq_pins>;
+		vbus-supply = <&otg_vbus_regulator>;
+
+		connector {
+			compatible = "usb-c-connector";
+			label = "USB-C";
+			data-role = "dual";
+			power-role = "dual";
+			try-power-role = "sink";
+			op-sink-microwatt = <10000000>;
+			source-pdos = <PDO_FIXED(5000, 1500, PDO_FIXED_DUAL_ROLE | PDO_FIXED_DATA_SWAP)>;
+			sink-pdos = <PDO_FIXED(5000, 2000, PDO_FIXED_DUAL_ROLE | PDO_FIXED_DATA_SWAP)>;
+
+			port {
+				typec_con_hs: endpoint {
+					remote-endpoint = <&mtu3_hs0_role_sw>;
+				};
+			};
+		};
+	};
+};
+
+&pio {
+	mt6360_pd_irq_pins: mt6360-pd-irq-pins {
+		pins-irq {
+			pinmux = <PINMUX_GPIO7__FUNC_GPIO7>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+};
+
+&ssusb {
+	port {
+		mtu3_hs0_role_sw: endpoint {
+			remote-endpoint = <&typec_con_hs>;
+		};
+	};
+};
