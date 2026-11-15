@@ -375,6 +375,9 @@ int ccci_ports_init(struct ccci_md *md)
 	ret = class_register(&ccci_class);
 	if (ret)
 		return ret;
+	ret = alloc_chrdev_region(&md->devt, 0, md->num_ports, "ccci");
+	if (ret)
+		goto err_class;
 	for (i = 0; i < md->num_ports; i++) {
 		struct ccci_port *port = &md->ports[i];
 
@@ -392,7 +395,7 @@ int ccci_ports_init(struct ccci_md *md)
 			continue;	/* created when the modem is ready */
 		cdev_init(&port->cdev, &port_fops);
 		port->cdev.owner = THIS_MODULE;
-		port->dev = device_create(&ccci_class, md->dev, 0, port,
+		port->dev = device_create(&ccci_class, md->dev, md->devt + i, port,
 					  "%s", port->name);
 		if (IS_ERR(port->dev)) {
 			ret = PTR_ERR(port->dev);
@@ -409,6 +412,8 @@ int ccci_ports_init(struct ccci_md *md)
 err_ports:
 	while (--i >= 0)
 		port_destroy(md, i);
+	unregister_chrdev_region(md->devt, md->num_ports);
+err_class:
 	class_unregister(&ccci_class);
 	return ret;
 }
@@ -422,5 +427,6 @@ void ccci_ports_exit(struct ccci_md *md)
 		port_destroy(md, i);
 		skb_queue_purge(&md->ports[i].rxq);
 	}
+	unregister_chrdev_region(md->devt, md->num_ports);
 	class_unregister(&ccci_class);
 }
