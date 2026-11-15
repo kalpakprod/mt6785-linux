@@ -1,0 +1,27 @@
+#!/bin/sh
+# rosemary-tools-install DIR: put the pieces of the modem userspace where the
+# unit, the udev rule and the daemon expect them, on the phone.
+#
+# Not run anywhere yet: the lead runs it on the phone after building the
+# daemon (`cc -O2 -o rosemary-modemd rosemary-modemd.c`, or `make`).
+#
+# What it does not do, on purpose:
+# - it does not copy the modem's firmware configuration (drives T:, R:, W: of
+#   the file service). Those files come from the stock vendor image and must be
+#   copied verbatim; see README.md, step 1. Without them the modem cannot reach
+#   its second handshake, and guessing their content would be worse than not
+#   booting.
+# - it does not import the NVRAM. That is rosemary-modem-nvram-import's job and
+#   it must run once, with the stock partitions present.
+set -eu
+DIR=${1:?usage: rosemary-tools-install DIR}
+
+install -Dm755 "$DIR/rosemary-modemd" /usr/local/bin/rosemary-modemd
+install -Dm755 "$DIR/rosemary-modem-nvram-import" /usr/local/bin/rosemary-modem-nvram-import
+install -Dm644 "$DIR/rosemary-modem.service" /usr/lib/systemd/system/rosemary-modem.service
+install -Dm644 "$DIR/78-rosemary-modem.rules" /usr/lib/udev/rules.d/78-rosemary-modem.rules
+install -d /usr/lib/firmware/mediatek/rosemary/mdota \
+	   /usr/lib/firmware/mediatek/rosemary/md \
+	   /usr/lib/firmware/mediatek/rosemary/modem
+udevadm control --reload
+echo "installed; now: rosemary-modem-nvram-import, then systemctl enable --now rosemary-modem"
