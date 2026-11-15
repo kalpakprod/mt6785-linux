@@ -106,6 +106,15 @@
 #define DSI_RACK		0x84
 #define RACK				BIT(0)
 
+/*
+ * DSI_MEM_CONTI: how the host walks its own memory while writing a command out
+ * of the command queue. The vendor's MT6785 header fixes it at 0x3c for writes
+ * (DSI_WMEM_CONTI in ddp_dsi.h) and its DSI_TXRX_Control() programs it next to
+ * DSI_TXRX_CTRL on every mode change.
+ */
+#define DSI_MEM_CONTI		0x90
+#define RWMEM_CONTI		0x3c
+
 #define DSI_PHY_LCCON		0x104
 #define LC_HS_TX_EN			BIT(0)
 #define LC_ULPM_EN			BIT(1)
@@ -194,6 +203,7 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	bool needs_mem_conti;
 };
 
 struct mtk_dsi {
@@ -391,6 +401,9 @@ static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
 		regval |= DIS_EOT;
 
 	writel(regval, dsi->regs + DSI_TXRX_CTRL);
+
+	if (dsi->driver_data->needs_mem_conti)
+		writel(RWMEM_CONTI, dsi->regs + DSI_MEM_CONTI);
 }
 
 static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
@@ -1293,6 +1306,25 @@ static const struct mtk_dsi_driver_data mt8183_dsi_driver_data = {
 	.has_size_ctl = true,
 };
 
+/*
+ * MT6785 has the MT8183 register layout - command queue at 0x200, VM command at
+ * 0x130, shadow control at 0x190, all confirmed in the vendor's mt6785 ddp_reg_dsi.h
+ * - but it also needs DSI_MEM_CONTI on every lane configuration, which the MT8183
+ * path never writes. Without it the host does not walk its memory while sending
+ * a command from the command queue, so a DCS write never completes: trial 2
+ * timed out on CMD_DONE for EXIT_SLEEP_MODE with DSI_MEM_CONTI (0x090) reading 0
+ * while the working loader state has 0x3c
+ * (poco-m5s/evidence/disp-trial2/dsi-mipitx-regs{-loader,}.txt).
+ */
+static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
+	.reg_cmdq_off = 0x200,
+	.reg_vm_cmd_off = 0x130,
+	.reg_shadow_dbg_off = 0x190,
+	.has_shadow_ctl = true,
+	.has_size_ctl = true,
+	.needs_mem_conti = true,
+};
+
 static const struct mtk_dsi_driver_data mt8186_dsi_driver_data = {
 	.reg_cmdq_off = 0xd00,
 	.reg_vm_cmd_off = 0x200,
@@ -1315,6 +1347,7 @@ static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt2701-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8167-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8173-dsi", .data = &mt8173_dsi_driver_data },
+	{ .compatible = "mediatek,mt6785-dsi", .data = &mt6785_dsi_driver_data },
 	{ .compatible = "mediatek,mt8183-dsi", .data = &mt8183_dsi_driver_data },
 	{ .compatible = "mediatek,mt8186-dsi", .data = &mt8186_dsi_driver_data },
 	{ .compatible = "mediatek,mt8188-dsi", .data = &mt8188_dsi_driver_data },
