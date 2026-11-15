@@ -149,8 +149,12 @@ static int stpgps_open(struct inode *inode, struct file *file)
 	gps->opened = true;
 	mutex_unlock(&gps->lock);
 
-	err = mtk_wcn_wmt_func_on(WMTDRV_TYPE_GPS);
-	if (err != 0) {
+	/*
+	 * FUNC_CTRL(GPS on) returns MTK_WCN_BOOL: TRUE (1) is success, FALSE (0)
+	 * is failure. The errno-style comparison this replaces treated a
+	 * successful power-on as an error.
+	 */
+	if (mtk_wcn_wmt_func_on(WMTDRV_TYPE_GPS) != MTK_WCN_BOOL_TRUE) {
 		gps->opened = false;
 		return -EIO;
 	}

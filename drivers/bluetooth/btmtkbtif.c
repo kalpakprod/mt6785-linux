@@ -247,9 +247,14 @@ static int btmtkbtif_open(struct hci_dev *hdev)
 	u8 addr[ETH_ALEN];
 	int err;
 
-	err = mtk_wcn_wmt_func_on(WMTDRV_TYPE_BT);
-	if (err != 0) {
-		bt_dev_err(hdev, "FUNC_CTRL(BT on) failed (%d)", err);
+	/*
+	 * FUNC_CTRL(BT on) returns MTK_WCN_BOOL, not an errno: TRUE (1) is
+	 * success and FALSE (0) is failure. Comparing it against zero inverted
+	 * the test and turned every successful power-on into "failed (1)" - the
+	 * line the phone log showed.
+	 */
+	if (mtk_wcn_wmt_func_on(WMTDRV_TYPE_BT) != MTK_WCN_BOOL_TRUE) {
+		bt_dev_err(hdev, "FUNC_CTRL(BT on) failed");
 		return -EIO;
 	}
 
