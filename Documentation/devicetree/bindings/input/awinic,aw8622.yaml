@@ -26,8 +26,7 @@ properties:
     maxItems: 1
 
   awinic,vibration-frequency-hz:
-    $ref: /schemas/types.yaml#/definitions/uint32
-    description: Resonance frequency of the actuator.
+    description: Resonance frequency of the actuator, in Hz.
     default: 208
 
   pinctrl-0: true

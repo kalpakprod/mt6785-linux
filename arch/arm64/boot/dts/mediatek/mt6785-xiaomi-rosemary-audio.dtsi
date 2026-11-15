@@ -168,7 +168,6 @@
 		interrupt-parent = <&pio>;
 		interrupts = <31 IRQ_TYPE_LEVEL_HIGH>;	/* [L] irq_nfc */
 		reset-gpios = <&pio 32 GPIO_ACTIVE_HIGH>;	/* [L] nfc gpio-rst */
-		firmware-name = "st21nfc_fw7.bin";
 		status = "okay";
 	};
 };
@@ -198,7 +197,6 @@
 		compatible = "ir-spi-led";
 		reg = <0>;
 		spi-max-frequency = <1000000>;	/* [L] */
-		spi-cpol;			/* [L] */
 		duty-cycle = /bits/ 8 <50>;
 	};
 };

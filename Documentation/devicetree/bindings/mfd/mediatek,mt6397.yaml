@@ -52,6 +52,9 @@ properties:
   interrupts:
     maxItems: 1
 
+  "#sound-dai-cells":
+    const: 1
+
   interrupt-controller: true
 
   "#interrupt-cells":
