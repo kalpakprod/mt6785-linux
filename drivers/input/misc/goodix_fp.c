@@ -335,7 +335,7 @@ static int gf_chip_id_read(struct gf_dev *gf, u8 id[4])
 	udelay(5);
 	ret = spi_sync_transfer(gf->spi, &xfer[1], 1);
 	if (!ret)
-		memcpy(id, buf + 1, sizeof(id));
+		memcpy(id, buf + 1, sizeof(buf) - 1);
 
 	return ret;
 }
