@@ -361,6 +361,8 @@ static void mtk_dsi_clk_hs_mode(struct mtk_dsi *dsi, bool enter)
 		mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_HS_TX_EN, 0);
 }
 
+static void mtk_dsi_set_vm_cmd(struct mtk_dsi *dsi, bool enable);
+
 static void mtk_dsi_set_mode(struct mtk_dsi *dsi)
 {
 	u32 vid_mode = CMD_MODE;
@@ -375,12 +377,25 @@ static void mtk_dsi_set_mode(struct mtk_dsi *dsi)
 	}
 
 	writel(vid_mode, dsi->regs + DSI_MODE_CTRL);
+
+	/*
+	 * The VM command bits belong to video mode: they let the engine inject a
+	 * queued command at the video front porch. The vendor driver arms them
+	 * only when it switches to video (ddp_dsi.c, the C2V path) and never in
+	 * command mode, where the command queue itself carries the packet.
+	 */
+	if (vid_mode == CMD_MODE)
+		mtk_dsi_set_vm_cmd(dsi, false);
+	else
+		mtk_dsi_set_vm_cmd(dsi, true);
 }
 
-static void mtk_dsi_set_vm_cmd(struct mtk_dsi *dsi)
+static void mtk_dsi_set_vm_cmd(struct mtk_dsi *dsi, bool enable)
 {
-	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, VM_CMD_EN, VM_CMD_EN);
-	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, TS_VFP_EN, TS_VFP_EN);
+	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, VM_CMD_EN,
+		     enable ? VM_CMD_EN : 0);
+	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, TS_VFP_EN,
+		     enable ? TS_VFP_EN : 0);
 }
 
 static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
@@ -614,6 +629,7 @@ static void mtk_dsi_stop(struct mtk_dsi *dsi)
 static void mtk_dsi_set_cmd_mode(struct mtk_dsi *dsi)
 {
 	writel(CMD_MODE, dsi->regs + DSI_MODE_CTRL);
+	mtk_dsi_set_vm_cmd(dsi, false);
 }
 
 static void mtk_dsi_set_interrupt_enable(struct mtk_dsi *dsi)
@@ -753,7 +769,6 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	mtk_dsi_phy_timconfig(dsi);
 
 	mtk_dsi_ps_control(dsi, true);
-	mtk_dsi_set_vm_cmd(dsi);
 	mtk_dsi_config_vdo_timing(dsi);
 	mtk_dsi_set_interrupt_enable(dsi);
 
