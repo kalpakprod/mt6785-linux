@@ -35,6 +35,7 @@
 #include "osal_typedef.h"
 #include "wmt_exp.h"
 #include "stp_exp.h"
+#include "nvdata_mac.h"
 
 #define BTMTKBTIF_DEV_NAME	"btmtkbtif"
 
@@ -243,6 +244,7 @@ static int btmtkbtif_rx_kthread(void *data)
 static int btmtkbtif_open(struct hci_dev *hdev)
 {
 	struct btmtkbtif_data *btdev = hci_get_drvdata(hdev);
+	u8 addr[ETH_ALEN];
 	int err;
 
 	err = mtk_wcn_wmt_func_on(WMTDRV_TYPE_BT);
@@ -254,7 +256,13 @@ static int btmtkbtif_open(struct hci_dev *hdev)
 	btdev->bt_on = true;
 	btdev->rx_skb = NULL;
 
-	/* The address is back at the firmware default; restore ours. */
+	/*
+	 * The address is back at the firmware default; restore the one the
+	 * factory nvdata copy holds, or the core's if there is no copy.
+	 */
+	if (mtk_nvdata_get_bt_addr(addr))
+		bacpy(&hdev->bdaddr, (bdaddr_t *)addr);
+
 	err = btmtkbtif_apply_bdaddr(hdev);
 	if (err)
 		bt_dev_warn(hdev, "BD_ADDR could not be re-applied (%d)", err);

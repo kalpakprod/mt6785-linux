@@ -63,6 +63,7 @@ CFLAGS_btmtkbtif.o += -DWMT_PLAT_ALPS=1
 CFLAGS_btmtkbtif.o += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/include
 CFLAGS_btmtkbtif.o += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/linux/include
 CFLAGS_btmtkbtif.o += -I$(srctree)/drivers/misc/mediatek/connectivity/compat/include
+CFLAGS_btmtkbtif.o += -I$(srctree)/drivers/misc/mediatek/connectivity/common
 CFLAGS_btmtkbtif.o += -include $(srctree)/drivers/misc/mediatek/connectivity/compat/include/mtk-bsp-compat.h
 
 CONTEXT_ANALYSIS := y

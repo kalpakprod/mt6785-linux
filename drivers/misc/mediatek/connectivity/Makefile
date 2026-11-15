@@ -9,4 +9,5 @@
 # (subdir-ccflags-y), so that it covers this directory and btif/ alike.
 #
 obj-$(CONFIG_MTK_WMT_DRV) += common/
+obj-$(CONFIG_MTK_NVDATA_MAC) += common/nvdata_mac.o
 obj-$(CONFIG_MTK_WLAN_GEN4M) += wlan/gen4m/
