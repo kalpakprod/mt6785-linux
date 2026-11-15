@@ -4,4 +4,4 @@
 #
 
 obj-$(CONFIG_ROSEMARY_CCCI) += rosemary_ccci.o
-rosemary_ccci-y := core.o
+rosemary_ccci-y := core.o tags.o
