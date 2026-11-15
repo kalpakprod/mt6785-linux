@@ -4404,8 +4404,27 @@ void txPwrCtrlShowList(struct ADAPTER *prAdapter, uint8_t filterType,
 				if (prChlSettingList->eChnlType < 0)
 					prChlSettingList->eChnlType = 0;
 
+				/*
+				 * snprintf() returns the length the output *would* have had,
+				 * so once one element's text is longer than PWR_BUF_LEN the
+				 * accumulated offset runs past the end of msgLimit and the
+				 * next call gets a negative size. vsnprintf() then trips its
+				 * "size > INT_MAX" check - that is the WARNING at
+				 * lib/vsprintf.c:2876 seen on the phone - and the writes that
+				 * follow it are out of bounds.
+				 *
+				 * One element prints 1 + PWR_LIMIT_NUM + 1 + PWR_LIMIT_HE_NUM
+				 * settings of "[%u,%d]", about 270 characters with the labels,
+				 * so PWR_BUF_LEN (200) is simply too small for one element and
+				 * truncation is the normal case, not the exception.
+				 *
+				 * scnprintf() returns what was actually written and never
+				 * exceeds the size, so the offset can no longer run past the
+				 * buffer; the explicit clamp keeps the arithmetic honest for a
+				 * size of zero.
+				 */
 				/*message head*/
-				msgOfs += snprintf(msgLimit + msgOfs,
+				msgOfs += scnprintf(msgLimit + msgOfs,
 					PWR_BUF_LEN - msgOfs,
 					"Setting-%u:[%s:%u,%u],Legcy:",
 					(j + 1),
@@ -4416,18 +4435,18 @@ void txPwrCtrlShowList(struct ADAPTER *prAdapter, uint8_t filterType,
 
 				/*print legacy cfg*/
 				for (k = 0; k < PWR_LIMIT_NUM ; k++)
-					msgOfs += snprintf(msgLimit + msgOfs,
+					msgOfs += scnprintf(msgLimit + msgOfs,
 						PWR_BUF_LEN - msgOfs,
 						"[%u,%d]",
 						prChlSettingList->op[k],
 					    prChlSettingList->i8PwrLimit[k]);
 
 				/*print HE cfg*/
-				msgOfs += snprintf(msgLimit + msgOfs,
+				msgOfs += scnprintf(msgLimit + msgOfs,
 					PWR_BUF_LEN - msgOfs,
 					"HE:");
 				for (k = 0; k < PWR_LIMIT_HE_NUM ; k++)
-					msgOfs += snprintf(msgLimit + msgOfs,
+					msgOfs += scnprintf(msgLimit + msgOfs,
 						PWR_BUF_LEN - msgOfs,
 						"[%u,%d]",
 						prChlSettingList->opHE[k],
@@ -4762,14 +4781,14 @@ void rlmDomainShowPwrLimitPerCh(char *message,
 			prcRatePwr = &prPwrLmtHE->cPwrLimitRU26L;
 
 			/*message head*/
-			msgOfs += snprintf(msgLimit + msgOfs,
+			msgOfs += scnprintf(msgLimit + msgOfs,
 				PWR_BUF_LEN - msgOfs,
 				"HE ch=%d,Limit=",
 				prPwrLmtHE->ucCentralCh);
 
 			/*message body*/
 			for (j = PWR_LIMIT_RU26_L; j < PWR_LIMIT_HE_NUM ; j++)
-				msgOfs += snprintf(msgLimit + msgOfs,
+				msgOfs += scnprintf(msgLimit + msgOfs,
 					PWR_BUF_LEN - msgOfs,
 					"%d,",
 					*(prcRatePwr + j));
@@ -4786,14 +4805,14 @@ void rlmDomainShowPwrLimitPerCh(char *message,
 			prcRatePwr = &prPwrLmt->cPwrLimitCCK;
 
 			/*message head*/
-			msgOfs += snprintf(msgLimit + msgOfs,
+			msgOfs += scnprintf(msgLimit + msgOfs,
 				PWR_BUF_LEN - msgOfs,
 				"legacy ch=%d,Limit=",
 				prPwrLmt->ucCentralCh);
 
 			/*message body*/
 			for (j = PWR_LIMIT_CCK; j < PWR_LIMIT_NUM ; j++)
-				msgOfs += snprintf(msgLimit + msgOfs,
+				msgOfs += scnprintf(msgLimit + msgOfs,
 					PWR_BUF_LEN - msgOfs,
 					"%d,",
 					*(prcRatePwr + j));
