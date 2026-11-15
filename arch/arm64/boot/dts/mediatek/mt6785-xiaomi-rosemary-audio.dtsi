@@ -469,11 +469,6 @@
 
 		audio-routing =
 			"Spk Amp", "LINEOUT L",
-			"Rcv Amp", "Receiver",
-			"Headphone Jack", "Headphone L",
-			"Headphone Jack", "Headphone R",
-			"Headset Mic", "AIN1",
-			"Main Mic", "MICBIAS1",
-			"Second Mic", "MICBIAS2";
+			"Rcv Amp", "Receiver";
 	};
 };
