@@ -1,5 +1,43 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the modem area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * The modem is MediaTek MT6785 MD1, generation 6295: control over CCIF, packet
+ * data over DPMAIF, no CLDMA, no second modem. The bootloader reserves its
+ * share memory and hands it to Linux under names of its own
+ * (mblock-<n>-ap_md_c_smem, -ap_md_nc_smem, -md_mem_usage, -ccci_tag_mem, with
+ * <n> changing between boots), so nothing of that is described here: the
+ * driver looks the regions up by name. Declaring them would also make the
+ * loader panic on the overlap, which is why this board file keeps its
+ * reserved-memory node empty.
+ *
+ * Stage M0: the modem's MTCMOS domain can be powered from Linux and its power
+ * status can be read. Nothing reads the CCIF registers yet -- they are only
+ * legal while the domain reports on, and a read with the domain off hangs the
+ * AXI bus.
  */
+
+/ {
+	ccci: modem@10209000 {
+		compatible = "xiaomi,rosemary-ccci";
+		status = "okay";
+
+		/* AP side and the modem's own view of CCIF0 */
+		reg = <0 0x10209000 0 0x1000>,
+		      <0 0x1020a000 0 0x1000>;
+		reg-names = "ap-ccif", "md-ccif";
+
+		/*
+		 * Mainline already has the complete MT6785 modem power
+		 * sequence for this domain: drivers/pmdomain/mediatek/
+		 * mt6785-pm-domains.h, MT6785_POWER_DOMAIN_MD, sta_mask
+		 * BIT(0), ctl_offs 0x318, pwr_sta_offs 0x160, ext_buck_iso
+		 * 0x3b0, caps EXT_BUCK_ISO | MODEM_PWRSEQ.
+		 */
+		power-domains = <&spm MT6785_POWER_DOMAIN_MD>;
+
+		/* syscon@10006000: PWR_STATUS at +0x160 is bit 0 of this domain */
+		mediatek,spm = <&scpsys>;
+	};
+};

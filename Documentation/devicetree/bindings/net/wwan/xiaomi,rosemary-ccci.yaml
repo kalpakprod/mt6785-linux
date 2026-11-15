@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/wwan/xiaomi,rosemary-ccci.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Xiaomi Poco M5s modem (MediaTek MT6785 MD1, CCCI over CCIF)
+
+maintainers:
+  - Poco M5s Linux port <noreply@example.invalid>
+
+description: |
+  The MediaTek MT6785 has a second processor for the modem (MD1), which the
+  application processor reaches through two transports: CCIF for the control
+  channels and DPMAIF for packet data. There is no CLDMA and no second modem
+  on this part. The node collects the modem processor itself and the
+  description of the resources the AP driver needs to power it, to restart it
+  and to reach its control registers.
+
+  The share memory the modem uses is not described here: the bootloader
+  reserves it and the mapper hands it to Linux with names of its own
+  (mblock-<n>-ap_md_c_smem and so on), so the driver looks the regions up by
+  name at run time.
+
+properties:
+  compatible:
+    const: xiaomi,rosemary-ccci
+
+  reg:
+    items:
+      - description: AP side of CCIF0
+      - description: modem side of CCIF0
+
+  reg-names:
+    items:
+      - const: ap-ccif
+      - const: md-ccif
+
+  power-domains:
+    maxItems: 1
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Phandle to the SCPSYS system controller (syscon@10006000), whose
+      PWR_STATUS register at +0x160 reports whether the modem's MTCMOS domain
+      is on.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - power-domains
+  - mediatek,spm
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/power/mediatek,mt6785-power.h>
+
+    modem@10209000 {
+        compatible = "xiaomi,rosemary-ccci";
+        reg = <0 0x10209000 0 0x1000>,
+              <0 0x1020a000 0 0x1000>;
+        reg-names = "ap-ccif", "md-ccif";
+        power-domains = <&spm MT6785_POWER_DOMAIN_MD>;
+        mediatek,spm = <&scpsys>;
+    };
