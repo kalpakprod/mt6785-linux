@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6785-consys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6785 CONNSYS (connectivity subsystem)
+
+maintainers:
+  - The poco-m5s port <worker@poco.local>
+
+description:
+  The MT6785 connectivity subsystem hosts the conn MCU that runs Wi-Fi,
+  Bluetooth, GNSS and FM on the MT6631 companion die. This node carries the
+  register windows the WMT driver maps by index, the three interrupts, the
+  CCIF clock gate, the conn power domain, the reserved memory the MCU
+  firmware is placed in, and the A-die supplies.
+
+properties:
+  compatible:
+    const: mediatek,mt6785-consys
+
+  '#address-cells':
+    const: 2
+
+  '#size-cells':
+    const: 2
+
+  ranges: true
+
+  reg:
+    description: >
+      Twelve register windows in this exact order - the vendor driver maps
+      them by index (MCU, TOP_RGU, INFRACFG_AO, SPM, CONN_HIF_ON,
+      TOP_MISC_OFF, MCU_CFG_ON, MCU_CIRQ, TOP_MISC_ON, CONN_HIF_PDMA,
+      AP_PCCIF4, INFRA_AO_PERICFG).
+    minItems: 12
+    maxItems: 12
+
+  reg-names:
+    items:
+      - const: mcu
+      - const: top_rgu
+      - const: infra_ao
+      - const: spm
+      - const: conn_hif_on
+      - const: top_misc_off
+      - const: mcu_cfg_on
+      - const: mcu_cirq
+      - const: top_misc_on
+      - const: conn_hif_pdma
+      - const: ap_pccif4
+      - const: infra_ao_pericfg
+
+  interrupts:
+    description: BGF_EINT, WDT_EINT and the conn-to-AP software interrupt.
+    minItems: 3
+    maxItems: 3
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: ccif
+
+  power-domains:
+    maxItems: 1
+
+  memory-region:
+    maxItems: 1
+
+  pmic:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: >
+      MT6359 PMIC, used for the A-die LDO and the conn clock buffer. The
+      vendor driver looks this property up by its short name.
+
+  vcn18-supply:
+    description: A-die 1.8 V rail.
+
+  vcn33_1_wifi-supply:
+    description: A-die 3.3 V rail feeding the RF and PLL.
+
+  vcn33_2_wifi-supply:
+    description: A-die 2.8 V rail.
+
+  pinctrl-names:
+    items:
+      - const: default
+      - const: gps_lna_state_init
+      - const: gps_lna_state_oh
+      - const: gps_lna_state_ol
+
+  pinctrl-0:
+    maxItems: 1
+
+  pinctrl-1:
+    maxItems: 1
+
+  pinctrl-2:
+    maxItems: 1
+
+  pinctrl-3:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - memory-region
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/clock/mediatek,mt6785-clk.h>
+    #include <dt-bindings/power/mediatek,mt6785-power.h>
+
+    consys@18002000 {
+        compatible = "mediatek,mt6785-consys";
+        reg = <0 0x18002000 0 0x1000>,
+              <0 0x10007000 0 0x0100>,
+              <0 0x10001000 0 0x1000>,
+              <0 0x10006000 0 0x1000>,
+              <0 0x18007000 0 0x1000>,
+              <0 0x180b1000 0 0x1000>,
+              <0 0x180a3000 0 0x1000>,
+              <0 0x180a5000 0 0x0800>,
+              <0 0x180c1000 0 0x1000>,
+              <0 0x18004000 0 0x1000>,
+              <0 0x1024c000 0 0x0040>,
+              <0 0x10003000 0 0x1000>;
+        interrupts = <GIC_SPI 321 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 78 IRQ_TYPE_LEVEL_LOW>,
+                     <GIC_SPI 323 IRQ_TYPE_EDGE_RISING>;
+        clocks = <&infracfg CLK_INFRA_CCIF4_AP>;
+        clock-names = "ccif";
+        power-domains = <&spm MT6785_POWER_DOMAIN_CONN>;
+        memory-region = <&consys_reserved>;
+        pmic = <&pmic>;
+    };
