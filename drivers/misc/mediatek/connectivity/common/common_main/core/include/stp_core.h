@@ -103,6 +103,12 @@ extern INT32 gStpDbgLvl;
 #define MTKSTP_BTIF_MAND_MODE	  STP_MODE_BIT(3)
 #define MTKSTP_SDIO_MODE          STP_MODE_BIT(4)
 
+/*
+ * Room for one whole STP frame. Must stay >= 512 bytes: the GPS and Wi-Fi
+ * firmware send 512-byte frames, and a smaller receive buffer truncates them
+ * (begonia: "CRC bad, len=512", study 2-connectivity.md 4.5 and 5 step 5).
+ * The vendor value of 16 KiB also covers the largest PDA and dump frames.
+ */
 #define MTKSTP_BUFFER_SIZE  (16384)
 #define PARSER_CORE_DUMP_NUM 200
 #define CORE_DUMP_NUM 100
