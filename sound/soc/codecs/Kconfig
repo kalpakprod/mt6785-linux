@@ -728,6 +728,18 @@ config SND_SOC_AW87390
 	  sound quality, which is a new high efficiency, low
 	  noise, constant large volume, 6th Smart K audio amplifier.
 
+config SND_SOC_AW87XXX
+	tristate "Awinic AW87xxx speaker amplifier"
+	depends on I2C
+	help
+	  The AW87xxx family (AW87339, AW87359, AW87369, AW87519, AW87559) are
+	  Class-D speaker amplifiers that are programmed over I2C with a
+	  per-scene register profile and switched from the sound card's DAPM
+	  graph.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called aw87xxx.
+
 config SND_SOC_AW88399_LIB
 	tristate
 	select SND_SOC_AW88395_LIB
