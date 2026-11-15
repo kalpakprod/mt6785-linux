@@ -356,7 +356,7 @@ static const struct snd_soc_dapm_widget mtk_dai_tdm_widgets[] = {
 	SND_SOC_DAPM_MUX("HDMI_CH7_MUX", SND_SOC_NOPM, 0, 0,
 			 &hdmi_ch7_mux_control),
 
-	SND_SOC_DAPM_CLOCK_SUPPLY("aud_tdm_clk"),
+	SND_SOC_DAPM_CLOCK_SUPPLY("aud_tdm"),
 
 	SND_SOC_DAPM_SUPPLY_S("TDM_EN", SUPPLY_SEQ_TDM_EN,
 			      AFE_TDM_CON1, TDM_EN_SFT, 0,
@@ -473,7 +473,7 @@ static const struct snd_soc_dapm_route mtk_dai_tdm_routes[] = {
 	{"TDM", NULL, "HDMI_CH6_MUX"},
 	{"TDM", NULL, "HDMI_CH7_MUX"},
 
-	{"TDM", NULL, "aud_tdm_clk"},
+	{"TDM", NULL, "aud_tdm"},
 	{"TDM", NULL, "TDM_BCK"},
 	{"TDM", NULL, "TDM_EN"},
 	{"TDM_BCK", NULL, "TDM_MCK"},
