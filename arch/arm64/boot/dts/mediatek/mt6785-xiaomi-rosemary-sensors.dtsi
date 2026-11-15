@@ -57,3 +57,19 @@
 
 	status = "okay";
 };
+
+/*
+ * The SCP's share memory in DRAM (sensor FIFO, logger), named by scp_mem_key above. Copied from the stock DT
+ * (poco-m5s/device-dump-2026-11-12/device-tree.dts:738): dynamic (no reg), so it cannot overlap one of the
+ * loader's mblock reservations (the loader hangs on such an overlap, see the board file); 4 MiB, 16 MiB
+ * aligned, from the window the SCP's MPU can reach.
+ */
+&reserved_memory {
+	scp_share: scp-share {
+		compatible = "mediatek,reserve-memory-scp_share";
+		no-map;
+		size = <0x00 0x400000>;
+		alignment = <0x00 0x1000000>;
+		alloc-ranges = <0x00 0x40000000 0x00 0x50000000>;
+	};
+};
