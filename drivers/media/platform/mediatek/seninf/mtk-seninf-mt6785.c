@@ -52,10 +52,8 @@
 #include "mtk-seninf-mt6785-replay.h"
 
 /* top registers, at the base of the digital block */
-#define SENINF_TOP_CTRL			0x0000
 #define SENINF_TOP_MUX_CTRL		0x0008
 #define SENINF_TOP_CAM_MUX_CTRL		0x0010
-#define SENINF_TOP_PHY_SENINF_CTL_CSI0	0x001c
 
 /* per-receiver block: 0x1000 bytes each, receiver n (1-based) at (n - 1) */
 #define SENINF_RX(n)			(0x1000 * ((n) - 1))
@@ -69,7 +67,6 @@
 #define   CSI2_CTL_HEADER_ORDER		BIT(16)
 #define SENINF_CSI2_LNRD_TIMING		0x0a08
 #define   CSI2_LNRD_SETTLE		GENMASK(15, 8)
-#define SENINF_CSI2_DPCM		0x0a0c
 #define SENINF_CSI2_INT_EN		0x0a10
 #define SENINF_CSI2_INT_STATUS		0x0a14
 #define SENINF_CSI2_DGB_SEL		0x0a18
@@ -85,7 +82,6 @@
 #define   MUX_CTRL_HS_POL		BIT(10)
 #define   MUX_CTRL_VS_POL		BIT(9)
 #define SENINF_MUX_INTEN		0x0d04
-#define SENINF_MUX_SPARE		0x0d2c
 #define SENINF_MUX_CTRL_EXT		0x0d3c
 #define   MUX_EXT_PIXEL_SEL		BIT(4)
 
@@ -95,7 +91,6 @@
 #define SENINF_CAM_MUX_EN		0x0410
 #define SENINF_CAM_MUX_OPT(n)		(0x0420 + 4 * (n))
 #define SENINF_CAM_MUX_CHK_CTL0(n)	(0x0500 + 0x10 * (n))
-#define SENINF_CAM_MUX_CHK_CTL1(n)	(0x0504 + 0x10 * (n))
 
 /* values the reference tree uses for a CSI-2 sensor at one pixel per clock */
 #define SENINF_SETTLE_DELAY		0x15

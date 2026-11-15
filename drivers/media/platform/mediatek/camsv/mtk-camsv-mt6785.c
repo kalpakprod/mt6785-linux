@@ -271,11 +271,6 @@ static bool camsv_buffer_written(struct camsv_dev *camsv,
  * Hardware
  */
 
-static void camsv_rmw(void __iomem *reg, u32 mask, u32 val)
-{
-	writel((readl(reg) & ~mask) | val, reg);
-}
-
 /* Hands the DMA the next queued buffer. qlock held. */
 static void camsv_program_next(struct camsv_dev *camsv)
 {
