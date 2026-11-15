@@ -792,6 +792,12 @@ static int camsv_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, camsv);
 
+	ret = devm_request_irq(dev, camsv->irq, camsv_irq, 0, dev_name(dev),
+			       camsv);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request irq %d\n",
+				     camsv->irq);
+
 	q = &camsv->queue;
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	q->io_modes = VB2_MMAP | VB2_DMABUF;
