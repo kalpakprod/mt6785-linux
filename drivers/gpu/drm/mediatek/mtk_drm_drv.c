@@ -111,6 +111,28 @@ static const unsigned int mt2712_mtk_ddp_third[] = {
 	DDP_COMPONENT_PWM2,
 };
 
+/*
+ * MT6785 main display path. Same component family as MT8183; the loader's own
+ * path on the POCO M5s (poco-m5s/evidence/try-force1/pl_lk.txt line 311) is
+ * ovl0_2l -> rsz0 -> ovl0 -> rdma0 -> color0 -> ccorr0 -> aal0 -> gamma0 ->
+ * postmask -> dither0 -> dsi0 with every colour block bypassed and postmask
+ * disabled (line 313), so the pass-through scaler rsz0 and postmask0 are left
+ * out here. mtk_drm_of_ddp_path_build_one() replaces this with the path it
+ * walks from the device tree, in this order; the array exists so that this
+ * SoC gets a CRTC_MAIN at all, which it never had.
+ */
+static const unsigned int mt6785_mtk_ddp_main[] = {
+	DDP_COMPONENT_OVL0,		/* 14008000 */
+	DDP_COMPONENT_OVL_2L0,		/* 14009000 */
+	DDP_COMPONENT_RDMA0,		/* 1400b000 */
+	DDP_COMPONENT_COLOR0,		/* 1400e000 */
+	DDP_COMPONENT_CCORR,		/* 1400f000 */
+	DDP_COMPONENT_AAL0,		/* 14010000 */
+	DDP_COMPONENT_GAMMA,		/* 14011000 */
+	DDP_COMPONENT_DITHER0,		/* 14012000 */
+	DDP_COMPONENT_DSI0,		/* 14014000 */
+};
+
 static unsigned int mt8167_mtk_ddp_main[] = {
 	DDP_COMPONENT_OVL0,
 	DDP_COMPONENT_COLOR0,
@@ -259,6 +281,12 @@ static const struct mtk_mmsys_driver_data mt2712_mmsys_driver_data = {
 	.mmsys_dev_num = 1,
 };
 
+static const struct mtk_mmsys_driver_data mt6785_mmsys_driver_data = {
+	.main_path = mt6785_mtk_ddp_main,
+	.main_len = ARRAY_SIZE(mt6785_mtk_ddp_main),
+	.mmsys_dev_num = 1,
+};
+
 static const struct mtk_mmsys_driver_data mt8167_mmsys_driver_data = {
 	.main_path = mt8167_mtk_ddp_main,
 	.main_len = ARRAY_SIZE(mt8167_mtk_ddp_main),
@@ -339,7 +367,7 @@ static const struct of_device_id mtk_drm_of_ids[] = {
 	{ .compatible = "mediatek,mt2712-mmsys",
 	  .data = &mt2712_mmsys_driver_data},
 	{ .compatible = "mediatek,mt6785-mmsys",
-	  .data = &mt8365_mmsys_driver_data},
+	  .data = &mt6785_mmsys_driver_data},
 	{ .compatible = "mediatek,mt8167-mmsys",
 	  .data = &mt8167_mmsys_driver_data},
 	{ .compatible = "mediatek,mt8173-mmsys",
