@@ -1,0 +1,13 @@
+# The modem's AT port (rosemary-ccci WWAN port): primary AT port for
+# ModemManager, which may take it only after rosemary-modemd has powered the
+# SIM (it creates /run/rosemary-modem/at-ready and sends a change event).
+# The packet data links (DPMAIF, wwan0 = the modem's first interface) exist
+# from boot and wait for the same flag, so the modem shows up whole.
+#
+# Ported from the cezanne port's 78-cezanne-modem.rules; the only change is
+# the driver name in DRIVERS==, delta row "device names in udev rules"
+# (cezanne-ccci -> rosemary-ccci), which is also what the mtk-ccmni
+# ModemManager plugin's udev rule uses (5-port-plan.md §2c).
+SUBSYSTEM=="wwan", KERNEL=="wwan0at0", DRIVERS=="rosemary-ccci", ENV{ID_MM_PORT_TYPE_AT_PRIMARY}="1"
+SUBSYSTEM=="wwan", KERNEL=="wwan0at0", DRIVERS=="rosemary-ccci", TEST!="/run/rosemary-modem/at-ready", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="net", DRIVERS=="rosemary-ccci", TEST!="/run/rosemary-modem/at-ready", ENV{ID_MM_DEVICE_IGNORE}="1"
