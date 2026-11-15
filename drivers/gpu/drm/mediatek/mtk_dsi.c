@@ -1211,6 +1211,17 @@ static ssize_t mtk_dsi_host_send_cmd(struct mtk_dsi *dsi,
 {
 	mtk_dsi_wait_for_idle(dsi);
 	mtk_dsi_irq_data_clear(dsi, flag);
+	/*
+	 * Start from a clean status word and a known enable mask, the way the
+	 * vendor does before every command (ddp_dsi.c, check_rdrdy_cmddone_irq():
+	 * it re-enables RD_RDY and CMD_DONE when they read back as 0, and warns
+	 * "Last DSI Read Why not clear irq???" when the status bits are still
+	 * set). DSI_INTSTA is sticky and nothing in this driver cleared it since
+	 * the loader left it, so a leftover bit could be read as this command's
+	 * completion.
+	 */
+	mtk_dsi_mask(dsi, DSI_INTSTA, flag, 0);
+	mtk_dsi_set_interrupt_enable(dsi);
 	mtk_dsi_cmdq(dsi, msg);
 	mtk_dsi_start(dsi);
 
