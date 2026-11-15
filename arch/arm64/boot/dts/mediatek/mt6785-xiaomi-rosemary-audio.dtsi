@@ -192,6 +192,7 @@
  */
 &spi3 {
 	status = "okay";
+	mediatek,pad-select = <0>;	/* [L] */
 
 	irled@0 {
 		compatible = "ir-spi-led";
