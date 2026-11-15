@@ -312,7 +312,7 @@ static int clear_smem(struct ccci_md *md)
 		{ "nc ccism_mcu..exp", NC_CCISM_MCU,
 		  NC_CCISM_MCU_EXP + NC_CCISM_MCU_EXP_SIZE - NC_CCISM_MCU },
 	};
-	int i, ret, errors = 0;
+	int i, errors = 0;
 
 	for (i = 0; i < ARRAY_SIZE(nc); i++)
 		if (smem_clear(md, nc[i].name, md->nc, md->nc_size, nc[i].off,
