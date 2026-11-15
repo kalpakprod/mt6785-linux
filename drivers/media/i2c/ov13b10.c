@@ -92,9 +92,12 @@ struct ov13b10_reg_list {
 	const struct ov13b10_reg *regs;
 };
 
-/* Link frequency config */
+/* Link frequency config: one entry per external clock the PLL table covers */
 struct ov13b10_link_freq_config {
 	u64 link_freq;
+
+	/* the external clock these PLL values are written for */
+	unsigned long ext_clk;
 
 	/* registers for this link frequency */
 	struct ov13b10_reg_list reg_list;
@@ -250,6 +253,45 @@ static const struct ov13b10_reg mipi_data_rate_1120mbps[] = {
 	{0x5047, 0xa4},
 	{0x5048, 0x20},
 	{0x5049, 0xa4},
+};
+
+/*
+ * The same 1120 Mbps/lane rate from a 24 MHz external clock. Only the PLL and
+ * clock-path registers change; every other value is the 19.2 MHz table's.
+ * Values from the vendor driver for this board,
+ * drivers/misc/mediatek/imgsensor/src/mt6785/ov13b10sunny_mipi_raw/
+ * ov13b10sunny_mipiraw_Sensor.c (Xiaomi MT6785 Android 4.19 tree),
+ * addr_data_pair_init_ov13b10sunny[]: 0x0303 = 0x01, 0x0305 = 0x46
+ * (PLL1 multiplier), 0x0325 = 0x50 (PLL2), and 0x3011 = 0x7c, which this
+ * driver's 19.2 MHz table does not carry at all.
+ */
+static const struct ov13b10_reg mipi_data_rate_1120mbps_24mhz[] = {
+	{0x0103, 0x01}, {0x0303, 0x01}, {0x0305, 0x46}, {0x0321, 0x00}, {0x0323, 0x04},
+	{0x0324, 0x01}, {0x0325, 0x50}, {0x0326, 0x81}, {0x0327, 0x04}, {0x3011, 0x7c},
+	{0x3012, 0x07}, {0x3013, 0x32}, {0x3107, 0x23}, {0x3501, 0x0c}, {0x3502, 0x10},
+	{0x3504, 0x08}, {0x3508, 0x07}, {0x3509, 0xc0}, {0x3600, 0x16}, {0x3601, 0x54},
+	{0x3612, 0x4e}, {0x3620, 0x00}, {0x3621, 0x68}, {0x3622, 0x66}, {0x3623, 0x03},
+	{0x3662, 0x92}, {0x3666, 0xbb}, {0x3667, 0x44}, {0x366e, 0xff}, {0x366f, 0xf3},
+	{0x3675, 0x44}, {0x3676, 0x00}, {0x367f, 0xe9}, {0x3681, 0x32}, {0x3682, 0x1f},
+	{0x3683, 0x0b}, {0x3684, 0x0b}, {0x3704, 0x0f}, {0x3706, 0x40}, {0x3708, 0x3b},
+	{0x3709, 0x72}, {0x370b, 0xa2}, {0x3714, 0x24}, {0x371a, 0x3e}, {0x3725, 0x42},
+	{0x3739, 0x12}, {0x3767, 0x00}, {0x377a, 0x0d}, {0x3789, 0x18}, {0x3790, 0x40},
+	{0x3791, 0xa2}, {0x37c2, 0x04}, {0x37c3, 0xf1}, {0x37d9, 0x0c}, {0x37da, 0x02},
+	{0x37dc, 0x02}, {0x37e1, 0x04}, {0x37e2, 0x0a}, {0x3800, 0x00}, {0x3801, 0x00},
+	{0x3802, 0x00}, {0x3803, 0x08}, {0x3804, 0x10}, {0x3805, 0x8f}, {0x3806, 0x0c},
+	{0x3807, 0x47}, {0x3808, 0x10}, {0x3809, 0x70}, {0x380a, 0x0c}, {0x380b, 0x30},
+	{0x380c, 0x04}, {0x380d, 0x98}, {0x380e, 0x0c}, {0x380f, 0x7c}, {0x3811, 0x0f},
+	{0x3813, 0x09}, {0x3814, 0x01}, {0x3815, 0x01}, {0x3816, 0x01}, {0x3817, 0x01},
+	{0x381f, 0x08}, {0x3820, 0x88}, {0x3821, 0x00}, {0x3822, 0x14}, {0x382e, 0xe6},
+	{0x3c80, 0x00}, {0x3c87, 0x01}, {0x3c8c, 0x19}, {0x3c8d, 0x1c}, {0x3ca0, 0x00},
+	{0x3ca1, 0x00}, {0x3ca2, 0x00}, {0x3ca3, 0x00}, {0x3ca4, 0x50}, {0x3ca5, 0x11},
+	{0x3ca6, 0x01}, {0x3ca7, 0x00}, {0x3ca8, 0x00}, {0x4008, 0x02}, {0x4009, 0x0f},
+	{0x400a, 0x01}, {0x400b, 0x19}, {0x4011, 0x21}, {0x4017, 0x08}, {0x4019, 0x04},
+	{0x401a, 0x58}, {0x4032, 0x1e}, {0x4050, 0x02}, {0x4051, 0x09}, {0x405e, 0x00},
+	{0x4066, 0x02}, {0x4501, 0x00}, {0x4502, 0x10}, {0x4505, 0x00}, {0x4800, 0x64},
+	{0x481b, 0x3e}, {0x481f, 0x30}, {0x4825, 0x34}, {0x4837, 0x0e}, {0x484b, 0x01},
+	{0x4883, 0x02}, {0x5000, 0xff}, {0x5001, 0x0f}, {0x5045, 0x20}, {0x5046, 0x20},
+	{0x5047, 0xa4}, {0x5048, 0x20}, {0x5049, 0xa4},
 };
 
 static const struct ov13b10_reg mode_4208x3120_regs[] = {
@@ -574,7 +616,12 @@ static const char * const ov13b10_test_pattern_menu[] = {
 #define OV13B10_LINK_FREQ_560MHZ	560000000ULL
 #define OV13B10_LINK_FREQ_INDEX_0	0
 
-#define OV13B10_EXT_CLK			19200000
+/*
+ * External clocks the PLL tables below are written for. Boards in the wild
+ * feed 19.2 MHz; this phone feeds 24 MHz, which is why there are two sets.
+ */
+#define OV13B10_EXT_CLK_19_2MHZ		19200000
+#define OV13B10_EXT_CLK_24MHZ		24000000
 #define OV13B10_4_DATA_LANES		4
 #define OV13B10_2_DATA_LANES		2
 
@@ -600,11 +647,20 @@ static const struct ov13b10_link_freq_config
 			link_freq_configs[] = {
 	{
 		.link_freq = OV13B10_LINK_FREQ_560MHZ,
+		.ext_clk = 19200000,
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mipi_data_rate_1120mbps),
 			.regs = mipi_data_rate_1120mbps,
 		}
-	}
+	},
+	{
+		.link_freq = OV13B10_LINK_FREQ_560MHZ,
+		.ext_clk = 24000000,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(mipi_data_rate_1120mbps_24mhz),
+			.regs = mipi_data_rate_1120mbps_24mhz,
+		}
+	},
 };
 
 /* Mode configs */
@@ -739,6 +795,9 @@ struct ov13b10 {
 
 	/* Data lanes used */
 	u8 data_lanes;
+
+	/* Link frequency config matching the board's external clock */
+	unsigned int link_freq_cfg;
 
 	/* True if the device has been identified */
 	bool identified;
@@ -1254,7 +1313,13 @@ static int ov13b10_start_streaming(struct ov13b10 *ov13b)
 		return ret;
 	}
 
-	link_freq_index = ov13b->cur_mode->link_freq_index;
+	/*
+	 * The PLL set depends on the board's external clock, not on the mode:
+	 * every mode wants the same 1120 Mbps/lane, but the divisors that
+	 * produce it differ between a 19.2 MHz and a 24 MHz input. The mode's
+	 * link_freq_index selects the rate, which all entries share.
+	 */
+	link_freq_index = ov13b->link_freq_cfg;
 	reg_list = &link_freq_configs[link_freq_index].reg_list;
 	ret = ov13b10_write_reg_list(ov13b, reg_list);
 	if (ret) {
@@ -1478,6 +1543,7 @@ static void ov13b10_free_controls(struct ov13b10 *ov13b)
 static int ov13b10_get_pm_resources(struct ov13b10 *ov13b)
 {
 	unsigned long freq;
+	unsigned int i;
 	int ret;
 
 	ov13b->reset = devm_gpiod_get_optional(ov13b->dev, "reset",
@@ -1492,10 +1558,15 @@ static int ov13b10_get_pm_resources(struct ov13b10 *ov13b)
 				     "failed to get imaging clock\n");
 
 	freq = clk_get_rate(ov13b->img_clk);
-	if (freq != OV13B10_EXT_CLK)
+	for (i = 0; i < ARRAY_SIZE(link_freq_configs); i++) {
+		if (link_freq_configs[i].ext_clk == freq)
+			break;
+	}
+	if (i == ARRAY_SIZE(link_freq_configs))
 		return dev_err_probe(ov13b->dev, -EINVAL,
 				     "external clock %lu is not supported\n",
 				     freq);
+	ov13b->link_freq_cfg = i;
 
 	for (unsigned int i = 0; i < ARRAY_SIZE(ov13b10_supply_names); i++)
 		ov13b->supplies[i].supply = ov13b10_supply_names[i];
