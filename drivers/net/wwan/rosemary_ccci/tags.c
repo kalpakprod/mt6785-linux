@@ -293,22 +293,109 @@ static void tags_read_ccb(struct ccci_md *md)
 		 md->ccb_data_size);
 }
 
-/* struct _csmem_item: the cacheable window's first descriptor */
+/*
+ * One entry of the loader's cacheable layout, struct _csmem_item
+ * (ccci_util_lib_fo.c:380-386). Spelled with fixed-width types and left
+ * unpacked, exactly as the loader writes it: u64 address, then md_offset,
+ * csmem_buffer_size and item_cnt (the SMEM_USER_ID). The struct is not packed,
+ * so its size is 24 with four bytes of tail padding -- taking the stride from
+ * sizeof(*item) rather than adding the fields is what keeps entry n at the
+ * right place.
+ */
+struct csmem_item {
+	__le64 addr;
+	__le32 md_offset;
+	__le32 size;
+	__le32 id;
+};
+
+#define CSMEM_ITEM_MAX		32
+
+/**
+ * tags_read_cacheable() - take the real cacheable layout from the loader
+ * @md: the modem
+ *
+ * The cacheable window's sub-regions are NOT at fixed offsets: the loader
+ * describes them in md1_bank4_cache_info (how many) and
+ * md1_bank4_cache_layout (the array of struct _csmem_item, one per
+ * SMEM_USER_ID). The vendor kernel reads them exactly so
+ * (ccci_util_lib_fo.c cshare_memory_info_parsing() and
+ * get_md_cache_region_info()), and this phone's own trial printed a layout
+ * that no constant table would have guessed: md1_bank4_cache_info says
+ * "buffer 0x8c000000 + 0x1780000, md offset 0xc000000, 5 items".
+ *
+ * Reading them here is what keeps the driver from writing outside the mapped
+ * window: a constant table copied from another phone put the CCB buffers at
+ * 0x4900000, i.e. 64 MiB into a 23.5 MiB window, and the first boot out ran
+ * the mapping and oopsed.
+ */
 static void tags_read_cacheable(struct ccci_md *md)
 {
-	u8 buf[20];
+	struct csmem_item *raw;
+	u8 buf[sizeof(struct csmem_item)];
+	u64 window_base;
+	u32 window_size, items, i;
 	int ret;
 
+	/*
+	 * The info tag is one struct _csmem_item too: address and size of the
+	 * whole cacheable window, and how many descriptors the layout tag
+	 * holds. Its size is what the vendor's get_md_resv_csmem_info()
+	 * returns for the window.
+	 */
 	ret = tag_read(md, "md1_bank4_cache_info", buf, sizeof(buf));
 	if (ret < sizeof(buf)) {
 		dev_warn(md->dev, "no md1_bank4_cache_info tag (%d)\n", ret);
 		return;
 	}
-	dev_info(md->dev, "md1_bank4_cache_info: buffer %#llx + %#x, md offset %#x, %u items\n",
-		 le64_to_cpu(get_unaligned_le64(buf)),
-		 le32_to_cpu(get_unaligned_le32(buf + 12)),
-		 le32_to_cpu(get_unaligned_le32(buf + 8)),
-		 le32_to_cpu(get_unaligned_le32(buf + 16)));
+	window_base = le64_to_cpu(get_unaligned_le64(buf));
+	window_size = le32_to_cpu(get_unaligned_le32(buf + 12));
+	items = le32_to_cpu(get_unaligned_le32(buf + 16));
+	dev_info(md->dev, "md1_bank4_cache_info: buffer %#llx + %#x, %u items\n",
+		 window_base, window_size, items);
+	/*
+	 * This is the loader's own statement of the window's extent: if it
+	 * disagrees with the reservation the driver mapped, the mapped size is
+	 * the smaller of the two and every write is checked against that.
+	 */
+	if (window_size && window_base == md->c_phys && window_size < md->c_size) {
+		dev_info(md->dev, "the loader's cacheable window is %#x, the reservation %#llx: using the smaller\n",
+			 window_size, (u64)md->c_size);
+		md->c_size = window_size;
+	}
+	if (!items || items > CSMEM_ITEM_MAX) {
+		dev_warn(md->dev, "%u cacheable items is outside what the loader can describe\n",
+			 items);
+		return;
+	}
+
+	/*
+	 * The whole descriptor array is one tag. tag_read() copies at most the
+	 * size it is given, so the buffer is sized from the count the loader
+	 * just declared, capped so a bad count cannot overrun anything.
+	 */
+	raw = kcalloc(items, sizeof(*raw), GFP_KERNEL);
+	if (!raw)
+		return;
+	ret = tag_read(md, "md1_bank4_cache_layout", raw,
+		       items * sizeof(*raw));
+	if (ret != items * sizeof(*raw)) {
+		dev_warn(md->dev, "no usable md1_bank4_cache_layout tag (%d of %zu)\n",
+			 ret, items * sizeof(*raw));
+		kfree(raw);
+		return;
+	}
+	for (i = 0; i < items; i++) {
+		md->c_item[i].addr = le64_to_cpu(raw[i].addr);
+		md->c_item[i].md_off = le32_to_cpu(raw[i].md_offset);
+		md->c_item[i].size = le32_to_cpu(raw[i].size);
+		md->c_item[i].id = le32_to_cpu(raw[i].id);
+		dev_info(md->dev, "cacheable[%u] id %u: %#llx + %#x, md offset %#x\n",
+			 i, md->c_item[i].id, md->c_item[i].addr,
+			 md->c_item[i].size, md->c_item[i].md_off);
+	}
+	md->c_item_num = items;
+	kfree(raw);
 }
 
 /*
@@ -447,6 +534,25 @@ static int lk_header_from_chosen(struct ccci_md *md)
  * reads the tags out of it. Nothing here writes to a modem register or to share
  * memory, so it is safe whatever state the modem is in.
  */
+/**
+ * ccci_smem_region() - one region of the loader's cacheable layout
+ * @md: the modem
+ * @id: the SMEM_USER_ID to look for
+ *
+ * Returns the descriptor, or NULL when the loader did not describe that
+ * region (or the layout tag was unreadable). A NULL means "do not touch it":
+ * every caller must check.
+ */
+const struct ccci_c_item *ccci_smem_region(struct ccci_md *md, u32 id)
+{
+	u32 i;
+
+	for (i = 0; i < md->c_item_num; i++)
+		if (md->c_item[i].id == id && md->c_item[i].size)
+			return &md->c_item[i];
+	return NULL;
+}
+
 int rosemary_ccci_tags_init(struct ccci_md *md)
 {
 	phys_addr_t base;
