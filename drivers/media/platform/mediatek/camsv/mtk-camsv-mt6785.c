@@ -165,7 +165,6 @@ struct camsv_buffer {
  * @width, @height: the frame geometry, from the DT or from try_fmt
  * @scratch: the buffer CAMSV_FRAME_WRITE_BASE points at
  * @scratch_dma: its DMA address
- * @fwnode: the endpoint that feeds this engine, if any
  */
 struct camsv_dev {
 	struct device *dev;
@@ -198,7 +197,6 @@ struct camsv_dev {
 	void *scratch;
 	dma_addr_t scratch_dma;
 
-	struct fwnode_handle *fwnode;
 };
 
 static inline struct camsv_buffer *to_camsv_buffer(struct vb2_v4l2_buffer *vb)
@@ -722,15 +720,8 @@ static const struct v4l2_file_operations camsv_fops = {
 
 static int camsv_get_geometry(struct camsv_dev *camsv)
 {
-	struct device_node *ep;
 	u32 v;
 	int ret;
-
-	ep = of_graph_get_next_endpoint(camsv->dev->of_node, NULL);
-	if (ep) {
-		camsv->fwnode = fwnode_graph_get_remote_endpoint(of_fwnode_handle(ep));
-		of_node_put(ep);
-	}
 
 	/*
 	 * The frame the engine captures is the sensor's mode; until SENINF and

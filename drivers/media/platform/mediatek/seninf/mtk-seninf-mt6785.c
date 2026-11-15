@@ -154,6 +154,8 @@ struct seninf_dev {
 
 	struct v4l2_subdev sd;
 	struct media_pad pads[SENINF_NUM_PADS];
+	struct v4l2_device v4l2_dev;
+	struct media_device mdev;
 
 	unsigned int port;
 	unsigned int cam_mux;
@@ -458,8 +460,18 @@ static int seninf_notifier_bound(struct v4l2_async_notifier *notifier,
 	return ret;
 }
 
+static int seninf_notifier_complete(struct v4l2_async_notifier *notifier)
+{
+	struct seninf_dev *seninf =
+		container_of(notifier, struct seninf_dev, nf);
+
+	/* every sensor is bound and linked: the graph is complete */
+	return media_device_register(&seninf->mdev);
+}
+
 static const struct v4l2_async_notifier_operations seninf_notifier_ops = {
 	.bound = seninf_notifier_bound,
+	.complete = seninf_notifier_complete,
 };
 
 static int seninf_parse_endpoint(struct seninf_dev *seninf,
@@ -601,12 +613,24 @@ static int seninf_probe(struct platform_device *pdev)
 		goto err_media;
 	}
 
-	ret = v4l2_device_register(dev, &seninf->sd.v4l2_dev);
+	/*
+	 * SENINF owns the media device of the camera pipeline and registers it
+	 * once a sensor is bound; the sensor and the CAMSV video node join it
+	 * through the v4l2_device that v4l2_async_register_subdev_sensor() and
+	 * the capture driver find by walking the graph.
+	 */
+	ret = v4l2_device_register(dev, &seninf->v4l2_dev);
 	if (ret) {
 		dev_err_probe(dev, ret, "v4l2 device register failed\n");
 		goto err_cleanup;
 	}
-	sd->v4l2_dev = &seninf->sd.v4l2_dev;
+	sd->v4l2_dev = &seninf->v4l2_dev;
+
+	seninf->mdev.dev = dev;
+	seninf->mdev.hw_revision = 0;
+	strscpy(seninf->mdev.model, "mtk-seninf", sizeof(seninf->mdev.model));
+	media_device_init(&seninf->mdev);
+	seninf->v4l2_dev.mdev = &seninf->mdev;
 
 	v4l2_async_subdev_nf_init(&seninf->nf, sd);
 	seninf->nf.ops = &seninf_notifier_ops;
@@ -617,7 +641,13 @@ static int seninf_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(dev);
 
-	ret = v4l2_async_register_subdev_sensor(sd);
+	/*
+	 * SENINF is a bridge, not a sensor: it registers its own notifier for
+	 * the sensors that feed it, so it is registered as a plain subdev.
+	 * v4l2_async_register_subdev_sensor() would create a second notifier
+	 * for its own fwnode, which this node does not have.
+	 */
+	ret = v4l2_async_register_subdev(sd);
 	if (ret) {
 		dev_err_probe(dev, ret, "subdev register failed\n");
 		goto err_pm;
@@ -642,7 +672,9 @@ err_pm:
 	pm_runtime_disable(dev);
 err_nf:
 	v4l2_async_nf_cleanup(&seninf->nf);
-	v4l2_device_unregister(&seninf->sd.v4l2_dev);
+	media_device_unregister(&seninf->mdev);
+	media_device_cleanup(&seninf->mdev);
+	v4l2_device_unregister(&seninf->v4l2_dev);
 err_cleanup:
 	v4l2_subdev_cleanup(sd);
 err_media:
@@ -659,7 +691,9 @@ static void seninf_remove(struct platform_device *pdev)
 	v4l2_async_nf_cleanup(&seninf->nf);
 	v4l2_async_unregister_subdev(&seninf->sd);
 	pm_runtime_disable(seninf->dev);
-	v4l2_device_unregister(&seninf->sd.v4l2_dev);
+	media_device_unregister(&seninf->mdev);
+	media_device_cleanup(&seninf->mdev);
+	v4l2_device_unregister(&seninf->v4l2_dev);
 	v4l2_subdev_cleanup(&seninf->sd);
 	media_entity_cleanup(&seninf->sd.entity);
 }
