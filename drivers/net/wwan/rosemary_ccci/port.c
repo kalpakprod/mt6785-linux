@@ -348,10 +348,13 @@ void ccci_ports_online(struct ccci_md *md, bool on)
 
 static void port_destroy(struct ccci_md *md, int i)
 {
-	if (port_cfg[i].wwan != NO_WWAN)
+	if (port_cfg[i].wwan != NO_WWAN || !md->ports[i].dev)
 		return;
-	cdev_device_del(&md->ports[i].cdev, md->ports[i].dev);
-	put_device(md->ports[i].dev);
+	if (md->ports[i].cdev_added)
+		cdev_del(&md->ports[i].cdev);
+	device_unregister(md->ports[i].dev);
+	md->ports[i].dev = NULL;
+	md->ports[i].cdev_added = false;
 }
 
 /**
@@ -398,19 +401,27 @@ int ccci_ports_init(struct ccci_md *md)
 		port->dev = device_create(&ccci_class, md->dev, md->devt + i, port,
 					  "%s", port->name);
 		if (IS_ERR(port->dev)) {
-			ret = PTR_ERR(port->dev);
+			port->dev = NULL;
+			ret = -ENODEV;
 			goto err_ports;
 		}
-		ret = cdev_device_add(&port->cdev, port->dev);
-		if (ret) {
-			put_device(port->dev);
+		/*
+		 * device_create() has already put the device into sysfs and the
+		 * class, so only the character device is registered here.
+		 * cdev_device_add() would call device_add() a second time, and
+		 * registering the same name twice is what gave -EEXIST on the
+		 * phone.
+		 */
+		ret = cdev_add(&port->cdev, md->devt + i, 1);
+		if (ret)
 			goto err_ports;
-		}
+		port->cdev_added = true;
 	}
 	return 0;
 
 err_ports:
-	while (--i >= 0)
+	/* port @i itself may already have a device: destroy it too */
+	for (; i >= 0; i--)
 		port_destroy(md, i);
 	unregister_chrdev_region(md->devt, md->num_ports);
 err_class:

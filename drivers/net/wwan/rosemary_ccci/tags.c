@@ -71,6 +71,13 @@
 #define MD_CAP_FDD_LTE		BIT(5)
 #define MD_CAP_NR		BIT(6)
 
+/* what this board can actually do: G|T|W|Lt|Lf -- no cdma2000, no NR */
+#define MD_CAP_BOARD_MASK	(MD_CAP_GSM | BIT(1) | MD_CAP_WCDMA | MD_CAP_TDD_LTE | \
+				 MD_CAP_FDD_LTE)
+/* the world-mode bitmap the vendor config asks for: ulwg */
+#define MD_CAP_ULWG		(MD_CAP_GSM | MD_CAP_WCDMA | MD_CAP_TDD_LTE | \
+				 MD_CAP_FDD_LTE)
+
 /* md_img_capability_map[] (ccci_util_md_rat.c:33-86), indexed by image_type */
 static const u32 md_img_cap_map[] = {
 	0,
@@ -310,10 +317,28 @@ static void tags_read_cacheable(struct ccci_md *md)
  * capability table. This is where the world-mode bitmap sent at handshake 1
  * will come from, instead of a constant.
  */
+/**
+ * tags_read_capability() - what RATs this phone may announce to the modem
+ * @md: the modem
+ *
+ * The image's own capability says what the SOFTWARE can do; it is not a
+ * statement about this board. The load here reports image type 12, which the
+ * vendor's md_img_capability_map[] (ccci_util_md_rat.c:69-71) describes as
+ * LWCTG -- LTE plus WCDMA plus cdma2000 plus GSM -- so the raw map gives
+ * 0x3d, with cdma2000 set. This phone has no CDMA subsystem at all: no C2K
+ * driver, ro.vendor.mtk_md3_support=0, and its own configuration asks for
+ * ro.vendor.mtk_md1_support=9, ulwg = 0x39. Announcing a RAT the hardware
+ * cannot work is exactly the class of mistake the study warns about, so the
+ * image's set is narrowed to what the board can actually do.
+ *
+ * The mask is G|T|W|Lt|Lf: everything this SoC's modem path supports except
+ * cdma2000 (no subsystem) and NR (this SKU is 4G). Narrowing type 12's 0x3d
+ * by it gives 0x39 -- the configuration value, arrived at independently.
+ */
 static void tags_read_capability(struct ccci_md *md)
 {
 	u8 buf[24];
-	u32 type;
+	u32 type, image_cap;
 	int ret;
 
 	ret = tag_read(md, "md1_chk", buf, sizeof(buf));
@@ -327,10 +352,16 @@ static void tags_read_capability(struct ccci_md *md)
 			 type);
 		return;
 	}
-	md->md_img_cap = md_img_cap_map[type];
-	dev_info(md->dev, "md image type %u cap %#x\n", type, md->md_img_cap);
-	if (md->md_img_cap != 0x39)
-		dev_warn(md->dev, "expected ulwg (0x39) from ro.vendor.mtk_md1_support=9\n");
+	image_cap = md_img_cap_map[type];
+	md->md_img_cap = image_cap & MD_CAP_BOARD_MASK;
+	dev_info(md->dev, "md image type %u cap %#x, board cap %#x\n",
+		 type, image_cap, md->md_img_cap);
+	if (image_cap & ~MD_CAP_BOARD_MASK)
+		dev_info(md->dev, "the image offers RATs this board has no hardware for: %#x dropped\n",
+			 (u32)(image_cap & ~MD_CAP_BOARD_MASK));
+	if (md->md_img_cap != MD_CAP_ULWG)
+		dev_warn(md->dev, "expected ulwg (%#x) from ro.vendor.mtk_md1_support=9\n",
+			 (u32)MD_CAP_ULWG);
 }
 
 /**
