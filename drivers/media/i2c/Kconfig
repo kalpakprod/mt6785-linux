@@ -60,6 +60,16 @@ config VIDEO_AR0521
 	  To compile this driver as a module, choose M here: the
 	  module will be called ar0521.
 
+config VIDEO_GC02M1
+	tristate "GalaxyCore gc02m1 sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the GalaxyCore gc02m1
+	  camera, a 2 megapixel sensor with a single MIPI CSI-2 lane.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called gc02m1.
+
 config VIDEO_GC0308
 	tristate "GalaxyCore GC0308 sensor support"
 	select V4L2_CCI_I2C
@@ -642,6 +652,17 @@ config VIDEO_OV6211
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ov6211.
+
+config VIDEO_OV64B40
+	tristate "OmniVision OV64B40 sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the OmniVision OV64B40
+	  camera, a 64 megapixel part with a 3-trio C-PHY or a CSI-2 D-PHY
+	  output.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ov64b40.
 
 config VIDEO_OV64A40
 	tristate "OmniVision OV64A40 sensor support"

@@ -1,5 +1,568 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the camera area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * Every address, GPIO, supply and bus below comes from one of:
+ *   - the phone's live device tree, poco-m5s/device-dump-2026-11-12/device-tree.dts
+ *     (i2c6/wl2866d@28, the camera pinctrl groups, the kd_camera_hw1 rail wiring);
+ *   - the vendor imgsensor power tables,
+ *     drivers/misc/mediatek/imgsensor/src/mt6785/camera_hw/imgsensor_cfg_table.c
+ *     (rail order and delays, MCLK frequency, lane counts);
+ *   - poco-m5s/research/native/5-cameras.md (which sensor sits where, and why).
+ * Nothing here was measured on the phone yet; the report lists what to check.
  */
+
+/* ------------------------------------------------------- camera rails (LDO) */
+
+/*
+ * WL2866D at I2C6 0x28, enable GPIO195. Live DT: i2c6@11005000/wl2866d@28,
+ * en-gpio <&pio 0xc3 0x0>; its SCL/SDA are GPIO45/46 (scl-gpio-id 0x2d,
+ * sda-gpio-id 0x2e), which are the pins muxed to SCL6/SDA6.
+ *
+ * The child names are the ones the driver matches (dvdd1/dvdd2/avdd1/avdd2)
+ * and the windows are the part's, from the vendor driver's voltage formulas:
+ * DVDD 0.6-2.13 V in 6 mV steps, AVDD 1.2-4.3875 V in 12.5 mV steps.
+ */
+&i2c6 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins>;
+
+	regulator@28 {
+		compatible = "willsemi,wl2866d";
+		reg = <0x28>;
+
+		enable-gpios = <&pio 195 GPIO_ACTIVE_LOW>;
+
+		regulators {
+			/*
+			 * Each output names the working point it is registered
+			 * with, as the vendor DT does with init-voltage: 1.2 V for
+			 * the DVDD pair, 2.8 V for the AVDD pair (the vendor's own
+			 * values, live DT wl2866d@28, init-voltage 0x100590 /
+			 * 0x2ab980). The regulator core applies a min == max range
+			 * at registration and neither sensor driver sets a voltage
+			 * of its own, so with a wide range the rail would simply
+			 * stay wherever it was.
+			 *
+			 * cam_avdd1 feeds both cam1 (OV13B10, 2.8 V) and cam2
+			 * (IMX355, 2.7 V) on one net: the live DT wires cam1_vcama
+			 * and cam2_vcama to the same phandle (0x190), so one value
+			 * has to serve both. 2.8 V is the vendor's init-voltage for
+			 * that rail and the higher of the two requests.
+			 */
+			cam_dvdd1: dvdd1 {
+				regulator-name = "wl2866d_dvdd1";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			/*
+			 * dvdd2 feeds only the main camera, whose vendor power
+			 * table asks for DVDD 1.1 V. The output's grid is
+			 * 600 mV + n * 60 mV (the vendor driver's
+			 * VSET_BASE_12/VSET_STEP_MV), so 1.1 V does not exist
+			 * on it: the nearest step below the request, 1.08 V
+			 * (selector 80), is used, which is also what the live
+			 * DT's init voltage 0x100590 = 1.05 V sits next to.
+			 */
+			cam_dvdd2: dvdd2 {
+				regulator-name = "wl2866d_dvdd2";
+				regulator-min-microvolt = <1080000>;
+				regulator-max-microvolt = <1080000>;
+			};
+
+			cam_avdd1: avdd1 {
+				regulator-name = "wl2866d_avdd1";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_avdd2: avdd2 {
+				regulator-name = "wl2866d_avdd2";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+		};
+	};
+};
+
+/* --------------------------------------------------- MIPI CSI-2 receiver PHY */
+
+/*
+ * The analog receiver block starts at 0x11c80000. The live DT describes it as
+ * six 4 KB banks, mipi_rx_ana_csi0a@11c80000 through mipi_rx_ana_csi2b@11c85000;
+ * the driver drives the B bank at a fixed +0x1000 from the node's base, so one
+ * node covers a CSI port as 0x2000 bytes. Only CSI port 0 is described: it is
+ * the pair the sensors below are wired to.
+ */
+&{/soc} {
+	phy@11c80000 {
+		compatible = "mediatek,mt6785-csi-rx";
+		reg = <0 0x11c80000 0 0x2000>;
+		num-lanes = <4>;
+		#phy-cells = <1>;
+		status = "disabled";
+	};
+};
+
+/* --------------------------------------------------------------- pinctrl */
+
+/*
+ * MCLK pins, from the live DT's per-camera groups (camera0_mclk_*@gpio116,
+ * camera1_mclk_*@gpio120, camera2_mclk_*@gpio121): the pin muxes to CMMCLK0,
+ * CMMCLK2 and CMMCLK3 respectively, and the vendor enables them at 4 mA
+ * (`MCLK_STATE_ENABLE_4MA` in camera_hw/mclk/mclk.c, drive-strength 1 in the
+ * vendor DT). Mainline's mediatek pinctrl wants a mA value, so 4 follows.
+ *
+ * Which CAMTG drives which pin is not stated by any source we have: the vendor
+ * DT only muxes the pins to CMMCLK0..4 and hands a timer-generator index in
+ * from userspace at runtime (ACDK_SENSOR_MCLK_STRUCT.TG in seninf_clk.c). The
+ * nodes therefore follow one rule - CMMCLKn is driven by clock CAMTG(n+1) -
+ * and the phone check in the report settles whether the rule is right.
+ *
+ * The reset lines are deliberately absent: each sensor driver claims its own
+ * reset GPIO as a descriptor and drives it, and a pinctrl state that also
+ * drives the same pad would fight it.
+ */
+&pio {
+	cam0_mclk_pins: cam0-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO116__FUNC_CMMCLK0>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam1_mclk_pins: cam1-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO120__FUNC_CMMCLK2>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam2_mclk_pins: cam2-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO121__FUNC_CMMCLK3>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam4_mclk_pins: cam4-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO117__FUNC_CMMCLK1>;
+			drive-strength = <4>;
+		};
+	};
+
+	i2c2_pins: i2c2-pins {
+		pins {
+			pinmux = <PINMUX_GPIO112__FUNC_SCL2>,
+				 <PINMUX_GPIO113__FUNC_SDA2>;
+			bias-pull-up;
+		};
+	};
+
+	i2c4_pins: i2c4-pins {
+		pins {
+			pinmux = <PINMUX_GPIO110__FUNC_SCL4>,
+				 <PINMUX_GPIO111__FUNC_SDA4>;
+			bias-pull-up;
+		};
+	};
+
+	i2c6_pins: i2c6-pins {
+		pins {
+			pinmux = <PINMUX_GPIO45__FUNC_SCL6>,
+				 <PINMUX_GPIO46__FUNC_SDA6>;
+			bias-pull-up;
+		};
+	};
+
+};
+
+/* --------------------------------------------------------------- sensors */
+
+/*
+ * The vendor DT's "camera_main@1a" style nodes are I2C adapter anchors for the
+ * vendor framework, not sensors (study section 1.1); mainline wants one node
+ * per real sensor address, which is what follows.
+ *
+ * Rail wiring from the live DT kd_camera_hw1 node:
+ *   cam1 (front, OV13B10)      vcama = wl2866d_avdd1, vcamd = wl2866d_dvdd1
+ *   cam2 (ultrawide, IMX355)   vcama = wl2866d_avdd1, vcamd = wl2866d_dvdd1
+ *   both                       vcamio = the PMIC's 1.8 V LDO (dovdd)
+ * The voltages are the vendor power table's: OV13B10 AVDD 2.8 V / DVDD 1.2 V,
+ * IMX355 AVDD 2.7 V / DVDD 1.2 V, both DOVDD 1.8 V. They are applied through
+ * regulator-min/max-microvolt, because the regulator core sets a rail to its
+ * constraint range at registration and neither sensor driver sets a voltage.
+ */
+&i2c4 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_pins>;
+
+	/*
+	 * Front camera, OV13B10 at 7-bit 0x36 (vendor .i2c_addr_table
+	 * {0x6C, 0x20, 0xff} in 8-bit form, study section 1.1), 4 D-PHY lanes.
+	 * Fixed focus: no VCM.
+	 *
+	 * Clock: the board feeds 24 MHz (vendor .mclk = 24 for every module),
+	 * which is what is requested here. The mainline driver currently
+	 * accepts only 19.2 MHz and its PLL table is written for that input
+	 * (OV13B10_EXT_CLK, and its link-frequency table sets 0x0305 = 0xaf,
+	 * the vendor's 24 MHz table sets 0x46); see the report. CAMTG cannot
+	 * produce 19.2 MHz on this SoC, so the driver needs the 24 MHz entry.
+	 */
+	camera@36 {
+		compatible = "ovti,ov13b10";
+		reg = <0x36>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG3>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd1>;
+		dvdd-supply = <&cam_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 124 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam1_mclk_pins>;
+
+		status = "okay";
+
+		port {
+			front_cam_out: endpoint {
+				remote-endpoint = <&seninf_front_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <560000000>;
+			};
+		};
+	};
+
+	/*
+	 * Ultrawide, IMX355 at 7-bit 0x1a (vendor .i2c_addr_table {0x34, 0xff}
+	 * in 8-bit form), 4 D-PHY lanes. The driver's clock table has a 24 MHz
+	 * entry (imx355_clk_params[]: ext_clk 24000000, pll_op_mpy 60,
+	 * pll_op_prediv 2), which gives a 4-lane link frequency of
+	 * 24 MHz * 60 / (2 * 2) = 360 MHz.
+	 *
+	 * Its endpoint feeds SENINF on the CSI port that pad 1 stands for; the
+	 * link frequency is the driver's own 24 MHz figure (24 MHz * 60 / 4).
+	 */
+	camera@1a {
+		compatible = "sony,imx355";
+		reg = <0x1a>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG4>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG4>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd1>;
+		dvdd-supply = <&cam_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 125 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam2_mclk_pins>;
+
+		status = "okay";
+
+		port {
+			uw_cam_out: endpoint {
+				remote-endpoint = <&seninf_uw_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <360000000>;
+			};
+		};
+	};
+
+	/*
+	 * Macro camera, GC02M1 at 7-bit 0x37 (vendor .i2c_addr_table
+	 * {0x6e, 0x20, 0xff} in 8-bit form), one D-PHY lane, 1600x1200 at
+	 * 30 fps. Its MCLK pin is GPIO117 (camera4_mclk_*@gpio117, CMMCLK1,
+	 * hence CAMTG1) and its reset GPIO119, and it draws AVDD from the
+	 * shared wl2866d_avdd1 with its own DOVDD switch on GPIO22 (live DT
+	 * cam4_vcama and camera4_vcamio_on).
+	 *
+	 * The vendor also lists the OV02B1B as the alternative depth module
+	 * on the same bus, which is why the study calls the depth camera "one
+	 * of two candidates"; only the GC02M1 is described until the lead
+	 * confirms what is fitted.
+	 */
+	camera@37 {
+		compatible = "galaxycore,gc02m1";
+		reg = <0x37>;
+
+		/*
+		 * CMMCLK1, so CAMTG2 under the same rule as the others: the
+		 * mux whose index matches the pin's CMMCLKn function.
+		 */
+		clocks = <&topckgen CLK_TOP_CAMTG2>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd1>;
+		dvdd-supply = <&cam_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 119 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam4_mclk_pins>;
+
+		status = "okay";
+
+		port {
+			macro_cam_out: endpoint {
+				remote-endpoint = <&seninf_macro_in>;
+				data-lanes = <1>;
+			};
+		};
+	};
+};
+
+/* ------------------------------------------------------- CAMSV (raw capture) */
+
+/*
+ * The six capture engines sit at 0x1a050000 + 0x1000 * n with interrupts at
+ * GIC SPI 0x117..0x11a for the first four (live DT camsv1@1a050000 ...
+ * camsv6@1a055000; camsv5 and camsv6 carry no interrupt there, so they are
+ * left out). Only the first two are enabled: on MT6785 the camera clock tree
+ * gates exactly two of them (CLK_CAM_SV0 and CLK_CAM_SV1 in
+ * clk-mt6785-cam.c), and an engine whose gate cannot be enabled cannot run.
+ *
+ * The frame size is the sensor mode: 3280x2464 is the IMX355 full size, the
+ * first sensor this project brings up. It moves to the media graph once
+ * SENINF routes a sensor into an engine.
+ *
+ * No "iommus": the first milestone uses physical addressing below 4 GiB with
+ * the SMI port in MMU bypass (study section 4.5), because which larb/port a
+ * CAMSV IMGO uses on MT6785 is not documented anywhere we have.
+ */
+&{/soc} {
+	camsv@1a050000 {
+		compatible = "mediatek,mt6785-camsv";
+		reg = <0 0x1a050000 0 0x1000>;
+		interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;	/* 0x117 - 32 */
+		clocks = <&camsys CLK_CAM_SV0>;
+		clock-names = "camsv";
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+		width = <3280>;
+		height = <2464>;
+		status = "okay";
+
+		port {
+			camsv0_in: endpoint {
+				remote-endpoint = <&seninf_camsv0_out>;
+			};
+		};
+	};
+
+	camsv@1a051000 {
+		compatible = "mediatek,mt6785-camsv";
+		reg = <0 0x1a051000 0 0x1000>;
+		interrupts = <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;	/* 0x118 - 32 */
+		clocks = <&camsys CLK_CAM_SV1>;
+		clock-names = "camsv";
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+		width = <3280>;
+		height = <2464>;
+		status = "okay";
+	};
+};
+
+/* ------------------------------------------------------- SENINF (CSI-2 RX) */
+
+/*
+ * Digital window 0x1a040000 + 0xa000 and analog window 0x11c80000 + 0xc000,
+ * both from the live DT (seninf1_csi2@1a040000 ... seninf6_csi2@1a045000,
+ * mipi_rx_ana_csi0a@11c80000 ...) and the vendor SENINF_MAP_BASE_ANA /
+ * SENINF_MAP_LENGTH_ANA constants (study 2.2, 4.1c). The cameras reach the
+ * block through the SENINF receivers: the front camera on receiver 1 and the
+ * ultrawide on receiver 2, one custom endpoint each, which is what the driver
+ * numbers its sensor pads by.
+ *
+ * Two sensor pads are wired now (the two sensors that exist); the pad numbers
+ * follow the endpoint order, so front is pad 0 and ultrawide is pad 1.
+ */
+&{/soc} {
+	seninf@1a040000 {
+		compatible = "mediatek,mt6785-seninf";
+		reg = <0 0x1a040000 0 0xa000>,
+		      <0 0x11c80000 0 0xc000>;
+		reg-names = "seninf", "ana";
+		/*
+		 * NO "interrupts" here on purpose. The live device tree gives
+		 * SENINF no interrupt line of its own: what exists is GCE
+		 * event numbers (seninf_0_fifo_full = 0x147 and up, which are
+		 * CMDQ events, not GIC SPIs) and the per-receiver CSI-2 status
+		 * registers this driver polls. The vendor DT's seninf nodes
+		 * carry no interrupts property either. An invented SPI would
+		 * either fail to register or, worse, claim another block's
+		 * line; the numbering is a lead decision once someone knows
+		 * the right one.
+		 */
+		clocks = <&camsys CLK_CAM_SENINF>;
+		clock-names = "seninf";
+		power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				seninf_front_in: endpoint {
+					remote-endpoint = <&front_cam_out>;
+					data-lanes = <1 2 3 4>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				seninf_uw_in: endpoint {
+					remote-endpoint = <&uw_cam_out>;
+					data-lanes = <1 2 3 4>;
+				};
+			};
+
+			port@2 {
+				reg = <2>;
+
+				seninf_macro_in: endpoint {
+					remote-endpoint = <&macro_cam_out>;
+					data-lanes = <1>;
+				};
+			};
+
+			port@3 {
+				reg = <3>;
+
+				seninf_main_in: endpoint {
+					remote-endpoint = <&main_cam_out>;
+					bus-type = <1>;
+					data-lanes = <1 2 3>;
+				};
+			};
+
+			/* cam mux 3: the first capture engine, CAMSV0 */
+			port@5 {
+				reg = <5>;
+
+				seninf_camsv0_out: endpoint {
+					remote-endpoint = <&camsv0_in>;
+				};
+			};
+		};
+	};
+};
+
+/* ------------------------------------------------------- autofocus VCM */
+
+/*
+ * The AF rail's switch is a board-level fixed regulator, not an I2C device, so
+ * it sits under the root node rather than under i2c2 where the actuator is.
+ */
+/ {
+	cam_af_switch: regulator-cam-af {
+		compatible = "regulator-fixed";
+		regulator-name = "cam0_ldo_vcamaf";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&pio 34 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&cam_avdd1>;
+	};
+};
+
+/*
+ * The main camera has a voice-coil autofocus actuator on I2C2 at 7-bit 0x0c
+ * (live DT camera_main_af@0c; study section 1.1), behind its own 2.8 V switch
+ * on GPIO34 (live DT cam0_ldo_vcamaf_0/1, and the vendor lens driver's
+ * AF_PINCTRL_STATE_HWEN_HIGH "cam0_ldo_vcamaf_1" plus its
+ * regulator_set_voltage(vcamaf, 2800000, 2800000), drivers/misc/mediatek/
+ * lens/main_lens.c).
+ *
+ * The node is deliberately disabled and carries no compatible yet: which
+ * Dongwoon part it is (DW9719, DW9761, DW9800K, ...) is not in any of our
+ * sources. The vendor lens framework does not identify the chip either - it
+ * picks a driver by name, handed in from userspace (main_lens.c
+ * AF_SetMotorName(), the g_stAF_DrvList table with 40-odd entries). The
+ * mainline dw9719 driver, by contrast, reads the chip's IC-info register at
+ * probe (0xf1 = DW9719, 0xf4 = DW9761) and rejects a mismatch, so the
+ * compatible must be the part that answers, not a guess.
+ *
+ * What settles it, on the phone, is one register read while the AF rail is up:
+ *   i2cget -y 2 0x0c 0x00        (DW9719 family: the info byte at 0x00)
+ * A value of 0xf1 means dongwoon,dw9719, 0xf4 means dongwoon,dw9761. The
+ * check is listed in the report. Until then this node stays disabled with the
+ * switch described, so the rail and the pin are not lost.
+ */
+&i2c2 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins>;
+
+	/*
+	 * Main camera, OV64B40 at 7-bit 0x10 (vendor .i2c_addr_table
+	 * {0x20, 0x46, 0xff} in 8-bit form), the board's only C-PHY device:
+	 * three trios, which is why the endpoint names bus-type 1.
+	 *
+	 * Rails from the live DT kd_camera_hw1 node: cam0_vcama is avdd2 and
+	 * cam0_vcamd is dvdd2, DOVDD from the PMIC's vcamio LDO. The vendor
+	 * power table wants AVDD 2.8 V, DVDD 1.1 V, and MCLK 24 MHz; its reset
+	 * is GPIO118 and its MCLK pin GPIO116 (camera0_mclk_*@gpio116,
+	 * CMMCLK0, hence CAMTG).
+	 */
+	camera@10 {
+		compatible = "ovti,ov64b40";
+		reg = <0x10>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG1>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG1>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd2>;
+		dvdd-supply = <&cam_dvdd2>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 118 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam0_mclk_pins>;
+
+		status = "okay";
+
+		port {
+			main_cam_out: endpoint {
+				remote-endpoint = <&seninf_main_in>;
+				bus-type = <1>;		/* MIPI CSI-2 C-PHY */
+				data-lanes = <1 2 3>;
+				link-frequencies = /bits/ 64 <570000000>;
+			};
+		};
+	};
+
+	lens@c {
+		reg = <0x0c>;
+		vdd-supply = <&cam_af_switch>;
+		status = "disabled";
+	};
+};

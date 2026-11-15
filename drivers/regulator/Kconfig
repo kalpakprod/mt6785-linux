@@ -1858,6 +1858,16 @@ config REGULATOR_VQMMC_IPQ4019
 	  This driver provides support for the VQMMC LDO I/0
 	  voltage regulator of the IPQ4019 SD/EMMC controller.
 
+config REGULATOR_WL2866D
+	tristate "Wingtech/WillSemi WL2866D camera LDO controller"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  This driver supports the WL2866D, a four-channel I2C low dropout
+	  regulator used to supply camera sensor rails: two DVDD outputs
+	  between 0.6 V and 2.13 V and two AVDD outputs between 1.2 V and
+	  4.3875 V, each switched by its own enable bit.
+
 config REGULATOR_WM831X
 	tristate "Wolfson Microelectronics WM831x PMIC regulators"
 	depends on MFD_WM831X

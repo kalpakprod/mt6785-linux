@@ -186,6 +186,18 @@ static struct phy *mtk_mipi_cdphy_xlate(struct device *dev,
 				return ERR_PTR(-EINVAL);
 			}
 			break;
+		case PHY_TYPE_CPHY:
+			/*
+			 * The MT6785 camera front end does support C-PHY (the
+			 * board's OV64B40 main sensor is a 3-trio C-PHY part),
+			 * but this driver has no C-PHY sequence for it: its
+			 * power-on writes the D-PHY lane roles and never sets
+			 * RG_CSI0A_CPHY_EN. Claiming support here would put a
+			 * D-PHY configuration in front of a C-PHY sensor, so the
+			 * request is refused until the sequence exists.
+			 */
+			dev_err(dev, "C-PHY mode is not implemented by this driver yet\n");
+			return ERR_PTR(-EOPNOTSUPP);
 		default:
 			dev_err(dev, "Unsupported PHY type: %i\n", args->args[0]);
 			return ERR_PTR(-EINVAL);
@@ -275,6 +287,7 @@ static int mtk_mipi_cdphy_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id mtk_mipi_cdphy_of_match[] = {
+	{ .compatible = "mediatek,mt6785-csi-rx" },
 	{ .compatible = "mediatek,mt8365-csi-rx" },
 	{ /* sentinel */},
 };
