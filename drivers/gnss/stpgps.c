@@ -139,7 +139,6 @@ static int stpgps_open(struct inode *inode, struct file *file)
 {
 	struct stpgps *gps = container_of(file->private_data, struct stpgps,
 					  gps_misc);
-	int err;
 
 	mutex_lock(&gps->lock);
 	if (gps->opened) {
