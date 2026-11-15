@@ -26,7 +26,6 @@
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 
-#include "../common/mtk-afe-platform-driver.h"
 #include "../common/mtk-soundcard-driver.h"
 #include "../../codecs/mt6359.h"
 
@@ -56,8 +55,6 @@ static const char * const mt6785_mt6359_codec_dai[] = {
 
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_component *cmpnt_afe =
-		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
 	struct snd_soc_component *cmpnt_codec =
 		snd_soc_rtd_to_codec(rtd, 0)->component;
 
