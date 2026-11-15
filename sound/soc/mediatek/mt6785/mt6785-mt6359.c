@@ -33,25 +33,23 @@
 #define DRIVER_NAME	"mt6785_mt6359"
 
 /* The front-end DAIs of the MT6785 front end this card plays through. */
+/*
+ * The codec side is named, not taken from a phandle: the MT6359 codec registers
+ * itself as the component "mt6359-sound" (the MFD cell's device name) with the
+ * two AIFs below. A component must be described by either its name or its node,
+ * never by both, which is exactly how the other MediaTek cards do it.
+ */
 SND_SOC_DAILINK_DEFS(playback,
 		     DAILINK_COMP_ARRAY(COMP_CPU("DL1")),
-		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
+		     DAILINK_COMP_ARRAY(COMP_CODEC("mt6359-sound",
+						   "mt6359-snd-codec-aif1")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
 SND_SOC_DAILINK_DEFS(capture,
 		     DAILINK_COMP_ARRAY(COMP_CPU("UL1")),
-		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
+		     DAILINK_COMP_ARRAY(COMP_CODEC("mt6359-sound",
+						   "mt6359-snd-codec-aif2")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
-
-/*
- * The codec side: the MT6359's two AIFs, one per direction, in the order of the
- * links below. Both phandles are filled in from the board's
- * mediatek,audio-codec property at probe time.
- */
-static const char * const mt6785_mt6359_codec_dai[] = {
-	"mt6359-snd-codec-aif1",
-	"mt6359-snd-codec-aif2",
-};
 
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
@@ -112,7 +110,7 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &mt6785_mt6359_card;
 	struct device *dev = &pdev->dev;
-	struct device_node *platform_node, *codec_node;
+	struct device_node *platform_node;
 	struct snd_soc_dai_link *link;
 	int i, ret;
 
@@ -127,22 +125,8 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, -EINVAL,
 				     "mediatek,platform is missing\n");
 
-	codec_node = of_parse_phandle(dev->of_node, "mediatek,audio-codec", 0);
-	if (!codec_node) {
-		of_node_put(platform_node);
-		return dev_err_probe(dev, -EINVAL,
-				     "mediatek,audio-codec is missing\n");
-	}
-
-	for_each_card_prelinks(card, i, link) {
-		if (i >= ARRAY_SIZE(mt6785_mt6359_codec_dai)) {
-			ret = -EINVAL;
-			goto err_put;
-		}
+	for_each_card_prelinks(card, i, link)
 		link->platforms->of_node = platform_node;
-		link->codecs->of_node = codec_node;
-		link->codecs->dai_name = mt6785_mt6359_codec_dai[i];
-	}
 
 	if (of_property_present(dev->of_node, "audio-routing")) {
 		ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
@@ -164,7 +148,6 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 	ret = devm_snd_soc_register_card(dev, card);
 
 err_put:
-	of_node_put(codec_node);
 	of_node_put(platform_node);
 
 	return ret;
