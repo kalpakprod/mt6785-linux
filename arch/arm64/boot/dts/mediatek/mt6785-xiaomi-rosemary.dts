@@ -608,3 +608,13 @@
 	xiaomi_touch: xiaomi_touch { };
 };
 
+
+/* One file per area of poco-m5s/plan-full-phone.md, so the areas never edit the same lines. */
+#include "mt6785-xiaomi-rosemary-power.dtsi"
+#include "mt6785-xiaomi-rosemary-display.dtsi"
+#include "mt6785-xiaomi-rosemary-connectivity.dtsi"
+#include "mt6785-xiaomi-rosemary-audio.dtsi"
+#include "mt6785-xiaomi-rosemary-sensors.dtsi"
+#include "mt6785-xiaomi-rosemary-modem.dtsi"
+#include "mt6785-xiaomi-rosemary-camera.dtsi"
+#include "mt6785-xiaomi-rosemary-fingerprint.dtsi"
