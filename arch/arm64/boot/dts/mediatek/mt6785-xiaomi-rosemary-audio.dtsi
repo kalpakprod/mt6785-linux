@@ -251,3 +251,60 @@
 		};
 	};
 };
+
+/* --------------------------------------------------------------- haptics */
+
+/*
+ * The vibration motor is an Awinic AW8622 driven through a PWM channel: a
+ * square wave at the actuator's resonance frequency, with the duty cycle
+ * setting the strength. The vendor tree describes the same part
+ * [V: mt6785.dts, aw8622 node], and the stock kernel builds that driver and
+ * nothing else for the motor (CONFIG_AW8622_HAPTIC=y, while
+ * CONFIG_INPUT_REGULATOR_HAPTIC is not set) [C].
+ *
+ * Wiring, all of it from the phone's own tree [L: device-tree.dts, aw8622]:
+ *   hwen-gpio = <&pio 202 0>      the chip's enable input, GPIO202
+ *   pwm_ch = <0>                  PWM channel 0, muxed onto GPIO26 (the
+ *                                 haptic_gpio_aw8622_set pin group sets
+ *                                 PINMUX_GPIO26__FUNC_PWM_0)
+ *   center_freq = <208>           the actuator's resonance frequency
+ *   waveform_sample_period = <41666>  only used by the vendor's waveform
+ *                                 playback, which this driver does not carry
+ *
+ * GPIO26 is therefore the haptics' pin, not the IR emitter's: the vendor tree
+ * also has an irtx_pwm node on that pin, but the stock kernel does not build
+ * the MTK IRTX PWM driver, so that node is dead weight.
+ */
+&pwm0 {
+	status = "okay";
+};
+
+&{/} {
+	haptics {
+		compatible = "awinic,aw8622";
+		hwen-gpios = <&pio 202 GPIO_ACTIVE_HIGH>;
+		/* channel 0, one 208 Hz cycle in nanoseconds */
+		pwms = <&pwm0 0 4807692>;
+		awinic,vibration-frequency-hz = <208>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&haptic_pwm_pins>;
+	};
+};
+
+/*
+ * The board dts describes the motor with the generic "regulator-haptic" model,
+ * a rail switched by a GPIO-less regulator. That is not this hardware — the
+ * phone has the AW8622 above — so the old node is switched off instead of
+ * being left to claim the same job.
+ */
+&{/vibrator} {
+	status = "disabled";
+};
+
+&pio {
+	haptic_pwm_pins: haptic-pwm-pins {
+		pins-pwm {
+			pinmux = <PINMUX_GPIO26__FUNC_PWM_0>;
+		};
+	};
+};
