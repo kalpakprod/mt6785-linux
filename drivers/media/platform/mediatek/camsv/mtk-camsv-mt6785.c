@@ -183,6 +183,7 @@ struct camsv_dev {
 	struct list_head queued;
 	struct list_head inflight;
 	bool streaming;
+	bool powered;		/* clock running: the block can be touched */
 	bool latch_pending;
 	u8 skip;
 	u8 wcnt;
@@ -299,15 +300,36 @@ static irqreturn_t camsv_irq(int irq, void *data)
 	u8 wcnt, n;
 
 	spin_lock(&camsv->qlock);
-	if (!camsv->streaming) {
+
+	/*
+	 * Do not touch the block while its clock is off: the vendor handler
+	 * guards on exactly that (camera_isp.c, ISP_Irq_CAMSV, "Avoid touch
+	 * hwmodule when clock is disable. DEVAPC will moniter this kind of
+	 * err") and still returns IRQ_HANDLED, because the line is level
+	 * triggered and a spurious edge is cheaper than a bus error.
+	 */
+	if (!camsv->powered) {
 		spin_unlock(&camsv->qlock);
-		return IRQ_NONE;
+		return IRQ_HANDLED;
 	}
 
+	/*
+	 * Read-clear and level-triggered: the register must be read on every
+	 * interrupt, streaming or not, or the line stays asserted and the core
+	 * reports "nobody cared" a hundred thousand times before disabling the
+	 * IRQ.
+	 */
 	st = readl(camsv->base + CAMSV_INT_STATUS);
 	if (!st) {
 		spin_unlock(&camsv->qlock);
 		return IRQ_NONE;
+	}
+
+	if (!camsv->streaming) {
+		/* idle: the read above acknowledged whatever was pending */
+		camsv->errors |= st & INT_ERRORS;
+		spin_unlock(&camsv->qlock);
+		return IRQ_HANDLED;
 	}
 
 	if (st & INT_ERRORS) {
@@ -524,6 +546,24 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (ret)
 		goto err_pm;
 
+	/*
+	 * The interrupt line is level-triggered and the status register is
+	 * read-clear, so a source left over from reset (or from whatever the
+	 * bootloader set) keeps the line asserted: the handler then runs back
+	 * to back, which on the first phone boot meant 100000 interrupts in
+	 * about a second and "Disabling IRQ". Mask everything and clear the
+	 * status here, with the clocks on, before programming the engine; the
+	 * vendor does the same when it takes the engine over (camera_isp.c,
+	 * ISP_Irq_CAMSV: read the status, then write CAMSV_REG_INT_EN).
+	 */
+	writel(0, camsv->base + CAMSV_INT_EN);
+	readl(camsv->base + CAMSV_INT_STATUS);
+
+	spin_lock_irqsave(&camsv->qlock, flags);
+	camsv->powered = true;
+	camsv->streaming = false;
+	spin_unlock_irqrestore(&camsv->qlock, flags);
+
 	camsv_hw_start(camsv);
 
 	spin_lock_irqsave(&camsv->qlock, flags);
@@ -557,6 +597,10 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 
 	camsv_hw_stop(camsv);
 	synchronize_irq(camsv->irq);
+
+	spin_lock_irqsave(&camsv->qlock, flags);
+	camsv->powered = false;
+	spin_unlock_irqrestore(&camsv->qlock, flags);
 
 	clk_bulk_disable_unprepare(camsv->num_clks, camsv->clks);
 	pm_runtime_put(camsv->dev);
