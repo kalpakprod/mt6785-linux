@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Poco M5s (rosemary): board nodes of the camera area (poco-m5s/plan-full-phone.md).
+ * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ */
