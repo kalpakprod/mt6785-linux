@@ -132,6 +132,10 @@
 	remote-endpoint = <&gamma0_out>;
 };
 
+&dither0_out {
+	remote-endpoint = <&dsi0_in>;
+};
+
 &dsi0_in {
 	remote-endpoint = <&dither0_out>;
 };
@@ -165,9 +169,17 @@
 	 * recorded in any artifact we have. The binding makes it optional and a
 	 * wrong guess would give no bias and a black screen.
 	 */
+	/*
+	 * Disabled (lead, 15.11 kexec trial): nothing answers at 0x3e on this bus
+	 * (i2cdetect -r on i2c@11007000 finds no device) while the loader's panel
+	 * is lit with both enable pins low (GPIO 23 and 202 read output 0), and the
+	 * live DT has no tps65132 node. This AMOLED does not use the bias chip;
+	 * the node stays for the LCD panel variants the vendor code also serves.
+	 */
 	regulator@3e {
 		compatible = "ti,tps65132";
 		reg = <0x3e>;
+		status = "disabled";
 
 		outp {
 			regulator-name = "lcd_bias_vpos";
@@ -210,8 +222,24 @@
 		interrupts = <1 IRQ_TYPE_EDGE_FALLING>;
 
 		reset-gpios = <&pio 2 GPIO_ACTIVE_LOW>;
+		vdd-supply = <&mt6360_vtp_ldo_reg>;
 
 		touchscreen-size-x = <1080>;
 		touchscreen-size-y = <2400>;
+	};
+};
+
+/*
+ * Touch supply: MT6360 LDO2, "vtp" in the live DT (mt_pmic_vtp_ldo_reg: ldo2,
+ * phandle 0xe9 = the focaltech node's vtouch-supply). The loader leaves it off
+ * (regulator state "disabled" under Linux, 15.11), so the controller does not
+ * answer until Linux turns it on. Voltage: the vendor FT3518 driver asks
+ * 2.6..3.3 V (FTS_VTG_MIN_UV/MAX_UV, focaltech_core.c); 3.0 V is inside it.
+ */
+&{/soc/i2c@11016000/pmic@34/regulator} {
+	mt6360_vtp_ldo_reg: ldo2 {
+		regulator-name = "vtp";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
 	};
 };
