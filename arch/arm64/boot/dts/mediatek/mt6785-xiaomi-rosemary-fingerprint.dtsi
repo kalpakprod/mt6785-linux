@@ -97,3 +97,39 @@
 		};
 	};
 };
+
+/*
+ * The Microtrust SOTER (iSee) secure world.
+ *
+ * Interrupts from the live stock device tree (poco-m5s/device-dump-2026-11-12/device-tree.dts,
+ * utos { compatible = "microtrust,utos"; interrupts = <0x00 0x5b 0x01 0x00 0x5c 0x01>; }) =
+ * GIC SPI 91 and 92, rising edge. The vendor SoC description of this chip declares the same two
+ * lines (scratch/poco-lunaris-kernel/arch/arm64/boot/dts/mediatek/mt6785.dts, comment "Microtrust
+ * SW IRQ number 91(123) ~ 95(127)"), so they are kernel-side facts, not loader ones. No register
+ * range: the secure world owns its registers, and the client driver registers a handler on the
+ * first line (platform_get_irq(pdev, 0)).
+ *
+ * No reserved-memory node here, on purpose:
+ *  - tee-reserved 0x70000000 (104 MiB), tee_ree_reserved 0x7ea00000 (12 MiB), tee-secmem
+ *    0x7f600000 (2 MiB) and tee-log 0xbfc00000 (128 KiB) are the bootloader's own reservations
+ *    (its mblock-11/13/14/15-* nodes in the live tree); describing them here would duplicate the
+ *    loader's memory map, and an overlapping node hangs the boot (see the reserved-memory comment
+ *    in mt6785-xiaomi-rosemary.dts);
+ *  - soter-shared-mem (8 MiB, 16 MiB aligned, 0x40000000..0x90000000 in the live tree) is not read
+ *    from the device tree by the carried driver either: it asks the secure world for base and size
+ *    (N_GET_RESERVED_MEM_PADDR/_SIZE, drivers/tee/microtrust/tee/soter/core.c:172-232, with
+ *    TEEI_DTS_RESERVED_MEM off at :41). Whether that range must additionally be kept out of
+ *    Linux's allocator is the one open question of this step; the build report says how to settle
+ *    it at the first boot.
+ *
+ * status = "disabled": the lead enables it for the first boot of the secure world. A wrong secure
+ * world description freezes the phone, so it must not happen on an unattended boot.
+ */
+/ {
+	utos: utos {
+		compatible = "microtrust,utos";
+		interrupts = <GIC_SPI 91 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 92 IRQ_TYPE_EDGE_RISING>;
+		status = "disabled";
+	};
+};
