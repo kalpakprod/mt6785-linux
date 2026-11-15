@@ -679,9 +679,6 @@ static int gc02m1_probe(struct i2c_client *client)
 	}
 
 	pm_runtime_enable(dev);
-	pm_runtime_set_autosuspend_delay(dev, 1000);
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_idle(dev);
 
 	/*
 	 * The chip only answers on I2C once its rails and its clock are on, so
@@ -693,7 +690,7 @@ static int gc02m1_probe(struct i2c_client *client)
 	if (ret)
 		goto err_pm;
 	ret = gc02m1_identify(gc02m1);
-	pm_runtime_put(dev);
+	pm_runtime_put_sync(dev);
 	if (ret) {
 		dev_err_probe(dev, ret, "no chip id\n");
 		goto err_pm;
@@ -708,6 +705,16 @@ static int gc02m1_probe(struct i2c_client *client)
 	return 0;
 
 err_pm:
+	/*
+	 * Runtime PM owns the rails and the clock, and pm_runtime_disable() only
+	 * stops it - it does not power anything down. Leaving that to the devres
+	 * release tripped the regulator core's own check, three times in the
+	 * second trial:
+	 *   WARNING: drivers/regulator/core.c:2676 at regulator_bulk_free
+	 * which is WARN_ON(regulator->enable_count) - a regulator still enabled
+	 * when it is freed. Suspend first, then stop.
+	 */
+	pm_runtime_suspend(dev);
 	pm_runtime_disable(dev);
 	v4l2_subdev_cleanup(sd);
 err_ctrls:
