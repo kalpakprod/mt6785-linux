@@ -22,3 +22,13 @@ config MTK_WLAN_GEN4M
 	  from the 4.14 begonia vendor kernel. Registers wlan0 and sits on top
 	  of the WMT/connsys (wmt_drv) bring-up stack. Scoped to the begonia
 	  config subset: CONNAC (connac1.0) AXI-HIF, chip 6785, WIFI_IP_SET=2.
+
+config MTK_NVDATA_MAC
+	tristate "MediaTek MT6785 factory addresses from a copied nvdata tree"
+	help
+	  Read the Wi-Fi MAC and the Bluetooth address from a read-only copy of
+	  the phone's nvdata partition, placed under
+	  /lib/firmware/rosemary/nvdata/APCFG/APRDEB/. The live partition is
+	  never touched: it holds the RF calibration and a wrong write destroys
+	  it. Without the copy the drivers keep their defaults (a random Wi-Fi
+	  MAC and the firmware's own Bluetooth address).
