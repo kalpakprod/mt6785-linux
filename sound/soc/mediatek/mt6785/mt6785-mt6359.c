@@ -45,15 +45,13 @@ SND_SOC_DAILINK_DEFS(capture,
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
 /*
- * The codec side: the MT6359's two AIFs, one per direction. The phandle is
- * filled in from the board's mediatek,audio-codec property at probe time.
+ * The codec side: the MT6359's two AIFs, one per direction, in the order of the
+ * links below. Both phandles are filled in from the board's
+ * mediatek,audio-codec property at probe time.
  */
-static struct snd_soc_dai_link_component mt6785_mt6359_playback_codec = {
-	.dai_name = "mt6359-snd-codec-aif1",
-};
-
-static struct snd_soc_dai_link_component mt6785_mt6359_capture_codec = {
-	.dai_name = "mt6359-snd-codec-aif2",
+static const char * const mt6785_mt6359_codec_dai[] = {
+	"mt6359-snd-codec-aif1",
+	"mt6359-snd-codec-aif2",
 };
 
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
@@ -75,8 +73,8 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.stream_name = "Playback",
 		.cpus = playback_cpus,
 		.num_cpus = ARRAY_SIZE(playback_cpus),
-		.codecs = &mt6785_mt6359_playback_codec,
-		.num_codecs = 1,
+		.codecs = playback_codecs,
+		.num_codecs = ARRAY_SIZE(playback_codecs),
 		.platforms = playback_platforms,
 		.num_platforms = ARRAY_SIZE(playback_platforms),
 		.init = mt6785_mt6359_init,
@@ -86,8 +84,8 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.stream_name = "Capture",
 		.cpus = capture_cpus,
 		.num_cpus = ARRAY_SIZE(capture_cpus),
-		.codecs = &mt6785_mt6359_capture_codec,
-		.num_codecs = 1,
+		.codecs = capture_codecs,
+		.num_codecs = ARRAY_SIZE(capture_codecs),
 		.platforms = capture_platforms,
 		.num_platforms = ARRAY_SIZE(capture_platforms),
 		.init = mt6785_mt6359_init,
@@ -140,17 +138,19 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 	}
 
 	for_each_card_prelinks(card, i, link) {
+		if (i >= ARRAY_SIZE(mt6785_mt6359_codec_dai)) {
+			ret = -EINVAL;
+			goto err_put;
+		}
 		link->platforms->of_node = platform_node;
 		link->codecs->of_node = codec_node;
+		link->codecs->dai_name = mt6785_mt6359_codec_dai[i];
 	}
 
 	if (of_property_present(dev->of_node, "audio-routing")) {
 		ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
-		if (ret) {
-			of_node_put(codec_node);
-			of_node_put(platform_node);
-			return ret;
-		}
+		if (ret)
+			goto err_put;
 	}
 
 	ret = of_count_phandle_with_args(dev->of_node, "aux-devs", NULL);
@@ -166,6 +166,7 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 
 	ret = devm_snd_soc_register_card(dev, card);
 
+err_put:
 	of_node_put(codec_node);
 	of_node_put(platform_node);
 
