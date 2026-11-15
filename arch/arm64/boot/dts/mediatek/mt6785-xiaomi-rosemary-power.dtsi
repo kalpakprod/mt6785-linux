@@ -1,5 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Poco M5s (rosemary): board nodes of the power area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Poco M5s (rosemary): board nodes of the power area (poco-m5s/plan-full-phone.md, Task 0.3).
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
  */
+
+/ {
+	/*
+	 * The pack: 5000 mAh design (the stock gauge reported 4797 mAh full, 12.11.2026). OCV table:
+	 * the vendor profile battery0_profile_t1 (25 C) of the live stock DT (bat_gm30), sampled at 5 %
+	 * steps, the same table poco-charge-limit uses.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+		charge-full-design-microamp-hours = <5000000>;
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 = <4418000 100>, <4370300 95>, <4316400 90>, <4256500 85>,
+				       <4195600 80>, <4137300 75>, <4081300 70>, <4029600 65>,
+				       <3977600 60>, <3915200 55>, <3877200 50>, <3848200 45>,
+				       <3825600 40>, <3806500 35>, <3788300 30>, <3764300 25>,
+				       <3742900 20>, <3712800 15>, <3693800 10>, <3619800 5>,
+				       <2920000 0>;
+	};
+
+	/*
+	 * Battery voltage and current until the MT6359 coulomb counter lands: the MT6360 ADC's VBAT and
+	 * IBAT channels (drivers/iio/adc/mt6360-adc.c enum: VBAT = 4, IBAT = 6), read on the phone
+	 * 15.11.2026 as 4.376 V and 0 A with the charger reporting Full.
+	 */
+	fuel-gauge {
+		compatible = "adc-battery";
+		io-channels = <&{/soc/i2c@11016000/pmic@34/adc} 4>, <&{/soc/i2c@11016000/pmic@34/adc} 6>;
+		io-channel-names = "voltage", "current";
+		power-supplies = <&{/soc/i2c@11016000/pmic@34/charger}>;
+		monitored-battery = <&battery>;
+	};
+};
