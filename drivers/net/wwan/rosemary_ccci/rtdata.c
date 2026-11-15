@@ -81,8 +81,6 @@ struct rt_feature {
 	u32 len;
 } __packed;
 
-/* the CCB logging buffers' total, ccb gear 12 (eccci/port/port_smem.c:78-129) */
-#define CCB_DATA_SIZE		0x178000
 /* the AP's receive buffer size minus the CCCI header (CCCI_MTU + 16 - 128) */
 #define AP_CCMNI_MTU_VAL	(3584 - 16)
 
@@ -145,12 +143,25 @@ static int feature_data(struct ccci_md *md, int id, u32 *d)
 		d[0] = lower_32_bits(md->md_mem_base);
 		d[1] = md->md_mem_size;
 		return 8;
-	case CCB_SHARE_MEMORY:
+	case CCB_SHARE_MEMORY: {
+		/*
+		 * The CCB buffers are where the loader put them, not at a fixed
+		 * offset: this phone's ccb_info tag says 0x8c100000 + 0x1600000
+		 * inside a 0x1780000 window. If the loader did not describe
+		 * them the feature is answered as unsupported rather than with
+		 * a guessed address.
+		 */
+		const struct ccci_c_item *ccb =
+			ccci_smem_region(md, SMEM_USER_ID_CCB_DHL);
+
+		if (!ccb)
+			return -1;
 		d[0] = NC_MD_VIEW + NC_CCB_CTRL;
 		d[1] = NC_CCB_CTRL_SIZE;
-		d[2] = NC_MD_VIEW + md->c_view_off + C_CCB_DHL;
-		d[3] = CCB_DATA_SIZE;
+		d[2] = NC_MD_VIEW + md->c_view_off + ccb->md_off;
+		d[3] = ccb->size;
 		return 16;
+	}
 	case DHL_RAW_SHARE_MEMORY:
 		/*
 		 * Declined: the modem's raw trace log (tens of MiB), optional
@@ -182,22 +193,39 @@ static int feature_data(struct ccci_md *md, int id, u32 *d)
 		d[0] = NC_MD_VIEW + NC_CCISM_MCU_EXP;
 		d[1] = NC_CCISM_MCU_EXP_SIZE;
 		return 8;
-	case MD_CONSYS_SHARE_MEMORY:
-		d[0] = NC_MD_VIEW + md->c_view_off + C_MD_CONSYS;
-		d[1] = C_NVRAM_CACHE - C_MD_CONSYS;
+	case MD_CONSYS_SHARE_MEMORY: {
+		const struct ccci_c_item *r =
+			ccci_smem_region(md, SMEM_USER_ID_MD_CONSYS);
+
+		if (!r)
+			return -1;
+		d[0] = NC_MD_VIEW + md->c_view_off + r->md_off;
+		d[1] = r->size;
 		return 8;
-	case MD_USIP_SHARE_MEMORY:
-		d[0] = NC_MD_VIEW + md->c_view_off + C_USIP;
-		d[1] = C_SIZE - C_USIP;
+	}
+	case MD_USIP_SHARE_MEMORY: {
+		const struct ccci_c_item *r = ccci_smem_region(md, SMEM_USER_ID_USIP);
+
+		if (!r)
+			return -1;
+		d[0] = NC_MD_VIEW + md->c_view_off + r->md_off;
+		d[1] = r->size;
 		return 8;
+	}
 	case MD_MTEE_SHARE_MEMORY_ENABLE:
 		return 4;		/* no MTEE on this phone */
 	case MD_WIFI_PROXY_SHARE_MEMORY:
 		return -1;		/* no Wi-Fi proxy region */
-	case NVRAM_CACHE_SHARE_MEMORY:
-		d[0] = NC_MD_VIEW + md->c_view_off + C_NVRAM_CACHE;
-		d[1] = C_NVRAM_CACHE_SIZE;
+	case NVRAM_CACHE_SHARE_MEMORY: {
+		const struct ccci_c_item *r =
+			ccci_smem_region(md, SMEM_USER_ID_MD_NVRAM_CACHE);
+
+		if (!r)
+			return -1;
+		d[0] = NC_MD_VIEW + md->c_view_off + r->md_off;
+		d[1] = r->size;
 		return 8;
+	}
 	case MD_MEM_AP_VIEW_INF:
 		/* { MD view, size, AP physical } per window */
 		d[0] = 0;

@@ -164,15 +164,16 @@ struct ccci_ringbuf {
 #define NC_MD_VIEW		0x40000000
 
 /*
- * Cacheable share memory. The layout comes from the loader's
- * md1_bank4_cache_layout tag when present; these are the vendor defaults
- * (ccci_modem.c:142-155 plus the runtime-data answers in 5-port-plan.md §1).
+ * Cacheable share memory. There are NO fixed offsets here on purpose: the
+ * window's sub-regions are described by the loader in md1_bank4_cache_info and
+ * md1_bank4_cache_layout, and they are read into struct ccci_md::c_item at
+ * probe. This phone's own trial printed "buffer 0x8c000000 + 0x1780000,
+ * md offset 0xc000000, 5 items", which no constant table from another phone
+ * matches -- cezanne's CCB offset of 0x4900000 is 64 MiB, i.e. nearly three
+ * times this window, and using it oopsed the first boot.
+ *
+ * Use ccci_smem_region() to find a region.
  */
-#define C_MD_CONSYS		0x0
-#define C_NVRAM_CACHE		0x180000
-#define C_NVRAM_CACHE_SIZE	0x700000
-#define C_CCB_DHL		0x900000
-#define C_USIP			0x4900000
 #define C_SIZE			0x1780000	/* the window LK reserved */
 
 /* ---- runtime data (handshake 1) -------------------------------------- */
@@ -303,6 +304,17 @@ struct ccci_md {
 	u32 smem_size;
 	u32 c_view_off;
 
+	/* the cacheable window's real layout, from md1_bank4_cache_layout */
+	struct ccci_c_item {
+		u64 addr;		/* AP address of the region */
+		u32 md_off;		/* its offset in the modem's view */
+		u32 size;
+		u32 id;			/* the SMEM_USER_ID it belongs to */
+	} c_item[32];
+	u32 c_item_num;
+	u64 c_total_base;
+	u32 c_total_size;
+
 	/* logging buffers, from the ccb_info tag */
 	u64 ccb_data_base;
 	u32 ccb_data_size;
@@ -379,8 +391,24 @@ struct ccci_port {
 	struct wwan_port *wwan;		/* instead of the char device */
 };
 
+/* the SMEM_USER_ID values the driver looks regions up by (mtk_ccci_common.h:531) */
+#define SMEM_USER_ID_CCB_DHL		2
+#define SMEM_USER_ID_CCB_MD_MONITOR	3
+#define SMEM_USER_ID_CCB_META		4
+#define SMEM_USER_ID_MD_CONSYS		22
+#define SMEM_USER_ID_USIP		24
+#define SMEM_USER_ID_MD_NVRAM_CACHE	32
+
 /* tags.c */
 int rosemary_ccci_tags_init(struct ccci_md *md);
+
+/*
+ * The loader's cacheable layout, looked up by region id. Returns the AP
+ * address of the region and its size, or NULL when the loader did not
+ * describe that region -- callers must handle the NULL, because a region the
+ * loader did not report is a region the driver must not touch.
+ */
+const struct ccci_c_item *ccci_smem_region(struct ccci_md *md, u32 id);
 
 /* ccif.c */
 int ccci_ccif_init(struct ccci_md *md);
