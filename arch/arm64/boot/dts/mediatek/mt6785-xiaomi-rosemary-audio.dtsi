@@ -348,3 +348,93 @@
 		sound-name-prefix = "Rcv";
 	};
 };
+
+/* --------------------------------------------------------- audio front end */
+
+/*
+ * The audio front end itself: the block that moves PCM between memory and the
+ * codec, the I2S ports, the PCM/TDM interfaces and the ADDA path.
+ *
+ * Address 0x11210000 is the SoC's (vendor mt6785.dts, afe node; confirmed by
+ * the pmOS memory map row "/mt6785-afe-pcm@11210000"), so the node is a child
+ * of the &audsys syscon the SoC description already carries — the driver takes
+ * its register map from that parent and needs no reg of its own, exactly as
+ * mt8192 does.
+ *
+ * Interrupt: GIC_SPI 184, level low (vendor mt6785.dts, afe node
+ * `interrupts = <GIC_SPI 184 IRQ_TYPE_LEVEL_LOW>`).
+ *
+ * Reset: MT6785_TOPRGU_AUDIO_RST = 17 from the watchdog block, which is the
+ * audiosys reset the driver asks for by name before it touches a register.
+ *
+ * Power: MT6785_POWER_DOMAIN_AUDIO, already a binding in this tree.
+ *
+ * The clock list is every clock the driver's aud_clks[] table asks for, under
+ * the same names, and every one of them exists in the MT6785 clock drivers
+ * (drivers/clk/mediatek/clk-mt6785-{aud,top,infra,apmixed}.c).
+ */
+#include <dt-bindings/clock/mediatek,mt6785-clk.h>
+#include <dt-bindings/power/mediatek,mt6785-power.h>
+#include <dt-bindings/reset/mediatek,mt6785-resets.h>
+
+&audsys {
+	afe: audio-controller {
+		compatible = "mediatek,mt6785-audio";
+		interrupts = <GIC_SPI 184 IRQ_TYPE_LEVEL_LOW>;
+		resets = <&watchdog MT6785_TOPRGU_AUDIO_RST>;
+		reset-names = "audiosys";
+		mediatek,apmixedsys = <&apmixedsys>;
+		mediatek,infracfg = <&infracfg>;
+		mediatek,topckgen = <&topckgen>;
+		power-domains = <&spm MT6785_POWER_DOMAIN_AUDIO>;
+		#sound-dai-cells = <0>;
+
+		clocks = <&audsys CLK_AUD_AFE>,
+			 <&audsys CLK_AUD_TML>,
+			 <&audsys CLK_AUD_22M>,
+			 <&audsys CLK_AUD_24M>,
+			 <&audsys CLK_AUD_APLL_TUNER>,
+			 <&audsys CLK_AUD_APLL2_TUNER>,
+			 <&audsys CLK_AUD_NLE>,
+			 <&infracfg CLK_INFRA_AUDIO>,
+			 <&infracfg CLK_INFRA_AUDIO_26M>,
+			 <&topckgen CLK_TOP_AUDIO>,
+			 <&topckgen CLK_TOP_AUDIO_INTBUS>,
+			 <&topckgen CLK_TOP_AUDIO1>,
+			 <&apmixedsys CLK_APMIXED_APLL1>,
+			 <&topckgen CLK_TOP_AUDIO2>,
+			 <&apmixedsys CLK_APMIXED_APLL2>,
+			 <&topckgen CLK_TOP_AUDIO_ENG1>,
+			 <&topckgen CLK_TOP_APLL1_D4>,
+			 <&topckgen CLK_TOP_AUDIO_ENG2>,
+			 <&topckgen CLK_TOP_APLL2_D4>,
+			 <&topckgen CLK_TOP_AUDIO_HIRES>,
+			 <&topckgen CLK_TOP_APLL_I2S0>,
+			 <&topckgen CLK_TOP_APLL_I2S1>,
+			 <&topckgen CLK_TOP_APLL_I2S2>,
+			 <&topckgen CLK_TOP_APLL_I2S3>,
+			 <&topckgen CLK_TOP_APLL_I2S4>,
+			 <&topckgen CLK_TOP_APLL_I2S5>,
+			 <&topckgen CLK_TOP_APLL12_DIV0>,
+			 <&topckgen CLK_TOP_APLL12_DIV1>,
+			 <&topckgen CLK_TOP_APLL12_DIV2>,
+			 <&topckgen CLK_TOP_APLL12_DIV3>,
+			 <&topckgen CLK_TOP_APLL12_DIV4>,
+			 <&topckgen CLK_TOP_APLL12_DIVB>,
+			 <&topckgen CLK_TOP_APLL12_DIV5>,
+			 <&clk26m>;
+		clock-names = "aud_afe", "aud_tml", "aud_22m", "aud_24m",
+			      "aud_apll_tuner", "aud_apll2_tuner", "aud_nle",
+			      "infra_audio", "infra_audio_26m",
+			      "top_audio", "top_audio_intbus", "top_audio1",
+			      "apll1", "top_audio2", "apll2",
+			      "top_audio_eng1", "apll1_d4",
+			      "top_audio_eng2", "apll2_d4", "top_audio_hires",
+			      "top_apll_i2s0", "top_apll_i2s1", "top_apll_i2s2",
+			      "top_apll_i2s3", "top_apll_i2s4", "top_apll_i2s5",
+			      "top_apll12_div0", "top_apll12_div1",
+			      "top_apll12_div2", "top_apll12_div3",
+			      "top_apll12_div4", "top_apll12_divb",
+			      "top_apll12_div5", "clk26m";
+	};
+};

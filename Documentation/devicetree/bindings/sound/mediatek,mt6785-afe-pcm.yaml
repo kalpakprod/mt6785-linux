@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/mediatek,mt6785-afe-pcm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6785 audio front end
+
+maintainers:
+  - MediaTek SoC Team <linux-mediatek@lists.infradead.org>
+
+description: |
+  The audio front end of the MT6785 moves PCM between memory (through its
+  memory interfaces) and the codec, the I2S ports and the PCM/TDM interfaces.
+  It is a child of the SoC's audio system controller, which is the syscon its
+  register map comes from, so it carries no reg of its own.
+
+properties:
+  compatible:
+    const: mediatek,mt6785-audio
+
+  interrupts:
+    maxItems: 1
+
+  resets:
+    maxItems: 1
+
+  reset-names:
+    const: audiosys
+
+  mediatek,apmixedsys:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The APMIXEDSYS controller, where the audio PLLs live.
+
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The infrastructure clock controller.
+
+  mediatek,topckgen:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The top clock generator, where the audio muxes live.
+
+  power-domains:
+    maxItems: 1
+
+  "#sound-dai-cells":
+    const: 0
+
+  clocks: true
+  clock-names: true
+
+required:
+  - compatible
+  - interrupts
+  - resets
+  - reset-names
+  - mediatek,apmixedsys
+  - mediatek,infracfg
+  - mediatek,topckgen
+  - power-domains
+  - "#sound-dai-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    audsys {
+        audio-controller {
+            compatible = "mediatek,mt6785-audio";
+            interrupts = <GIC_SPI 184 IRQ_TYPE_LEVEL_LOW>;
+            resets = <&watchdog 17>;
+            reset-names = "audiosys";
+            mediatek,apmixedsys = <&apmixedsys>;
+            mediatek,infracfg = <&infracfg>;
+            mediatek,topckgen = <&topckgen>;
+            power-domains = <&spm 0>;
+            #sound-dai-cells = <0>;
+        };
+    };
+
+...
