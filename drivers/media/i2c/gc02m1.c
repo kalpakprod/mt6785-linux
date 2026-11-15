@@ -218,24 +218,38 @@ static int gc02m1_power_on(struct gc02m1 *gc02m1)
 	struct device *dev = gc02m1->dev;
 	int ret;
 
-	ret = clk_prepare_enable(gc02m1->xclk);
-	if (ret) {
-		dev_err(dev, "failed to enable clock: %d\n", ret);
-		return ret;
-	}
+	/*
+	 * The vendor's order for this module (imgsensor_cfg_table.c,
+	 * SENSOR_DRVNAME_GC02M1OFILM_MIPI_RAW):
+	 *
+	 *	RST low (1 ms) -> DOVDD 1.8 V -> AVDD 2.8 V (1 ms)
+	 *	-> MCLK on (1 ms) -> RST high
+	 *
+	 * The part has no DVDD on this board: only AVDD comes from the camera
+	 * LDO (live DT cam4_vcama), DOVDD from the shared 1.8 V switch.
+	 */
+	gpiod_set_value_cansleep(gc02m1->reset_gpio, 1);
+	usleep_range(1000, 1500);
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(gc02m1_supply_names),
 				    gc02m1->supplies);
 	if (ret) {
 		dev_err(dev, "failed to enable regulators: %d\n", ret);
-		clk_disable_unprepare(gc02m1->xclk);
 		return ret;
 	}
+	usleep_range(1000, 1500);
 
-	/* the vendor power table releases reset after the rails are up */
-	usleep_range(1000, 2000);
+	ret = clk_prepare_enable(gc02m1->xclk);
+	if (ret) {
+		dev_err(dev, "failed to enable clock: %d\n", ret);
+		regulator_bulk_disable(ARRAY_SIZE(gc02m1_supply_names),
+				       gc02m1->supplies);
+		return ret;
+	}
+	usleep_range(1000, 1500);
+
 	gpiod_set_value_cansleep(gc02m1->reset_gpio, 0);
-	usleep_range(5000, 6000);
+	usleep_range(1000, 1500);
 
 	return 0;
 }
@@ -243,8 +257,8 @@ static int gc02m1_power_on(struct gc02m1 *gc02m1)
 static void gc02m1_power_off(struct gc02m1 *gc02m1)
 {
 	gpiod_set_value_cansleep(gc02m1->reset_gpio, 1);
-	regulator_bulk_disable(ARRAY_SIZE(gc02m1_supply_names), gc02m1->supplies);
 	clk_disable_unprepare(gc02m1->xclk);
+	regulator_bulk_disable(ARRAY_SIZE(gc02m1_supply_names), gc02m1->supplies);
 }
 
 static int gc02m1_write_regs(struct gc02m1 *gc02m1,
