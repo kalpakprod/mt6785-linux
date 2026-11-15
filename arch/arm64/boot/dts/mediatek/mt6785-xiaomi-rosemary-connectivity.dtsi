@@ -186,3 +186,31 @@
 		};
 	};
 };
+
+/*
+ * The two bridges that sit on top of the WMT/STP stack. Neither has a register
+ * window of its own: both talk to the conn MCU through the BTIF transport
+ * described above, and both are children of /soc so that of_platform_populate()
+ * creates a platform_device for each.
+ *
+ *   btmtkbtif  carries HCI as H4 inside STP frames of type 0.
+ *   stpgps     carries the GNSS data path as STP frames of type 2.
+ *
+ * They live at the top level rather than under the consys node: they touch no
+ * consys register, and the driver of each asks the WMT core for its channel.
+ * They are not children of /soc either, because that node is a simple-bus and
+ * a child of it without a unit address and a reg is rejected by the schema.
+ * of_platform_populate() walks the whole tree, so a platform_device is created
+ * for them either way.
+ */
+/ {
+	bt_btif: bluetooth {
+		compatible = "mediatek,mt6785-bt";
+		status = "okay";
+	};
+
+	gps_stp: gnss {
+		compatible = "mediatek,mt6785-stpgps";
+		status = "okay";
+	};
+};
