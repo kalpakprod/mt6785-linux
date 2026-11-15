@@ -7,9 +7,18 @@ modem, camera blocks) is written for the SoC and kept apart from the board files
 phone can take it. The board we test on is the **Xiaomi POCO M5s / Redmi Note 10S (`rosemary`)**.
 The Redmi Note 8 Pro (`begonia`) device trees from the base are carried along.
 
-Phones on this chip include the Xiaomi Redmi Note 8 Pro (begonia), Redmi Note 10S and POCO M5s
-(rosemary), Realme 6, Realme 7 and Infinix Note 10 Pro. If you own one, the SoC part should already
-apply; a board file for your phone is what is left.
+Phones on this chip (44 models by one spec database; send a correction if yours is missing):
+
+- Xiaomi: Redmi Note 8 Pro (begonia), Redmi Note 10S and POCO M5s (rosemary), Redmi Note 11 SE (India)
+- Realme: 6, 6i, 6S, 7, 8, Narzo, Narzo 20 Pro, Narzo 30
+- Infinix: Zero 8, Zero 8i, Note 10 Pro (and NFC), Zero X, Zero X Neo, Zero X Pro
+- Tecno: Camon 16 Premier, Camon 17 Pro, Phantom X
+- Motorola Moto G60S, vivo Y73, Micromax In note 2, Gionee M15, HiSense Infinity H50
+- BLU G90 Pro, G91 Pro, G91 Max; Doogee S96 Pro, S96 GT, S97 Pro; Ulefone Power Armor 13;
+  Umidigi S5 Pro, Bison GT, Bison GT2, A15T; iiiF150 R2022
+
+If you own one, the SoC part should already apply; a board file (device tree) for your phone is what is
+left. Issues and pull requests with board files are welcome.
 
 ## Status on rosemary (POCO M5s)
 
