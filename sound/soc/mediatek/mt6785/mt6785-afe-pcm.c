@@ -203,16 +203,6 @@ static struct snd_soc_dai_driver mt6785_memif_dai_driver[] = {
 		},
 		.ops = &mtk_afe_fe_ops,
 	},
-	{
-		.name = "DL9",
-		.id = MT6785_MEMIF_DL9,
-		.playback = {
-			.stream_name = "DL9",
-			.channels_min = 1,
-			.channels_max = 2,
-			.rates = MTK_PCM_RATES,
-			.formats = MTK_PCM_FORMATS,
-		},
 		.ops = &mtk_afe_fe_ops,
 	},
 	{
@@ -1622,7 +1612,6 @@ static bool mt6785_is_volatile_reg(struct device *dev, unsigned int reg)
 	switch (reg) {
 	case AUDIO_TOP_CON0:	/* reg bit controlled by CCF */
 	case AUDIO_TOP_CON1:	/* reg bit controlled by CCF */
-	case AUDIO_TOP_CON2:
 	case AUDIO_TOP_CON3:
 	case AFE_DL1_CUR_MSB:
 	case AFE_DL1_CUR:
@@ -1643,7 +1632,6 @@ static bool mt6785_is_volatile_reg(struct device *dev, unsigned int reg)
 	case AFE_ADDA_SRC_DEBUG_MON1:
 	case AFE_ADDA_UL_SRC_MON0:
 	case AFE_ADDA_UL_SRC_MON1:
-	case AFE_SRAM_BOUND:
 	case AFE_VUL_CUR_MSB:
 	case AFE_VUL_CUR:
 	case AFE_VUL_END:
@@ -1682,7 +1670,6 @@ static bool mt6785_is_volatile_reg(struct device *dev, unsigned int reg)
 	case AFE_IRQ_MCU_MISS_CLR:
 	case AFE_GAIN1_CUR:
 	case AFE_GAIN2_CUR:
-	case AFE_SRAM_DELSEL_CON1:
 	case PCM_INTF_CON2:
 	case FPGA_CFG0:
 	case FPGA_CFG1:
@@ -1835,7 +1822,6 @@ static bool mt6785_is_volatile_reg(struct device *dev, unsigned int reg)
 	case AFE_DL8_CUR_MSB:
 	case AFE_DL8_CUR:
 	case AFE_DL8_END:
-	case AFE_PROT_SIDEBAND_MON:
 	case AFE_APLL1_TUNER_CFG:	/* [20:31] is monitor */
 	case AFE_APLL2_TUNER_CFG:	/* [20:31] is monitor */
 	case AFE_DAC_CON0:
