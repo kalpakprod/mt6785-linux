@@ -85,6 +85,23 @@ static int k7_init_sequence(struct k7_panel *ctx)
 	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 20);
 
+	/*
+	 * Pixel format: 24 bits per pixel, RGB888, on both interfaces. The vendor
+	 * table does not carry this write, so the DDI keeps whatever COLMOD state
+	 * it resets into - and the driver pulses the hardware reset (GPIO 44)
+	 * before replaying the table, so that state is the power-on default and not
+	 * what the loader had left running. Our DSI sends packed 24-bit
+	 * (PS_SEL 3, PS_WC 3240 = 1080 x 3), so the panel has to be on 24 bpp.
+	 *
+	 * Trial 7's geometry says it is not: 2400 framebuffer rows (4320 bytes
+	 * each at 32 bpp) are consumed over about two thirds of the panel, i.e.
+	 * roughly 1.5 framebuffer rows per panel line, which is the ratio between
+	 * the 3240 bytes we send per line and the 2160 a 16-bpp panel would take.
+	 * 0x77 is the DCS encoding for 24 bits per pixel on both interfaces; if the
+	 * DDI is already there, this writes the same value and changes nothing.
+	 */
+	mipi_dsi_dcs_set_pixel_format_multi(&dsi_ctx, 0x77);
+
 	/* TE on, vsync only */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_TEAR_ON, 0x00);
 
