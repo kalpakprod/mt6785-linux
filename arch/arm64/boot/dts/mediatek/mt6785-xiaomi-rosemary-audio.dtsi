@@ -1,5 +1,187 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the audio area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * Every value below comes from one of these, and each node says which:
+ *   [L] poco-m5s/device-dump-2026-11-12/device-tree.dts
+ *       the device tree the phone actually boots (the hardware truth)
+ *   [V] scratch/native/4-modem/src/los-mt6785, the vendor 4.19 kernel:
+ *       arch/arm64/boot/dts/mediatek/mt6785.dts,
+ *       arch/arm64/boot/dts/mediatek/rosemary/cust.dtsi,
+ *       arch/arm64/boot/dts/mediatek/v1/mt6360.dtsi
+ *   [K] this tree (mainline 7.3.4 with MT6785 support)
  */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/leds/common.h>
+
+/* -------------------------------------------------- headset detect (ACCDET) */
+
+/*
+ * The jack lives in the PMIC: detection and the headset button ADC are MT6359
+ * functions, so this works without the audio front end.
+ *
+ * The node is an MFD child of the PMIC, not of &pwrap and not of the codec:
+ * mt6397-core.c registers the cells of the node carrying
+ * compatible = "mediatek,mt6359", and mt6359-accdet.c then looks for
+ * of_get_child_by_name(dev->parent->of_node, "accdet") — that parent is
+ * `pmic`. The vendor tree has its accdet in the same place, as a sibling of
+ * the ADC and the regulators [L: /accdet under the PMIC node].
+ *
+ * No io-channels here: mainline reads the PMIC's own ADC and takes the three
+ * PMIC interrupts (MT6359_IRQ_ACCDET, _EINT0, _EINT1) from the MFD cell. The
+ * vendor's `io-channels = <&pmic_auxadc AUXADC_ACCDET>` belongs to the vendor
+ * SoC-level ACCDET driver and is not used by mainline [L: accdet].
+ *
+ * Values: the vendor board's thresholds, and the loader's own dtbo overlay
+ * injects the same numbers into this node [L: accdet; V: mt6785.dts]. The
+ * property names are mainline's (mt6359-accdet.c) — the vendor names
+ * (accdet-mic-vol, headset-three-key-threshold, ...) belong to the vendor
+ * driver and would be silently ignored here.
+ */
+&pmic {
+	accdet {
+		compatible = "mediatek,mt6359-accdet";
+
+		mediatek,mic-vol = <8>;			/* 2.8 V [L] accdet-mic-vol */
+		mediatek,mic-mode = <2>;		/* [L] accdet-mic-mode */
+		mediatek,plugout-debounce = <1>;	/* [L] accdet-plugout-debounce */
+		mediatek,eint-use-ap = <0>;		/* PMIC EINT path */
+		mediatek,eint-use-ext-res = <0>;	/* [L] eint_use_ext_res */
+		mediatek,eint-detect-mode = <4>;	/* hardware detection mode */
+		mediatek,eint-trig-mode = <0>;		/* GPIO trigger */
+		mediatek,key-mode = <0>;		/* three-key headset */
+		/* [L] headset-mode-setting, the 15 debounce words, in order */
+		mediatek,pwm-deb-setting = <0x500 0x500 0x1 0x1f0
+					    0x800 0x800 0x20 0x44
+					    0x4 0x1
+					    0x5 0x3 0x3 0x5 0xe>;
+		mediatek,three-key-thr = <0 80 220 400>;	/* [L] 0 0x50 0xdc 0x190 */
+		mediatek,four-key-thr = <0 58 121 192 400>;	/* [L] 0 0x3a 0x79 0xc0 0x190 */
+	};
+};
+
+/* ------------------------------------------------------------------- NFC */
+
+/*
+ * ST21NFC on I2C3 at 0x08. The live tree has the controller bound on this bus
+ * [L: i2c3@1100f000/nfc@08], and 400 kHz is the vendor board's bus speed
+ * [V: rosemary/cust.dtsi &i2c3 clock-frequency].
+ *
+ * The controller's two pins come from the vendor's separate GPIO node, which
+ * is also what the phone boots with [L: nfc { compatible =
+ * "mediatek,nfc-gpio-v2"; gpio-rst = <32>; gpio-irq = <31>; }]:
+ *   reset  GPIO32   the vendor driver pulses it low for 20 ms and leaves it
+ *                   high, so the line is active low — GPIO_ACTIVE_HIGH here
+ *                   matches mainline's own sequence in st-nci/i2c.c
+ *                   (gpiod_set_value(reset, 0), then 1)
+ *   irq    GPIO31   the live tree has a separate irq_nfc EINT on GPIO31 [L:
+ *                   irq_nfc, interrupt-parent pio, interrupts <31 4>], so the
+ *                   line is wired level-high
+ *
+ * The part: fw7 firmware (st21nfc_fw7.bin in /vendor/firmware) is ST's NCI
+ * family line, so mainline's st-nci is the right driver and "st,st21nfcc-i2c"
+ * its binding for an I2C part [K].
+ *
+ * Left disabled: the 26 MHz reference is switched by the PMIC clock buffer in
+ * the vendor design (CONFIG_MTK_NFC_CLKBUF_ENABLE=y in the stock kernel), and
+ * no mainline driver drives that buffer yet. With no clock the controller
+ * cannot answer its reset response, so enabling the node now would only add a
+ * probe that times out. The bus itself is enabled: nothing else is needed to
+ * reach the chip, and the node flips to "okay" once the clock is solved.
+ */
+&i2c3 {
+	status = "okay";
+	clock-frequency = <400000>;		/* [V] */
+
+	nfc: nfc@8 {
+		compatible = "st,st21nfcc-i2c";
+		reg = <0x08>;
+		interrupt-parent = <&pio>;
+		interrupts = <31 IRQ_TYPE_LEVEL_HIGH>;	/* [L] irq_nfc */
+		reset-gpios = <&pio 32 GPIO_ACTIVE_HIGH>;	/* [L] nfc gpio-rst */
+		firmware-name = "st21nfc_fw7.bin";
+		status = "disabled";	/* no driver for the PMIC 26 MHz buffer */
+	};
+};
+
+/* --------------------------------------------------------- IR transmitter */
+
+/*
+ * The IR LED hangs on the MOSI line of SPI3 chip select 0 with no register
+ * interface, which is exactly what mainline's ir-spi driver drives [K:
+ * drivers/media/rc/ir-spi.c, binding leds/irled/ir-spi-led.yaml]. The live
+ * tree carries the same client with the vendor compatible [L:
+ * spi3@11013000/spi@3 { compatible = "ir,ir_spi"; reg = <0>; }], and the
+ * vendor board file enables the controller for it [V].
+ *
+ * 1 MHz and clock polarity from the vendor node [L: spi-max-frequency
+ * <1000000>, spi-cpol]. Duty cycle 50 % is the driver's documented value.
+ *
+ * GPIO26 is NOT claimed here: the vendor tree also carries an irtx_pwm node
+ * on that pin, but the stock kernel does not build the MTK IRTX PWM driver, so
+ * that node is dead, and the pin belongs to the vibration motor (see the
+ * haptics node added in this area's later step).
+ */
+&spi3 {
+	status = "okay";
+
+	irled@0 {
+		compatible = "ir-spi-led";
+		reg = <0>;
+		spi-max-frequency = <1000000>;	/* [L] */
+		spi-cpol;			/* [L] */
+		duty-cycle = /bits/ 8 <50>;
+	};
+};
+
+/* ------------------------------------------------- camera flash (MT6360) */
+
+/*
+ * The MT6360 sub-PMIC on I2C5 carries the phone's two flash channels. It is
+ * described in the board dts as `pmic@34` (compatible "mediatek,mt6360"), so
+ * the LED block is added to that node rather than declared again.
+ *
+ * Currents and the strobe timeout are the ones the chip is programmed with on
+ * the stock phone [L: mt6360_pmu_dts/fled, which agrees with the vendor
+ * values in V: v1/mt6360.dtsi]:
+ *   torch  37500 uA  on both channels		(fled1_tor_cur, fled2_tor_cur)
+ *   strobe 750000 uA on FLASH1			(fled1_strb_cur)
+ *   strobe 800000 uA on FLASH2			(fled2_strb_cur, vendor value;
+ *						 the live dump has the cell garbled,
+ *						 every other channel agrees)
+ *   strobe timeout 1248 ms = 1248000 us		(fled_strb_tout = 1248)
+ * They are written under mainline's names: leds-mt6360 takes led-max-microamp
+ * as the torch ceiling, flash-max-microamp as the strobe ceiling and
+ * flash-max-timeout-us as the timer, all three clamped to the chip's own
+ * ranges on probe [K: drivers/leds/flash/leds-mt6360.c].
+ */
+&{/soc/i2c@11016000/pmic@34} {
+	led-controller {
+		compatible = "mediatek,mt6360-led";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@4 {				/* FLASH1 */
+			reg = <4>;
+			function = LED_FUNCTION_FLASH;
+			color = <LED_COLOR_ID_WHITE>;
+			function-enumerator = <1>;
+			led-max-microamp = <37500>;
+			flash-max-microamp = <750000>;
+			flash-max-timeout-us = <1248000>;
+		};
+
+		led@5 {				/* FLASH2 */
+			reg = <5>;
+			function = LED_FUNCTION_FLASH;
+			color = <LED_COLOR_ID_WHITE>;
+			function-enumerator = <2>;
+			led-max-microamp = <37500>;
+			flash-max-microamp = <800000>;
+			flash-max-timeout-us = <1248000>;
+		};
+	};
+};
