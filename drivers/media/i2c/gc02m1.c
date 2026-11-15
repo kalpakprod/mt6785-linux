@@ -224,7 +224,7 @@ static int gc02m1_power_on(struct gc02m1 *gc02m1)
 		return ret;
 	}
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(gc02m1_supplies),
+	ret = regulator_bulk_enable(ARRAY_SIZE(gc02m1_supply_names),
 				    gc02m1->supplies);
 	if (ret) {
 		dev_err(dev, "failed to enable regulators: %d\n", ret);
@@ -243,7 +243,7 @@ static int gc02m1_power_on(struct gc02m1 *gc02m1)
 static void gc02m1_power_off(struct gc02m1 *gc02m1)
 {
 	gpiod_set_value_cansleep(gc02m1->reset_gpio, 1);
-	regulator_bulk_disable(ARRAY_SIZE(gc02m1_supplies), gc02m1->supplies);
+	regulator_bulk_disable(ARRAY_SIZE(gc02m1_supply_names), gc02m1->supplies);
 	clk_disable_unprepare(gc02m1->xclk);
 }
 
@@ -553,7 +553,7 @@ static int gc02m1_get_pm_resources(struct gc02m1 *gc02m1)
 	for (i = 0; i < ARRAY_SIZE(gc02m1_supply_names); i++)
 		gc02m1->supplies[i].supply = gc02m1_supply_names[i];
 
-	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(gc02m1_supplies),
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(gc02m1_supply_names),
 				      gc02m1->supplies);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get regulators\n");

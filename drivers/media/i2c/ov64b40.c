@@ -514,7 +514,7 @@ static int ov64b40_power_on(struct ov64b40 *ov64b40)
 		return ret;
 	}
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(ov64b40_supplies),
+	ret = regulator_bulk_enable(ARRAY_SIZE(ov64b40_supply_names),
 				    ov64b40->supplies);
 	if (ret) {
 		dev_err(dev, "failed to enable regulators: %d\n", ret);
@@ -533,7 +533,7 @@ static int ov64b40_power_on(struct ov64b40 *ov64b40)
 static void ov64b40_power_off(struct ov64b40 *ov64b40)
 {
 	gpiod_set_value_cansleep(ov64b40->reset_gpio, 1);
-	regulator_bulk_disable(ARRAY_SIZE(ov64b40_supplies), ov64b40->supplies);
+	regulator_bulk_disable(ARRAY_SIZE(ov64b40_supply_names), ov64b40->supplies);
 	clk_disable_unprepare(ov64b40->xclk);
 }
 
@@ -841,7 +841,7 @@ static int ov64b40_get_pm_resources(struct ov64b40 *ov64b40)
 	for (i = 0; i < ARRAY_SIZE(ov64b40_supply_names); i++)
 		ov64b40->supplies[i].supply = ov64b40_supply_names[i];
 
-	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ov64b40_supplies),
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ov64b40_supply_names),
 				      ov64b40->supplies);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get regulators\n");
