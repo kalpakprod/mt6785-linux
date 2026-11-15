@@ -1,5 +1,252 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the camera area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * Every address, GPIO, supply and bus below comes from one of:
+ *   - the phone's live device tree, poco-m5s/device-dump-2026-11-12/device-tree.dts
+ *     (i2c6/wl2866d@28, the camera pinctrl groups, the kd_camera_hw1 rail wiring);
+ *   - the vendor imgsensor power tables,
+ *     drivers/misc/mediatek/imgsensor/src/mt6785/camera_hw/imgsensor_cfg_table.c
+ *     (rail order and delays, MCLK frequency, lane counts);
+ *   - poco-m5s/research/native/5-cameras.md (which sensor sits where, and why).
+ * Nothing here was measured on the phone yet; the report lists what to check.
  */
+
+/* ------------------------------------------------------- camera rails (LDO) */
+
+/*
+ * WL2866D at I2C6 0x28, enable GPIO195. Live DT: i2c6@11005000/wl2866d@28,
+ * en-gpio <&pio 0xc3 0x0>; its SCL/SDA are GPIO45/46 (scl-gpio-id 0x2d,
+ * sda-gpio-id 0x2e), which are the pins muxed to SCL6/SDA6.
+ *
+ * The child names are the ones the driver matches (dvdd1/dvdd2/avdd1/avdd2)
+ * and the windows are the part's, from the vendor driver's voltage formulas:
+ * DVDD 0.6-2.13 V in 6 mV steps, AVDD 1.2-4.3875 V in 12.5 mV steps.
+ */
+&i2c6 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins>;
+
+	camera_ldo: regulator@28 {
+		compatible = "willsemi,wl2866d";
+		reg = <0x28>;
+
+		enable-gpios = <&pio 195 GPIO_ACTIVE_LOW>;
+
+		regulators {
+			/*
+			 * Each output names the working point it is registered
+			 * with, as the vendor DT does with init-voltage: 1.2 V for
+			 * the DVDD pair, 2.8 V for the AVDD pair (the vendor's own
+			 * values, live DT wl2866d@28, init-voltage 0x100590 /
+			 * 0x2ab980). The regulator core applies a min == max range
+			 * at registration and neither sensor driver sets a voltage
+			 * of its own, so with a wide range the rail would simply
+			 * stay wherever it was.
+			 *
+			 * cam_avdd1 feeds both cam1 (OV13B10, 2.8 V) and cam2
+			 * (IMX355, 2.7 V) on one net: the live DT wires cam1_vcama
+			 * and cam2_vcama to the same phandle (0x190), so one value
+			 * has to serve both. 2.8 V is the vendor's init-voltage for
+			 * that rail and the higher of the two requests.
+			 */
+			cam_dvdd1: dvdd1 {
+				regulator-name = "wl2866d_dvdd1";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			cam_dvdd2: dvdd2 {
+				regulator-name = "wl2866d_dvdd2";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			cam_avdd1: avdd1 {
+				regulator-name = "wl2866d_avdd1";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_avdd2: avdd2 {
+				regulator-name = "wl2866d_avdd2";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+		};
+	};
+};
+
+/* --------------------------------------------------- MIPI CSI-2 receiver PHY */
+
+/*
+ * The analog receiver block starts at 0x11c80000. The live DT describes it as
+ * six 4 KB banks, mipi_rx_ana_csi0a@11c80000 through mipi_rx_ana_csi2b@11c85000;
+ * the driver drives the B bank at a fixed +0x1000 from the node's base, so one
+ * node covers a CSI port as 0x2000 bytes. Only CSI port 0 is described: it is
+ * the pair the sensors below are wired to.
+ */
+&{/soc} {
+	csi_rx0: phy@11c80000 {
+		compatible = "mediatek,mt6785-csi-rx";
+		reg = <0 0x11c80000 0 0x2000>;
+		num-lanes = <4>;
+		#phy-cells = <1>;
+		status = "disabled";
+	};
+};
+
+/* --------------------------------------------------------------- pinctrl */
+
+/*
+ * MCLK pins, from the live DT's per-camera groups (camera0_mclk_*@gpio116,
+ * camera1_mclk_*@gpio120, camera2_mclk_*@gpio121): the pin muxes to CMMCLK0,
+ * CMMCLK2 and CMMCLK3 respectively, and the vendor enables them at 4 mA
+ * (`MCLK_STATE_ENABLE_4MA` in camera_hw/mclk/mclk.c, drive-strength 1 in the
+ * vendor DT). Mainline's mediatek pinctrl wants a mA value, so 4 follows.
+ *
+ * The reset lines are deliberately absent: each sensor driver claims its own
+ * reset GPIO as a descriptor and drives it, and a pinctrl state that also
+ * drives the same pad would fight it.
+ */
+&pio {
+	cam0_mclk_pins: cam0-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO116__FUNC_CMMCLK0>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam1_mclk_pins: cam1-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO120__FUNC_CMMCLK2>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam2_mclk_pins: cam2-mclk-pins {
+		pins {
+			pinmux = <PINMUX_GPIO121__FUNC_CMMCLK3>;
+			drive-strength = <4>;
+		};
+	};
+
+	i2c2_pins: i2c2-pins {
+		pins {
+			pinmux = <PINMUX_GPIO112__FUNC_SCL2>,
+				 <PINMUX_GPIO113__FUNC_SDA2>;
+			bias-pull-up;
+		};
+	};
+
+	i2c4_pins: i2c4-pins {
+		pins {
+			pinmux = <PINMUX_GPIO110__FUNC_SCL4>,
+				 <PINMUX_GPIO111__FUNC_SDA4>;
+			bias-pull-up;
+		};
+	};
+
+	i2c6_pins: i2c6-pins {
+		pins {
+			pinmux = <PINMUX_GPIO45__FUNC_SCL6>,
+				 <PINMUX_GPIO46__FUNC_SDA6>;
+			bias-pull-up;
+		};
+	};
+
+};
+
+/* --------------------------------------------------------------- sensors */
+
+/*
+ * The vendor DT's "camera_main@1a" style nodes are I2C adapter anchors for the
+ * vendor framework, not sensors (study section 1.1); mainline wants one node
+ * per real sensor address, which is what follows.
+ *
+ * Rail wiring from the live DT kd_camera_hw1 node:
+ *   cam1 (front, OV13B10)      vcama = wl2866d_avdd1, vcamd = wl2866d_dvdd1
+ *   cam2 (ultrawide, IMX355)   vcama = wl2866d_avdd1, vcamd = wl2866d_dvdd1
+ *   both                       vcamio = the PMIC's 1.8 V LDO (dovdd)
+ * The voltages are the vendor power table's: OV13B10 AVDD 2.8 V / DVDD 1.2 V,
+ * IMX355 AVDD 2.7 V / DVDD 1.2 V, both DOVDD 1.8 V. They are applied through
+ * regulator-min/max-microvolt, because the regulator core sets a rail to its
+ * constraint range at registration and neither sensor driver sets a voltage.
+ */
+&i2c4 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_pins>;
+
+	/*
+	 * Front camera, OV13B10 at 7-bit 0x36 (vendor .i2c_addr_table
+	 * {0x6C, 0x20, 0xff} in 8-bit form, study section 1.1), 4 D-PHY lanes.
+	 * Fixed focus: no VCM.
+	 *
+	 * Clock: the board feeds 24 MHz (vendor .mclk = 24 for every module),
+	 * which is what is requested here. The mainline driver currently
+	 * accepts only 19.2 MHz and its PLL table is written for that input
+	 * (OV13B10_EXT_CLK, and its link-frequency table sets 0x0305 = 0xaf,
+	 * the vendor's 24 MHz table sets 0x46); see the report. CAMTG cannot
+	 * produce 19.2 MHz on this SoC, so the driver needs the 24 MHz entry.
+	 */
+	front_cam: camera@36 {
+		compatible = "ovti,ov13b10";
+		reg = <0x36>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG2>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd1>;
+		dvdd-supply = <&cam_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 124 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam1_mclk_pins>;
+
+		status = "okay";
+	};
+
+	/*
+	 * Ultrawide, IMX355 at 7-bit 0x1a (vendor .i2c_addr_table {0x34, 0xff}
+	 * in 8-bit form), 4 D-PHY lanes. The driver's clock table has a 24 MHz
+	 * entry (imx355_clk_params[]: ext_clk 24000000, pll_op_mpy 60,
+	 * pll_op_prediv 2), which gives a 4-lane link frequency of
+	 * 24 MHz * 60 / (2 * 2) = 360 MHz.
+	 *
+	 * No endpoint yet: the sensor's port connects to SENINF, which does
+	 * not exist until step 5. The driver reads its lane count and link
+	 * frequency from that endpoint, so until then it cannot probe: this is
+	 * expected and is why the node carries no port.
+	 */
+	uw_cam: camera@1a {
+		compatible = "sony,imx355";
+		reg = <0x1a>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG3>;
+		clock-names = "xclk";
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&cam_avdd1>;
+		dvdd-supply = <&cam_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+		reset-gpios = <&pio 125 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam2_mclk_pins>;
+
+		status = "okay";
+	};
+};

@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/ovti,ov13b10.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: OmniVision OV13B10 13 megapixel image sensor
+
+maintainers:
+  - devicetree@vger.kernel.org
+
+description: |
+  The OV13B10 is a 13 megapixel CMOS image sensor with a MIPI CSI-2 output.
+  It is a fixed-focus part: there is no voice coil motor to describe.
+
+  The sensor needs its three supplies, its external clock (the driver's PLL
+  table is written for 19.2 MHz) and an active-low reset line. The number of
+  MIPI CSI-2 data lanes selects the mode table inside the driver, 2 or 4.
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: ovti,ov13b10
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+    description:
+      External clock (XCLK) of the sensor.
+
+  avdd-supply:
+    description:
+      Analog power supply, 2.8 V.
+
+  dvdd-supply:
+    description:
+      Digital core power supply, 1.2 V.
+
+  dovdd-supply:
+    description:
+      I/O power supply, 1.8 V.
+
+  reset-gpios:
+    maxItems: 1
+    description:
+      Active-low reset (XSHUTDN) line.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          data-lanes:
+            oneOf:
+              - items:
+                  - const: 1
+                  - const: 2
+                  - const: 3
+                  - const: 4
+              - items:
+                  - const: 1
+                  - const: 2
+
+          link-frequencies: true
+
+        required:
+          - link-frequencies
+
+    required:
+      - endpoint
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - avdd-supply
+  - dvdd-supply
+  - dovdd-supply
+  - reset-gpios
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@36 {
+            compatible = "ovti,ov13b10";
+            reg = <0x36>;
+
+            clocks = <&topckgen 77>;
+            clock-names = "xclk";
+            assigned-clocks = <&topckgen 77>;
+            assigned-clock-rates = <19200000>;
+
+            avdd-supply = <&cam_avdd1>;
+            dvdd-supply = <&cam_dvdd1>;
+            dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+
+            reset-gpios = <&pio 124 GPIO_ACTIVE_LOW>;
+
+            port {
+                endpoint {
+                    data-lanes = <1 2 3 4>;
+                    link-frequencies = /bits/ 64 <560000000>;
+                    remote-endpoint = <&seninf_in>;
+                };
+            };
+        };
+    };
+...
