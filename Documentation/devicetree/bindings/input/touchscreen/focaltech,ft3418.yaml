@@ -44,7 +44,7 @@ required:
   - interrupts
   - reset-gpios
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |
