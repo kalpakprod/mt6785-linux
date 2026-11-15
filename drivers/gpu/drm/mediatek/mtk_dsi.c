@@ -682,20 +682,20 @@ static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
 	};
 	int i;
 
-	dev_info(dsi->dev, "dsi timed out, engine state:\n");
+	dev_info(dsi->host.dev, "dsi timed out, engine state:\n");
 
 	for (i = 0; i < ARRAY_SIZE(regs); i++)
-		dev_info(dsi->dev, "  %-16s 0x%08x\n", regs[i].name,
+		dev_info(dsi->host.dev, "  %-16s 0x%08x\n", regs[i].name,
 			 readl(dsi->regs + regs[i].off));
 
 	/* the engine's own read-back of what it is doing */
 	for (i = 0; i < 9; i++)
-		dev_info(dsi->dev, "  STATE_DBG%d      0x%08x\n", i,
+		dev_info(dsi->host.dev, "  STATE_DBG%d      0x%08x\n", i,
 			 readl(dsi->regs + DSI_STATE_DBG0 + 4 * i));
 
 	/* the packet the engine was handed, as it sits in the command queue */
 	for (i = 0; i < 4; i++)
-		dev_info(dsi->dev, "  CMDQ[%d]          0x%08x\n", i,
+		dev_info(dsi->host.dev, "  CMDQ[%d]          0x%08x\n", i,
 			 readl(dsi->regs + dsi->driver_data->reg_cmdq_off + 4 * i));
 }
 
@@ -775,7 +775,7 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 		}
 
 		if (tmp & DSI_BUSY)
-			dev_warn_ratelimited(dsi->dev,
+			dev_warn_ratelimited(dsi->host.dev,
 					     "dsi engine still busy after rack, INTSTA 0x%08x\n",
 					     tmp);
 
