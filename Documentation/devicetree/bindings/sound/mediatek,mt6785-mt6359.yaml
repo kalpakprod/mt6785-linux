@@ -27,16 +27,6 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: The audio front end the card's front-end DAIs belong to.
 
-  mediatek,audio-codec:
-    $ref: /schemas/types.yaml#/definitions/phandle
-    description: The codec component the card's links use.
-
-  mediatek,accdet:
-    $ref: /schemas/types.yaml#/definitions/phandle
-    description: |
-      The PMIC node whose child is the codec's ACCDET block; the machine driver
-      looks the component up through it to attach the headset jack.
-
   aux-devs:
     $ref: /schemas/types.yaml#/definitions/phandle-array
     description: |
@@ -53,7 +43,6 @@ properties:
 required:
   - compatible
   - mediatek,platform
-  - mediatek,audio-codec
 
 additionalProperties: true
 
@@ -63,8 +52,6 @@ examples:
         compatible = "mediatek,mt6785-mt6359-sound";
         model = "Xiaomi POCO M5s";
         mediatek,platform = <&afe>;
-        mediatek,audio-codec = <&mt6359codec>;
-        mediatek,accdet = <&pmic>;
         aux-devs = <&spk_amp>, <&rcv_amp>;
 
         audio-routing = "Spk Amp", "LINEOUT L",
