@@ -24,7 +24,9 @@
  *   to 0x39 when the tag was not readable.
  */
 #include <linux/io.h>
+#include <linux/kernel.h>
 #include <linux/random.h>
+#include <linux/string.h>
 #include <linux/timekeeping.h>
 
 #include "rosemary_ccci.h"
