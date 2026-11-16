@@ -822,9 +822,9 @@ static void mt6360_v4l2_flash_release(struct mt6360_priv *priv)
  * needs no DT or binding change. A board whose chip does not deliver them keeps
  * working without, only with the stale-flag behaviour this driver had before.
  */
-static void mt6360_request_strobe_timeout_irqs(struct platform_device *pdev)
+static void mt6360_request_strobe_timeout_irqs(struct platform_device *pdev,
+					       struct mt6360_priv *priv)
 {
-	struct mt6360_priv *priv = platform_get_drvdata(pdev);
 	int i;
 
 	for (i = 0; i < priv->leds_count; i++) {
@@ -935,7 +935,14 @@ static int mt6360_led_probe(struct platform_device *pdev)
 		i++;
 	}
 
-	mt6360_request_strobe_timeout_irqs(pdev);
+	/*
+	 * The bias-strobe-timeout events are part of the LED block itself, so they
+	 * are wired here - and priv is passed rather than read back from the
+	 * drvdata, because the drvdata is set below, at the end of a probe that
+	 * has nothing to do once the LEDs are registered. Reading it here cost a
+	 * NULL dereference at probe (LEAD-NOTE-23).
+	 */
+	mt6360_request_strobe_timeout_irqs(pdev, priv);
 
 	platform_set_drvdata(pdev, priv);
 	return 0;
