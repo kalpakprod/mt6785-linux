@@ -543,6 +543,43 @@ static void btmtkbtif_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 }
 
+/*
+ * Hand the controller over cold.
+ *
+ * kexec calls device_shutdown() before starting the next kernel, and a warm
+ * reboot does not power CONNSYS at all - so without this the Bluetooth function
+ * keeps running with its BTIF clocks, its rings and the BGF wake line armed while
+ * the next kernel probes, exactly the state that a trial kernel has to recover
+ * from. Upstream platform HCI drivers do the same thing in different clothes:
+ * btmtkuart powers the controller down through hdev->shutdown
+ * (drivers/bluetooth/btmtkuart.c:722, wired at :889) and mt7921's PCI driver
+ * simply calls its own remove path from .shutdown
+ * (drivers/net/wireless/mediatek/mt76/mt7921/pci.c:720-726).
+ *
+ * This driver cannot unregister the HCI device here - another kernel is about to
+ * start and taking the device apart under a userspace that is being killed is
+ * pointless - so it does what close() does: stop the receive thread, drop the
+ * readiness flag and switch the function off through WMT. That leaves the block
+ * as a cold boot would find it.
+ */
+static void btmtkbtif_shutdown(struct platform_device *pdev)
+{
+	struct btmtkbtif_data *btdev = platform_get_drvdata(pdev);
+	struct hci_dev *hdev = btdev->hdev;
+
+	WRITE_ONCE(btmtkbtif_active, NULL);
+	mtk_wcn_stp_register_event_cb(BT_TASK_INDX, NULL);
+
+	if (btdev->rx_thread) {
+		kthread_stop(btdev->rx_thread);
+		btdev->rx_thread = NULL;
+	}
+	btdev->bt_on = false;
+	mtk_wcn_wmt_func_off(WMTDRV_TYPE_BT);
+
+	bt_dev_info(hdev, "Bluetooth handed over off (shutdown)");
+}
+
 static const struct of_device_id btmtkbtif_of_match[] = {
 	{ .compatible = "mediatek,mt6785-bt" },
 	{ }
@@ -552,6 +589,7 @@ MODULE_DEVICE_TABLE(of, btmtkbtif_of_match);
 static struct platform_driver btmtkbtif_driver = {
 	.probe = btmtkbtif_probe,
 	.remove = btmtkbtif_remove,
+	.shutdown = btmtkbtif_shutdown,
 	.driver = {
 		.name = BTMTKBTIF_DEV_NAME,
 		.of_match_table = btmtkbtif_of_match,
