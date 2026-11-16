@@ -47,10 +47,18 @@ SND_SOC_DAILINK_DEFS(playback,
 						   "mt6359-snd-codec-aif1")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+/*
+ * Both directions go through the codec's primary AIF: the MTKAIF link between
+ * the AFE and the PMIC carries playback and capture on AIF1, and AIF2 is the
+ * second, four-channel link (the vendor's board driver has the same split:
+ * its "Primary Codec" backend pairs the ADDA DAI with "mt6359-snd-codec-aif1"
+ * for dpcm_playback and dpcm_capture alike, and only its "Primary Codec CH34"
+ * backend uses aif2).
+ */
 SND_SOC_DAILINK_DEFS(capture,
 		     DAILINK_COMP_ARRAY(COMP_CPU("UL1")),
 		     DAILINK_COMP_ARRAY(COMP_CODEC("mt6359-sound",
-						   "mt6359-snd-codec-aif2")),
+						   "mt6359-snd-codec-aif1")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
 /* The headset jack the codec's accessory detection reports into */
