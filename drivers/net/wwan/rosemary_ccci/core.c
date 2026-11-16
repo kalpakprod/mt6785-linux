@@ -290,6 +290,61 @@ static int smem_clear(struct ccci_md *md, const char *window, void *base,
 }
 
 /**
+ * md_dump_state() - print what a failed handshake needs to be diagnosed
+ * @md: the modem
+ * @when: a short word for the moment this is printed at
+ *
+ * The first handshake attempt on the phone timed out with PWR_STATUS reading
+ * 0x83f7fffe -- bit 0 clear, i.e. the modem's MTCMOS domain was OFF for the
+ * whole wait. Nothing in the old log could tell that apart from "the domain is
+ * on but the modem never started", which are different bugs with different
+ * fixes. So every release now prints, on one line per fact:
+ *
+ *  - PWR_STATUS and PWR_STATUS_2ND, with the md domain's bit called out;
+ *  - the CCIF doorbell: BUSY and RCHNUM, which say whether the modem has
+ *    rung anything at all;
+ *  - the first bytes of the MD image at the address the loader reported, so
+ *    an empty or unmapped region is visible as zeros rather than as a silent
+ *    timeout;
+ *  - the boot-stage register set, read the way the vendor's
+ *    md_cd_dump_md_bootup_status() reads it (select 0 and 1, three reads,
+ *    believe the third).
+ */
+static void md_dump_state(struct ccci_md *md, const char *when)
+{
+	u32 sta, sta2, busy, rchnum, stage0, stage1;
+	void __iomem *img;
+
+	sta = readl(md->spm + SPM_PWR_STATUS);
+	sta2 = readl(md->spm + SPM_PWR_STATUS_2ND);
+	busy = md->ccif_ap ? readl(md->ccif_ap + APCCIF_BUSY) : 0;
+	rchnum = md->ccif_ap ? readl(md->ccif_ap + APCCIF_RCHNUM) : 0;
+	dev_info(md->dev,
+		 "%s: PWR_STATUS %#x (md %s), PWR_STATUS_2ND %#x, CCIF busy %#x rchnum %#x\n",
+		 when, sta, sta & BIT(0) ? "on" : "OFF", sta2, busy, rchnum);
+
+	writel(0, md->pll + MD1_BOOT_STATS_SELECT);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	stage0 = readl(md->pll + MD1_CFG_BOOT_STATS);
+	writel(1, md->pll + MD1_BOOT_STATS_SELECT);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	stage1 = readl(md->pll + MD1_CFG_BOOT_STATS);
+	dev_info(md->dev, "%s: md_boot_stats0 %#x, md_boot_stats1 %#x\n",
+		 when, stage0, stage1);
+
+	if (!md->md_mem_base)
+		return;
+	img = devm_ioremap(md->dev, md->md_mem_base, 32);
+	if (!img)
+		return;
+	dev_info(md->dev, "%s: md image at %#llx: %*phN\n", when,
+		 md->md_mem_base, 32, img);
+	devm_iounmap(md->dev, img);
+}
+
+/**
  * clear_smem() - clear what the modem does not keep, before a boot
  * @md: the modem
  *
@@ -349,6 +404,7 @@ static int md_boot(struct ccci_md *md)
 {
 	int limit = stage_limit();
 	unsigned long deadline;
+	u32 v;
 	int ret;
 
 	if (md->no_boot_info) {
@@ -398,23 +454,53 @@ static int md_boot(struct ccci_md *md)
 
 	if (md->first_boot) {
 		ret = md_first_boot_check(md);
-		if (ret) {
-			pm_runtime_put(md->dev);
+		if (ret)
 			goto err_seq;
-		}
-		/* the loader's run is over; the modem must start ours */
-		pm_runtime_put(md->dev);
+		/*
+		 * The loader's run of the modem is over; ours starts here.
+		 *
+		 * The cycle must be SYNCHRONOUS. With plain pm_runtime_put()
+		 * the suspend is only queued: the following put_sync/put dance
+		 * let the queued work power the MTCMOS domain down after the
+		 * boot had already released the modem, and the trial showed
+		 * exactly that -- PWR_STATUS read 0x83f7fffe with bit 0 clear,
+		 * so the modem sat powered off for the whole HS1 wait. A
+		 * powered-off modem cannot answer a handshake.
+		 */
+		pm_runtime_put_sync(md->dev);
 		md_power_seq_release(md);
+		/* the modem must be visibly off before it is started again */
+		if (readl_poll_timeout(md->spm + SPM_PWR_STATUS, v,
+				       !(v & BIT(0)), 100, 50000))
+			dev_warn(md->dev,
+				 "the md domain still reports on after power-off (%#x)\n",
+				 v);
 		ret = md_power_seq_prepare(md);
 		if (ret)
 			goto err_clk;
 		ret = pm_runtime_resume_and_get(md->dev);
 		if (ret)
 			goto err_seq;
+		if (readl_poll_timeout(md->spm + SPM_PWR_STATUS, v,
+				       v & BIT(0), 100, 50000)) {
+			dev_err(md->dev,
+				"the md domain did not come back on (%#x)\n", v);
+			goto err_seq;
+		}
 	}
+
+	/*
+	 * Everything the next trial needs to judge the release, printed before
+	 * the modem is let go: whether the domain is really on, what the CCIF
+	 * doorbell says, and the first bytes of the image the loader verified
+	 * at the address the tags named.
+	 */
+	md_dump_state(md, "before release");
 
 	/* let the modem go: its boot ROM sits at 0x20000000 */
 	writel(1, md->boot_vector);
+	if (readl(md->boot_vector) != 1)
+		dev_warn(md->dev, "MD_BOOT_VECTOR_EN did not stick\n");
 	md->first_boot = false;
 	enable_irq(md->irq_ccif);
 	enable_irq(md->irq_ccif_exp);
@@ -423,6 +509,7 @@ static int md_boot(struct ccci_md *md)
 	dev_info(md->dev, "MD released, waiting for the first handshake\n");
 
 	if (!wait_for_completion_timeout(&md->hs1, HS1_TIMEOUT)) {
+		md_dump_state(md, "at HS1 timeout");
 		dev_err(md->dev, "HS1 timeout: power status %#x, exception channels %#lx\n",
 			readl(md->spm + SPM_PWR_STATUS), md->ex_channels);
 		ccci_set_state(md, MD_STATE_EXCEPTION);

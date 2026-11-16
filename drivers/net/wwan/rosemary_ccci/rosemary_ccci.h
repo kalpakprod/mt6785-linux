@@ -222,6 +222,7 @@ struct ap_query_md_feature_v2_1 {
 #define SPM_POWERON_CONFIG_EN	0x000	/* write 0xb16 << 16 | 1 first */
 #define SPM_CLK_CON		0x008	/* BIT(21): srclken_o1 */
 #define SPM_PWR_STATUS		0x160	/* BIT(0): the md domain is on */
+#define SPM_PWR_STATUS_2ND	0x164	/* the same, one SPM stage later */
 #define SPM_AP_MDSRC_REQ	0x434	/* ack in BIT(4) (mtk_spm_reg.h:265,
 					 * AP_MDSMSRC_ACK_LSB at :1851)
 					 */
