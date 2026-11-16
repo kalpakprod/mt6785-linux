@@ -3393,9 +3393,6 @@ INT32 mtk_wcn_stp_dpidle_ctrl(UINT32 en_flag)
 
 	return 0;
 }
-#ifdef MTK_WCN_WMT_STP_EXP_SYMBOL_ABSTRACT
-EXPORT_SYMBOL(mtk_wcn_stp_dpidle_ctrl);
-#endif
 
 INT32 mtk_wcn_stp_notify_sleep_for_thermal(VOID)
 {
