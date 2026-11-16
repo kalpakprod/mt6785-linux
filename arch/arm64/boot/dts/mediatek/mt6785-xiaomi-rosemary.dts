@@ -614,6 +614,7 @@
 #include "mt6785-xiaomi-rosemary-display.dtsi"
 #include "mt6785-xiaomi-rosemary-connectivity.dtsi"
 #include "mt6785-xiaomi-rosemary-audio.dtsi"
+#include "mt6785-xiaomi-rosemary-scp.dtsi"
 #include "mt6785-xiaomi-rosemary-sensors.dtsi"
 #include "mt6785-xiaomi-rosemary-modem.dtsi"
 #include "mt6785-xiaomi-rosemary-camera.dtsi"
