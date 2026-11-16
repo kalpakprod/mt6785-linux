@@ -7,9 +7,7 @@
 #include <linux/aperture.h>
 #include <linux/component.h>
 #include <linux/module.h>
-#include <linux/iommu.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -491,70 +489,6 @@ static bool mtk_drm_find_mmsys_comp(struct mtk_drm_private *private, int comp_id
 	return false;
 }
 
-/*
- * Identity-map the bootloader's framebuffer for this display's masters, once, from the
- * /chosen framebuffer node - no board figures in C.
- */
-static void mtk_drm_bootfb_map(struct drm_device *drm, struct device *dma_dev)
-{
-	struct mtk_drm_private *priv = drm->dev_private;
-	struct device_node *fb;
-	struct resource res;
-	int ret;
-
-	fb = of_find_node_by_path("/chosen/framebuffer0");
-	if (!fb)
-		return;
-
-	if (of_address_to_resource(fb, 0, &res)) {
-		of_node_put(fb);
-		return;
-	}
-	of_node_put(fb);
-
-	priv->bootfb_domain = iommu_get_domain_for_dev(dma_dev);
-	if (!priv->bootfb_domain)
-		return;
-
-	priv->bootfb_pa = res.start;
-	priv->bootfb_size = PAGE_ALIGN(resource_size(&res));
-
-	ret = iommu_map(priv->bootfb_domain, priv->bootfb_pa, priv->bootfb_pa,
-			priv->bootfb_size, IOMMU_READ, GFP_KERNEL);
-	if (ret) {
-		dev_err(drm->dev, "cannot identity-map the boot framebuffer: %d\n", ret);
-		priv->bootfb_domain = NULL;
-		priv->bootfb_size = 0;
-		return;
-	}
-
-	dev_dbg(drm->dev, "boot framebuffer %pa+%zu identity-mapped\n",
-		&priv->bootfb_pa, priv->bootfb_size);
-}
-
-/*
- * Drop that mapping once our own pipeline has committed frames: the loader's registers
- * are only reprogrammed by our first commit, which takes effect at the next vblank, so
- * one frame still in flight may read the old address - hence the second frame-done
- * event, not the first.
- */
-void mtk_drm_bootfb_unmap(struct drm_device *drm)
-{
-	struct mtk_drm_private *priv = drm->dev_private;
-
-	if (!priv->bootfb_domain)
-		return;
-
-	if (++priv->bootfb_frames < 2)
-		return;
-
-	iommu_unmap(priv->bootfb_domain, priv->bootfb_pa, priv->bootfb_size);
-	dev_dbg(drm->dev, "boot framebuffer %pa+%zu unmapped\n",
-		&priv->bootfb_pa, priv->bootfb_size);
-
-	priv->bootfb_domain = NULL;
-	priv->bootfb_size = 0;
-}
 static int mtk_drm_kms_init(struct drm_device *drm)
 {
 	struct mtk_drm_private *private = drm->dev_private;
@@ -665,20 +599,6 @@ static int mtk_drm_kms_init(struct drm_device *drm)
 	drm_dev_set_dma_dev(drm, dma_dev);
 
 	/*
-	 * The loader left the panel lit from its own framebuffer, and its registers still
-	 * point at the physical address of that buffer - which this display's IOMMU does
-	 * not know (trial 23: "fault ... iova=0x7cbcf010 pa=0x0 master=0x500000d (larb=0
-	 * port=3) read", OVL0 reading it). Upstream expresses exactly this by describing
-	 * the region with iommu-addresses so that of_iommu_get_resv_regions() reports it as
-	 * a direct (IOVA == PA) region for the device (drivers/iommu/of_iommu.c:171-190 and
-	 * :204); a reserved-memory node cannot be used on this board because the loader
-	 * stops in reserved_memory_conflict_check when the DTB describes its own mblocks,
-	 * so the identity mapping is made here instead, from the /chosen node the board
-	 * already describes. It is read-only: nothing of ours writes through it.
-	 */
-	mtk_drm_bootfb_map(drm, dma_dev);
-
-	/*
 	 * Configure the DMA segment size to make sure we get contiguous IOVA
 	 * when importing PRIME buffers.
 	 */
@@ -728,8 +648,6 @@ static int compare_dev(struct device *dev, void *data)
 {
 	return dev == (struct device *)data;
 }
-
-
 
 static int mtk_drm_bind(struct device *dev)
 {

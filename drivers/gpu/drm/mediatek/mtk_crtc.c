@@ -661,9 +661,6 @@ static void mtk_crtc_ddp_irq(void *data)
 		mtk_crtc_ddp_config(crtc, NULL);
 #endif
 	mtk_drm_finish_page_flip(mtk_crtc);
-
-	/* our pipeline owns the scanout from this frame on */
-	mtk_drm_bootfb_unmap(crtc->dev);
 }
 
 static int mtk_crtc_enable_vblank(struct drm_crtc *crtc)
