@@ -199,6 +199,20 @@ static void ft3418_report(struct ft3418_data *ts, const u8 *buf)
 		if (id >= FT3418_MAX_POINTS || event == FT3418_EVENT_RESERVED)
 			break;
 
+		/*
+		 * A point outside the panel is a misparse, not a finger: the id or
+		 * event byte was taken from the wrong place, or a stale byte of a
+		 * shorter frame was read as a coordinate. Print the raw six bytes
+		 * once in a while so the frame that produces it can be decoded,
+		 * and keep it away from userspace.
+		 */
+		if (x > ts->prop.max_x || y > ts->prop.max_y) {
+			dev_warn_ratelimited(&ts->client->dev,
+					     "point out of range: id %u event %u x %u y %u, raw %6ph\n",
+					     id, event, x, y, p);
+			continue;
+		}
+
 		input_mt_slot(input, id);
 
 		if (event == FT3418_EVENT_UP) {
