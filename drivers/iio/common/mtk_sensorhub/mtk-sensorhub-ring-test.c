@@ -14,6 +14,7 @@
 #include <kunit/test.h>
 
 #include "mtk-sensorhub-msg.h"
+#include "mtk-sensorhub-scale.h"
 #include "mtk-sensorhub-ring.h"
 
 #define FRAME_ACCEL	40	/* header 12 + struct sensor_vec_t 28 */
@@ -201,7 +202,60 @@ static void mtk_sh_test_planted_wrong_layout(struct kunit *test)
 	KUNIT_EXPECT_NE(test, memcmp(good, planted, sizeof(good)), 0);
 }
 
+/*
+ * The scale of each sensor, against the vendor's reported units: accel
+ * m/s^2 * 1000, gyro rad/s * 1e6, magnetic uT * 100 (0.01 G each), orientation
+ * degrees * 1000, light lux, proximity raw.
+ */
+static void mtk_sh_test_scales(struct kunit *test)
+{
+	s32 val, val2;
+
+	KUNIT_EXPECT_EQ(test, mtk_sh_scale(MTK_SH_TYPE_ACCEL, &val, &val2),
+			IIO_VAL_INT_PLUS_NANO);
+	KUNIT_EXPECT_EQ(test, val, 0);
+	KUNIT_EXPECT_EQ(test, val2, 1000000);
+
+	KUNIT_EXPECT_EQ(test, mtk_sh_scale(MTK_SH_TYPE_GYRO, &val, &val2),
+			IIO_VAL_INT_PLUS_NANO);
+	KUNIT_EXPECT_EQ(test, val2, 1000);
+
+	KUNIT_EXPECT_EQ(test, mtk_sh_scale(MTK_SH_TYPE_MAG, &val, &val2),
+			IIO_VAL_INT_PLUS_NANO);
+	KUNIT_EXPECT_EQ(test, val2, 100000);
+
+	KUNIT_EXPECT_EQ(test, mtk_sh_scale(MTK_SH_TYPE_ORIENTATION, &val, &val2),
+			IIO_VAL_INT_PLUS_NANO);
+	KUNIT_EXPECT_EQ(test, val2, 1000000);
+
+	KUNIT_EXPECT_EQ(test, mtk_sh_scale(MTK_SH_TYPE_LIGHT, &val, &val2),
+			IIO_VAL_INT);
+	KUNIT_EXPECT_EQ(test, val, 1);
+
+	KUNIT_EXPECT_EQ(test, mtk_sh_scale(MTK_SH_TYPE_PROXIMITY, &val, &val2),
+			IIO_VAL_INT);
+
+	KUNIT_EXPECT_EQ(test, mtk_sh_scale(0x7e, &val, &val2), -EINVAL);
+}
+
+/*
+ * The planted wrong scale: a gyro reported as if the hub sent rad/s * 1000
+ * instead of * 1e6 would scale ten times off, and the numbers above must catch
+ * exactly that, so assert the wrong value is NOT what the function returns.
+ */
+static void mtk_sh_test_planted_wrong_scale(struct kunit *test)
+{
+	s32 val, val2;
+
+	KUNIT_ASSERT_EQ(test, mtk_sh_scale(MTK_SH_TYPE_GYRO, &val, &val2),
+			IIO_VAL_INT_PLUS_NANO);
+	KUNIT_EXPECT_NE(test, val2, 1000000);
+	KUNIT_EXPECT_NE(test, val2, 100);
+}
+
 static struct kunit_case mtk_sh_test_cases[] = {
+	KUNIT_CASE(mtk_sh_test_scales),
+	KUNIT_CASE(mtk_sh_test_planted_wrong_scale),
 	KUNIT_CASE(mtk_sh_test_config_cmd_layout),
 	KUNIT_CASE(mtk_sh_test_action_messages_layout),
 	KUNIT_CASE(mtk_sh_test_planted_wrong_layout),
