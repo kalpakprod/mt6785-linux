@@ -815,6 +815,19 @@ static int mtk_iommu_map(struct iommu_domain *domain, unsigned long iova,
 {
 	struct mtk_iommu_domain *dom = to_mtk_domain(domain);
 
+	/*
+	 * Page table and bank are set up by mtk_iommu_domain_finalise() at the first attach
+	 * (mtk_iommu.c:655-688, called from mtk_iommu_attach_device() at :744). The core can
+	 * ask for mappings before that: it installs the firmware's direct regions when the
+	 * default domain is created (iommu_setup_default_domain(),
+	 * drivers/iommu/iommu.c:3176-3191) and it documents exactly this case - "Drivers are
+	 * supposed to allow mappings to be installed in a domain before device attachment,
+	 * but some don't" - retrying once a device is attached (iommu.c:3213-3224). So fail
+	 * the map instead of dereferencing a NULL page table.
+	 */
+	if (!dom->iop || !dom->bank)
+		return -ENODEV;
+
 	/* The "4GB mode" M4U physically can not use the lower remap of Dram. */
 	if (dom->bank->parent_data->enable_4GB)
 		paddr |= BIT_ULL(32);
@@ -828,6 +841,10 @@ static size_t mtk_iommu_unmap(struct iommu_domain *domain,
 			      struct iommu_iotlb_gather *gather)
 {
 	struct mtk_iommu_domain *dom = to_mtk_domain(domain);
+
+	/* Nothing is mapped before the first attach; see mtk_iommu_map(). */
+	if (!dom->iop)
+		return 0;
 
 	iommu_iotlb_gather_add_range(gather, iova, pgsize * pgcount);
 	return dom->iop->unmap_pages(dom->iop, iova, pgsize, pgcount, gather);
@@ -864,6 +881,10 @@ static phys_addr_t mtk_iommu_iova_to_phys(struct iommu_domain *domain,
 {
 	struct mtk_iommu_domain *dom = to_mtk_domain(domain);
 	phys_addr_t pa;
+
+	/* Nothing is mapped before the first attach; see mtk_iommu_map(). */
+	if (!dom->iop || !dom->bank)
+		return 0;
 
 	pa = dom->iop->iova_to_phys(dom->iop, iova);
 	if (IS_ENABLED(CONFIG_PHYS_ADDR_T_64BIT) &&
