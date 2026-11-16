@@ -514,6 +514,34 @@ static void md_domain_trace(struct ccci_md *md, const char *when)
 		 atomic_read(&md->dev->power.usage_count));
 }
 
+/* the domain's own status bit, the one the vendor polls after power-on */
+static bool md_domain_is_on(struct ccci_md *md)
+{
+	unsigned int sta = 0;
+
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+	return sta & BIT(0);
+}
+
+/*
+ * One line per step of the boot prefix.
+ *
+ * The trial needs to see WHERE power goes when the boot starts early, so every
+ * step of md_boot()'s prefix reports the same three numbers the sampler reports:
+ * the md bit, PWR_STATUS and the domain's control register. The lines are cheap
+ * (twelve per boot) and they turn "it went off somewhere in the prefix" into the
+ * name of the step it went off in.
+ */
+static void md_step(struct ccci_md *md, const char *step)
+{
+	unsigned int sta = 0, con = 0;
+
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+	regmap_read(md->spm_map, SPM_MD1_PWR_CON, &con);
+	dev_info(md->dev, "step %-22s: md_bit=%u STA=%#x CON=%#x\n",
+		 step, (u32)(sta & BIT(0)), sta, con);
+}
+
 static int md_domain_on(struct ccci_md *md)
 {
 	unsigned int status = 0;
@@ -570,6 +598,7 @@ static int md_boot(struct ccci_md *md)
 {
 	int limit = stage_limit();
 	unsigned long deadline;
+	u32 before = 0, after = 0;
 	int ret;
 
 	if (md->no_boot_info) {
@@ -592,12 +621,15 @@ static int md_boot(struct ccci_md *md)
 	md->ee_printed = false;
 
 	ret = clear_smem(md);
+	md_step(md, "clear_smem");
 	if (ret)
 		goto err_off;
 	ret = ccb_ctrl_init(md);
+	md_step(md, "ccb_ctrl_init");
 	if (ret)
 		goto err_off;
 	ret = ccci_ccif_init(md);
+	md_step(md, "ccif_init");
 	if (ret)
 		goto err_off;
 	/*
@@ -612,7 +644,9 @@ static int md_boot(struct ccci_md *md)
 	ret = clk_bulk_prepare_enable(md->num_clks, md->clks);
 	if (ret)
 		goto err_off;
+	md_step(md, "ccif_clocks_on");
 	ccci_ccif_reset(md);
+	md_step(md, "ccif_reset");
 	/*
 	 * The data path starts before the modem (the vendor is in
 	 * BOOT_WAITING_FOR_HS1 here), and a modem without one never reaches its
@@ -620,7 +654,9 @@ static int md_boot(struct ccci_md *md)
 	 */
 	if (ccci_dpmaif_start(md))
 		dev_warn(md->dev, "no packet data path\n");
+	md_step(md, "dpmaif_start");
 	ret = md_power_seq_prepare(md);
+	md_step(md, "power_seq_prepare");
 	if (ret)
 		goto err_clk;
 	ret = md_domain_on(md);
@@ -631,44 +667,69 @@ static int md_boot(struct ccci_md *md)
 
 	if (md->first_boot) {
 		ret = md_first_boot_check(md);
-		if (ret) {
-			/* drop the reference before the supplies go away */
-			pm_runtime_put_sync(md->dev);
-			goto err_seq;
-		}
+		md_step(md, "brom_check");
+		if (ret)
+			goto err_pm;
 		/*
-		 * The boot-ROM check is the loader's last act; the modem is let
-		 * go from here by writing MD_BOOT_VECTOR_EN below.
+		 * The loader ran the boot ROM once; the modem is started again from
+		 * here, and the vendor restarts it by powering it down and up again,
+		 * in this order:
 		 *
-		 * The vendor appears to power-cycle the modem at this point
-		 * (md_start_platform() calls md_cd_power_off, md_cd_start() calls
-		 * md_cd_power_on before let_md_go()). That cycle is why the two
-		 * phone trials failed: driving it through runtime PM left the
-		 * domain OFF while genpd still reported it on, and PWR_STATUS --
-		 * whose bit 0 is the md domain, MT6785_POWER_DOMAIN_MD with
-		 * sta_mask BIT(0) in mt6785-pm-domains.h and MD1_PWR_STA_MASK
-		 * (0x1 << 0) over PWR_STATUS SPM_REG(0x0160) in the vendor
-		 * clk-mt6785-pg.c:488 -- read 0x83f7fffe, bit 0 clear, at both
-		 * the int4 HS1 timeout and the int5 power-on check.
+		 *   md_start_platform() on first boot waits for the boot ROM, dumps
+		 *   the boot status, and then powers the modem off:
+		 *   mt6785/md_sys1_platform.c:591-653, ending in md_cd_power_off().
+		 *   md_cd_power_off() disables the MTCMOS gate clock first
+		 *   (clk_disable_unprepare(clk_table[0]), i.e. "scp-sys-md1-main",
+		 *   :809), then clears INFRA_AO_MD_SRCCLKENA (:812-818), then the
+		 *   PMIC (:821-828).
+		 *   md_cd_start() then calls md_cd_power_on() before let_md_go()
+		 *   (modem_sys1.c:409-417); md_cd_power_on() is the same three steps
+		 *   the other way round: PMIC (:713), srclkena = 0x21 (:727-733),
+		 *   MTCMOS gate (:744-745).
 		 *
-		 * There is no need to cycle it. The boot ROM has already run and
-		 * is waiting; MD_BOOT_VECTOR_EN is exactly the release the
-		 * vendor's let_md_go() performs, and the runtime-PM reference
-		 * taken above keeps the domain and its supplies on, so the
-		 * modem starts from a state that is known to be powered.
+		 * Here the gate is the md power domain's, and only runtime PM may
+		 * touch it: pm_runtime_put_sync() is the vendor's
+		 * clk_disable_unprepare(), pm_runtime_resume_and_get() is its
+		 * clk_prepare_enable(). The supplies and the 26 MHz request are ours
+		 * to drive, and they follow the gate exactly as the vendor orders it.
+		 *
+		 * Whether the gate really moves is not assumed: the two checks below
+		 * report it. genpd keeps domains with stay_on set (until its provider
+		 * syncs), and when that happens the gate does not move at all -- which
+		 * is a fact the trial has to show, not something to paper over with a
+		 * raw write to 0x318.
 		 */
+		pm_runtime_put_sync(md->dev);
+		md_step(md, "cycle: gate off");
+		md_power_seq_release(md);
+		md_step(md, "cycle: supplies off");
+		ret = md_power_seq_prepare(md);
+		if (ret)
+			goto err_clk;
+		ret = pm_runtime_resume_and_get(md->dev);
+		md_step(md, "cycle: gate on");
+		if (ret)
+			goto err_seq;
+		if (!md_domain_is_on(md))
+			dev_warn(md->dev,
+				 "the md domain did not come back on; the vendor's restart could not run here\n");
 	}
-	/*
-	 * Everything the next trial needs to judge the release, printed before
-	 * the modem is let go: whether the domain is really on, what the CCIF
-	 * doorbell says, and the first bytes of the image the loader verified
-	 * at the address the tags named.
-	 */
 	md_dump_state(md, "before release");
 
-	/* let the modem go: its boot ROM sits at 0x20000000 */
+	/*
+	 * Let the modem go: MD_BOOT_VECTOR_EN, physical 0x20000024
+	 * (mt6785/modem_reg_base.h:14), written exactly as the vendor's
+	 * md_cd_let_md_go() writes it -- one write of 1, no retry
+	 * (mt6785/md_sys1_platform.c:777-791). The value is read before and after,
+	 * so a write that does not take is reported with both numbers instead of
+	 * only being noticed.
+	 */
+	before = readl(md->boot_vector);
 	writel(1, md->boot_vector);
-	if (readl(md->boot_vector) != 1)
+	after = readl(md->boot_vector);
+	dev_info(md->dev, "MD_BOOT_VECTOR_EN at %#x: before %#x, after %#x\n",
+		 MD_BOOT_VECTOR_PHYS, before, after);
+	if (after != 1)
 		dev_warn(md->dev, "MD_BOOT_VECTOR_EN did not stick\n");
 	md->first_boot = false;
 	enable_irq(md->irq_ccif);
@@ -703,6 +764,12 @@ static int md_boot(struct ccci_md *md)
 	}
 	return 0;
 
+err_pm:
+	/*
+	 * A boot that already took the domain reference must give it back before
+	 * the supplies go away, or the domain stays powered with nothing using it.
+	 */
+	pm_runtime_put_sync(md->dev);
 err_seq:
 	md_power_seq_release(md);
 err_clk:
