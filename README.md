@@ -34,7 +34,7 @@ not "Works".
 | Volume keys, power key | Works | evtest: GPIO volume-down, PMIC home key = volume-up |
 | Haptics (AW8622) | Works | felt on the phone; strength scaling still open |
 | Camera flash (MT6360 FLED) | Partial | channel 1 lights; channel 2 not seen yet |
-| Screen (k7 AMOLED, DSI) | In progress | panel lights and takes the framebuffer (seen by camera); colours and line length wrong |
+| Screen (S6E8FC0 AMOLED, DSI) | Works | test pattern shown exactly, photo by the owner; line checksums on the DSI match |
 | Touchscreen (FT3418) | In progress | controller answers on I2C; waits for the screen |
 | Audio | In progress | sound card with a playback device registers; no playback checked yet |
 | Cameras | In progress | camsv video nodes and sensor drivers probe; no image yet |
