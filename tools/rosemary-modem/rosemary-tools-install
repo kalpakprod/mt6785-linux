@@ -19,6 +19,7 @@ DIR=${1:?usage: rosemary-tools-install DIR}
 install -Dm755 "$DIR/rosemary-modemd" /usr/local/bin/rosemary-modemd
 install -Dm755 "$DIR/rosemary-modem-nvram-import" /usr/local/bin/rosemary-modem-nvram-import
 install -Dm755 "$DIR/rosemary-modem-datalink" /usr/local/bin/rosemary-modem-datalink
+install -Dm755 "$DIR/modem-check.sh" /usr/local/bin/modem-check
 install -Dm644 "$DIR/rosemary-modem.service" /usr/lib/systemd/system/rosemary-modem.service
 install -Dm644 "$DIR/78-rosemary-modem.rules" /usr/lib/udev/rules.d/78-rosemary-modem.rules
 install -Dm644 "$DIR/rosemary-modem-properties" /usr/share/rosemary-modem/properties

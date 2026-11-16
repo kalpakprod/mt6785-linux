@@ -19,6 +19,7 @@ changed line in the sources below says which row of the delta table
 |---|---|
 | `rosemary-modemd.c` | the daemon: NVRAM file service (CCCI 14/15), RPC service (32/33), MD boot, AT init, then handover to ModemManager. `-v` logs each file request with its path, flags and result |
 | `rosemary-modem-nvram-import` | copies `nvdata nvcfg protect1 protect2` to `dd` copies, `e2fsck -fy` on the copy, mounts it read-only and copies the tree out — the live partitions are never mounted |
+| `modem-check.sh` | a read-only phone check: driver state, the WWAN ports, the network interfaces and their `md_interface`, then `AT`, `ATI`, `AT+CGMR`, `AT+CPIN?`, `AT+CSQ`, `AT+CFUN?`, `AT+CREG?`, `AT+CEREG?`, `AT+COPS?` and `AT+CGDCONT?` as queries only. Every AT command has a timeout, every line is timestamped, and IMEI/IMSI/ICCID are masked before anything is printed. `tests/` holds a fake AT modem on a pty and the test that runs the check against it |
 | `rosemary-modem-datalink` | creates the modem's packet-data network interface (`ip link add … type wwan`, the WWAN framework's own way). One interface serves every context: the plugin moves it to the ccmni id each context gets. Run by the unit's `ExecStartPost` |
 | `rosemary-modem-properties` | the properties the modem asks for, in the stock phone's own values: `key=value`, one per line, generated from `device-dump-2026-11-13/stock/getprop-filtered.txt`. Installed as `/usr/share/rosemary-modem/properties` |
 | `rosemary-modem.service` | systemd unit for the daemon |
