@@ -5,6 +5,7 @@
 #include <asm/barrier.h>
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
+#include <linux/unaligned.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -125,7 +126,9 @@ static void scp_ipi_handler(struct mtk_scp *scp)
 		return;
 	}
 
-	memcpy_fromio(scp->share_buf, &rcv_obj->share_buf, len);
+	memcpy_fromio(scp->share_buf,
+		      (void __iomem *)rcv_obj +
+		      (scp->data->ipi_buf_data_offset ?: sizeof(u32) * 2), len);
 	memset(&scp->share_buf[len], 0, scp_sizes->ipi_share_buffer_size - len);
 	handler(scp->share_buf, len, ipi_desc[id].priv);
 	scp_ipi_unlock(scp, id);
@@ -167,7 +170,8 @@ static int scp_ipi_init(struct mtk_scp *scp, const struct firmware *fw)
 	scp->recv_buf = (struct mtk_share_obj __iomem *)
 			(scp->sram_base + offset);
 	share_buf_offset = sizeof(scp->recv_buf->id)
-		+ sizeof(scp->recv_buf->len) + scp_sizes->ipi_share_buffer_size;
+		+ (scp->data->ipi_buf_data_offset ?: sizeof(u32) * 2)
+		+ scp_sizes->ipi_share_buffer_size;
 	scp->send_buf = (struct mtk_share_obj __iomem *)
 			(scp->sram_base + offset + share_buf_offset);
 	memset_io(scp->recv_buf, 0, share_buf_offset);
@@ -407,6 +411,130 @@ static int mt8192_scp_clk_get(struct mtk_scp *scp)
 static int mt8195_scp_clk_get(struct mtk_scp *scp)
 {
 	scp->clk = NULL;
+
+	return 0;
+}
+
+/* MT6785 SCP: the same generation as MT8183, with a staged firmware image */
+#define MT6785_SCP_REGION_INFO_OFFSET	0x400
+#define MT6785_SCP_LOADER_SLOT		0x2000
+#define MT6785_SCP_DRAM_OFS		0x200000
+#define MT6785_SCP_DRAM_ROUND		1024
+#define MT6785_SCP_IPI_BUF_OFS		0x5c0
+#define MT6785_SCP_IPI_BUF_DATA_OFS	16
+#define MT6785_SCP_IPI_BUF_SIZE		272
+#define MT6785_SCP_DRAM_SIZE		0x400000
+
+/*
+ * The vendor's region info, which the loader reads from TCM + 0x400
+ * (scp_helper.h:18 and the struct at :84-105 of the 4.19 SCP driver).
+ */
+struct mt6785_scp_region_info {
+	u32 ap_loader_start;
+	u32 ap_loader_size;
+	u32 ap_firmware_start;
+	u32 ap_firmware_size;
+	u32 ap_dram_start;
+	u32 ap_dram_size;
+	u32 ap_dram_backup_start;
+	u32 struct_size;
+	u32 scp_log_thru_ap_uart;
+	u32 task_context_ptr;
+	u32 il1c_con;
+	u32 dl1c_con;
+	u32 scpctl;
+	u32 ap_params_start;
+};
+
+static int mt6785_scp_before_load(struct mtk_scp *scp)
+{
+	struct mtk_scp_of_cluster *cluster = scp->cluster;
+
+	/* Clear any stale SCP to host interrupt */
+	writel(MT8183_SCP_IPC_INT_BIT, cluster->reg_base + MT8183_SCP_TO_HOST);
+
+	/* Reset the clock selection before loading, as the vendor does */
+	writel(0x0, cluster->reg_base + MT8183_SCP_CLK_SW_SEL);
+
+	/*
+	 * Turn the TCM on. On this phone the three power-down registers read
+	 * 0xffffffff while the SCP is off (measured: 0x105c402c, +0x4080,
+	 * +0x4094 all ones), and the same offsets turn it back on for MT8183.
+	 */
+	writel(0x0, cluster->reg_base + MT8183_SCP_L1_SRAM_PD);
+	writel(0x0, cluster->reg_base + MT8183_SCP_TCM_TAIL_SRAM_PD);
+	writel(0x0, cluster->reg_base + MT8183_SCP_SRAM_PDN);
+
+	return 0;
+}
+
+/* the filesz of the ELF32 segment loaded at @paddr, or 0 */
+static u32 mt6785_elf_segment_size(const struct firmware *fw, u32 paddr)
+{
+	const u8 *buf = fw->data;
+	u16 phnum, phentsize;
+	u32 phoff;
+	int i;
+
+	if (fw->size < 52 || memcmp(buf, "\177ELF", 4) || buf[4] != 1)
+		return 0;
+
+	phoff = get_unaligned_le32(buf + 28);
+	phnum = get_unaligned_le16(buf + 44);
+	phentsize = get_unaligned_le16(buf + 42);
+	if (phoff > fw->size || phentsize != 32)
+		return 0;
+
+	for (i = 0; i < phnum; i++) {
+		const u8 *ph = buf + phoff + i * phentsize;
+
+		if (ph + 32 > buf + fw->size)
+			return 0;
+		if (get_unaligned_le32(ph) != 1)	/* PT_LOAD */
+			continue;
+		if (get_unaligned_le32(ph + 12) == paddr)	/* p_paddr */
+			return get_unaligned_le32(ph + 16);	/* p_filesz */
+	}
+
+	return 0;
+}
+
+static int mt6785_scp_after_load(struct mtk_scp *scp,
+				 const struct firmware *fw)
+{
+	struct mt6785_scp_region_info ri = { 0 };
+	u32 fw_size, dram_size, dram_round;
+
+	/*
+	 * The loader copies ap_firmware_size bytes from ap_firmware_start to
+	 * TCM + ap_loader_size on every reset, so both sizes are properties of
+	 * the image the repacker produced: the firmware body sits at
+	 * dma_addr + LOADER_SLOT and the DRAM part at dma_addr + DRAM_OFS.
+	 */
+	fw_size = mt6785_elf_segment_size(fw, scp->dma_addr + MT6785_SCP_LOADER_SLOT);
+	dram_size = mt6785_elf_segment_size(fw, scp->dma_addr + MT6785_SCP_DRAM_OFS);
+	if (!fw_size || !dram_size) {
+		dev_err(scp->dev, "firmware lacks the staged segments\n");
+		return -EINVAL;
+	}
+	dram_round = round_up(dram_size, MT6785_SCP_DRAM_ROUND);
+
+	ri.ap_loader_start = scp->dma_addr;
+	ri.ap_loader_size = MT6785_SCP_LOADER_SLOT;
+	ri.ap_firmware_start = scp->dma_addr + MT6785_SCP_LOADER_SLOT;
+	ri.ap_firmware_size = fw_size;
+	ri.ap_dram_start = scp->dma_addr + MT6785_SCP_DRAM_OFS;
+	ri.ap_dram_size = dram_size;
+	ri.ap_dram_backup_start = ri.ap_dram_start + dram_round * 2;
+	ri.struct_size = sizeof(ri);
+
+	memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &ri,
+		    sizeof(ri));
+	/* make sure the loader sees the region info before it is released */
+	wmb();
+
+	dev_dbg(scp->dev, "staged loader %#x firmware %#x dram %#x at %pa\n",
+		ri.ap_loader_size, fw_size, dram_size, &scp->dma_addr);
 
 	return 0;
 }
@@ -686,6 +814,11 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 		goto leave;
 
 	ret = scp_elf_load_segments(rproc, fw);
+	if (ret)
+		goto leave;
+
+	if (scp->data->scp_after_load)
+		ret = scp->data->scp_after_load(scp, fw);
 leave:
 	clk_disable(scp->clk);
 
@@ -1480,6 +1613,26 @@ static const struct mtk_scp_sizes_data mt8195_scp_sizes = {
 	.ipi_share_buffer_size = 288,
 };
 
+static const struct mtk_scp_sizes_data mt6785_scp_sizes = {
+	.max_dram_size = MT6785_SCP_DRAM_SIZE,
+	.ipi_share_buffer_size = MT6785_SCP_IPI_BUF_SIZE,
+};
+
+static const struct mtk_scp_of_data mt6785_of_data = {
+	.scp_before_load = mt6785_scp_before_load,
+	.scp_after_load = mt6785_scp_after_load,
+	.scp_irq_handler = mt8183_scp_irq_handler,
+	.scp_reset_assert = mt8183_scp_reset_assert,
+	.scp_reset_deassert = mt8183_scp_reset_deassert,
+	.scp_stop = mt8183_scp_stop,
+	.scp_da_to_va = mt8192_scp_da_to_va,
+	.host_to_scp_reg = MT8183_HOST_TO_SCP,
+	.host_to_scp_int_bit = MT8183_HOST_IPC_INT_BIT,
+	.ipi_buf_offset = MT6785_SCP_IPI_BUF_OFS,
+	.ipi_buf_data_offset = MT6785_SCP_IPI_BUF_DATA_OFS,
+	.scp_sizes = &mt6785_scp_sizes,
+};
+
 static const struct mtk_scp_of_data mt8183_of_data = {
 	.scp_clk_get = mt8183_scp_clk_get,
 	.scp_before_load = mt8183_scp_before_load,
@@ -1587,6 +1740,7 @@ static const struct mtk_scp_of_data *mt8195_of_data_cores[] = {
 
 static const struct of_device_id mtk_scp_of_match[] = {
 	{ .compatible = "mediatek,mt8183-scp", .data = &mt8183_of_data },
+	{ .compatible = "mediatek,mt6785-scp", .data = &mt6785_of_data },
 	{ .compatible = "mediatek,mt8186-scp", .data = &mt8186_of_data },
 	{ .compatible = "mediatek,mt8188-scp", .data = &mt8188_of_data },
 	{ .compatible = "mediatek,mt8188-scp-dual", .data = &mt8188_of_data_cores },

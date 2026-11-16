@@ -104,6 +104,8 @@ struct mtk_scp_sizes_data {
 struct mtk_scp_of_data {
 	int (*scp_clk_get)(struct mtk_scp *scp);
 	int (*scp_before_load)(struct mtk_scp *scp);
+	int (*scp_after_load)(struct mtk_scp *scp,
+			      const struct firmware *fw);
 	void (*scp_irq_handler)(struct mtk_scp *scp);
 	void (*scp_reset_assert)(struct mtk_scp *scp);
 	void (*scp_reset_deassert)(struct mtk_scp *scp);
@@ -114,6 +116,8 @@ struct mtk_scp_of_data {
 	u32 host_to_scp_int_bit;
 
 	size_t ipi_buf_offset;
+	/* offset of the payload inside a share object; 0 means the default 8 */
+	u32 ipi_buf_data_offset;
 	const struct mtk_scp_sizes_data *scp_sizes;
 };
 
