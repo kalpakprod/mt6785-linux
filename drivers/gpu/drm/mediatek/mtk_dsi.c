@@ -46,6 +46,21 @@
 #define VM_DONE_INT_FLAG		BIT(3)
 #define EXT_TE_RDY_INT_FLAG		BIT(4)
 #define VM_CMD_DONE_INT_FLAG		BIT(5)
+#define FRAME_DONE_INT_FLAG		BIT(4)	/* same bit as EXT_TE_RDY_INT_FLAG */
+#define TE_TIMEOUT_INT_FLAG		BIT(7)
+#define VM_VBP_STR_INT_FLAG		BIT(8)
+#define VM_VACT_STR_INT_FLAG		BIT(9)
+#define VM_VFP_STR_INT_FLAG		BIT(10)
+/*
+ * The running video frame's own events, named as the vendor names them in
+ * ddp_reg_dsi.h:102-120: FRAME_DONE (4), TE_TIMEOUT (7), VM_VBP_STR (8),
+ * VM_VACT_STR (9) and VM_VFP_STR (10). Trial 18 finds exactly these five set
+ * (0x790) while the engine is still sending the frame it was on when the DSI was
+ * put into command mode.
+ */
+#define MT6785_FRAME_DRAIN		(FRAME_DONE_INT_FLAG | TE_TIMEOUT_INT_FLAG | \
+					 VM_VBP_STR_INT_FLAG | VM_VACT_STR_INT_FLAG | \
+					 VM_VFP_STR_INT_FLAG)
 #define BUFFER_UNDERRUN_INT_FLAG	BIT(12)
 #define INP_UNFINISH_INT_FLAG		BIT(14)
 #define DSI_BUSY			BIT(31)
@@ -879,22 +894,29 @@ static s32 mtk_dsi_switch_to_cmd_mode(struct mtk_dsi *dsi, u8 irq_flag, u32 t)
 	mtk_dsi_set_cmd_mode(dsi);
 
 	/*
-	 * The MT6785 engine never raises VM_DONE, the flag this wait uses
-	 * elsewhere, so the switch is confirmed the way the vendor confirms it:
-	 * the engine has to be idle. ddp_dsi.c's read path waits with
-	 * dsi_wait_not_busy() - a poll of DSI_INTSTA's BUSY bit - before it sends
-	 * anything (DSI_dcs_read_lcm_reg_v2(), ddp_dsi.c:4487-4560, step 1 of its
-	 * loop: "wait dsi not busy => can't read if dsi busy").
+	 * Leaving video mode is not enough on MT6785, and neither is waiting for BUSY:
+	 * trial 18 varies only the pause after the mode write on the working hand
+	 * sequence - 20 ms and more read the panel, 10 ms and less loses every packet,
+	 * and in the losing case INTSTA reads 0x790, i.e. FRAME_DONE (4) |
+	 * TE_TIMEOUT (7) | VM_VBP_STR (8) | VM_VACT_STR (9) | VM_VFP_STR (10)
+	 * (ddp_reg_dsi.h:102-120) with BUSY *clear*. The engine is still sending the
+	 * frame it was on when MODE_CTRL went to 0 and drops commands written meanwhile,
+	 * so the wait is for that frame's events to drain - the end of the frame is
+	 * observable, nothing sleeps a fixed time. Two frames at 60 Hz is the bound.
 	 */
 	if (dsi->driver_data->poll_completion) {
 		ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
-					 !(status & DSI_BUSY), 100,
-					 t * 1000);
+					 !(status & (MT6785_FRAME_DRAIN | DSI_BUSY)),
+					 100, 2 * 16700);
 		if (ret) {
-			drm_err(drm, "engine still busy after switching to cmd mode\n");
+			drm_err(drm, "the video frame did not finish: INTSTA 0x%08x\n",
+				status);
+			mtk_dsi_dump_state(dsi);
 			mtk_dsi_reset_engine(dsi);
 			return -ETIME;
 		}
+
+		mtk_dsi_mask(dsi, DSI_INTSTA, MT6785_FRAME_DRAIN, 0);
 
 		return 0;
 	}
