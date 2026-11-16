@@ -21,6 +21,8 @@
 #define MT8183_SCP_DEBUG_PSP		0xB0
 #define MT8183_SCP_DEBUG_PC		0xB4
 #define MT8183_SCP_SLEEP_STATUS		0x114
+/* "AP side write 1 to clear SCP to SPM reg" (vendor scp_ipi.c:75-79) */
+#define MT8183_SCP_TO_SPM		0x20
 #define MT8183_SCP_BUS_RESOURCE		0x08
 #define MT8183_SCP_IPC_INT_BIT		BIT(0)
 #define MT8183_SCP_WDT_INT_BIT		BIT(8)
@@ -119,6 +121,8 @@ struct mtk_scp_of_data {
 	void (*scp_stop)(struct mtk_scp *scp);
 	/* a boot that times out is otherwise silent: let the SoC report where the core is */
 	void (*scp_dump_regs)(struct mtk_scp *scp);
+	/* ack an IPI the way the firmware expects, where it differs from the default */
+	void (*scp_ipi_ack)(struct mtk_scp *scp);
 	void *(*scp_da_to_va)(struct mtk_scp *scp, u64 da, size_t len);
 
 	u32 host_to_scp_reg;

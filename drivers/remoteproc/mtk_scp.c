@@ -147,6 +147,9 @@ static void scp_ipi_handler(struct mtk_scp *scp)
 	handler(scp->share_buf, len, ipi_desc[id].priv);
 	scp_ipi_unlock(scp, id);
 
+	if (scp->data->scp_ipi_ack)
+		scp->data->scp_ipi_ack(scp);
+
 	scp->ipi_id_ack[id] = true;
 	wake_up(&scp->ack_wq);
 }
@@ -523,6 +526,18 @@ static u32 mt6785_elf_segment_size(const struct firmware *fw, u32 paddr)
  * core is not executing at all (clock, reset), a PC inside or just past the image
  * means it started and faulted (image layout, wrong load base).
  */
+/*
+ * After an IPI the firmware has to be told that the AP is done with it, or the
+ * core stays in its IPI-busy idle state and stops sending more (vendor comment in
+ * scp_ipi.c:64-79, which then writes 1 to SCP_TO_SPM). The default upstream path
+ * relies on clearing SCP_TO_HOST alone, which this handler already does; MT6785's
+ * firmware also wants this word.
+ */
+static void mt6785_scp_ipi_ack(struct mtk_scp *scp)
+{
+	writel(1, scp->cluster->reg_base + MT8183_SCP_TO_SPM);
+}
+
 static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 {
 	void __iomem *cfg = scp->cluster->reg_base;
@@ -913,7 +928,10 @@ static int scp_start(struct rproc *rproc)
 	}
 
 	clk_disable(scp->clk);
-	dev_info(dev, "SCP is ready. FW version %s\n", run->fw_ver);
+	if (run->fw_ver[0])
+		dev_info(dev, "SCP is ready. FW version %s\n", run->fw_ver);
+	else
+		dev_info(dev, "SCP is ready.\n");
 
 	return 0;
 
@@ -1684,6 +1702,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_reset_deassert = mt8183_scp_reset_deassert,
 	.scp_stop = mt8183_scp_stop,
 	.scp_dump_regs = mt6785_scp_dump_regs,
+	.scp_ipi_ack = mt6785_scp_ipi_ack,
 	.scp_da_to_va = mt8192_scp_da_to_va,
 	.host_to_scp_reg = MT8183_HOST_TO_SCP,
 	.host_to_scp_int_bit = MT8183_HOST_IPC_INT_BIT,
