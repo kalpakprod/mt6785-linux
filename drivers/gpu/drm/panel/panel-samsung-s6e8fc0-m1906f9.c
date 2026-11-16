@@ -8,6 +8,7 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 
 #include <video/mipi_display.h>
@@ -412,7 +413,7 @@ static int s6e8fc0_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
 
-	ctx->desc = of_device_get_match_data(dev);
+	ctx->desc = device_get_match_data(dev);
 	if (!ctx->desc)
 		return -ENODEV;
 
