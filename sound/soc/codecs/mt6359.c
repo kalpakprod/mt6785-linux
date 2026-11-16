@@ -2819,6 +2819,66 @@ static void mt6359_codec_remove(struct snd_soc_component *cmpnt)
 static const DECLARE_TLV_DB_SCALE(playback_tlv, -1000, 100, 0);
 static const DECLARE_TLV_DB_SCALE(capture_tlv, 0, 600, 0);
 
+/*
+ * DIAGNOSTIC (audio9): power the codec's UL sine generator so a capture can be
+ * measured without a microphone, and switch it off again.
+ *
+ * This is the same register sequence mt_sgen_event() runs when the DL generator
+ * powers up (AFUNC_AUD_CON2/CON0 for the SDM and scrambler clocks,
+ * AFE_SGEN_CFG0/CFG1 for the generator itself); only the *source select* is
+ * left to the existing "AIF Out Mux" control, whose "Sgen" value routes this
+ * generator into AIF1TX. Nothing here touches the DL side: no DAC, no LINOUT,
+ * no HPOUT, no speaker amplifier, so no speaker, earpiece or headphone can be
+ * driven by this switch, whatever the muxes say.
+ *
+ * It exists only while the capture silence is being located; remove it once the
+ * cause is found.
+ */
+static int mt6359_sgen_ul_get(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	unsigned int val = 0;
+
+	regmap_read(priv->regmap, MT6359_AFE_SGEN_CFG1, &val);
+	ucontrol->value.integer.value[0] = val & 0x1;
+	return 0;
+}
+
+static int mt6359_sgen_ul_put(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	bool on = ucontrol->value.integer.value[0];
+
+	if (on) {
+		/* sdm audio fifo clock power on */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x0006);
+		/* scrambler clock on enable */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON0, 0xcba1);
+		/* sdm power on */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x0003);
+		/* sdm fifo enable */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x000b);
+
+		regmap_update_bits(priv->regmap, MT6359_AFE_SGEN_CFG0,
+				   0xff3f, 0x0000);
+		regmap_update_bits(priv->regmap, MT6359_AFE_SGEN_CFG1,
+				   0xffff, 0x0001);
+	} else {
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x0000);
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON0, 0xcba0);
+		regmap_update_bits(priv->regmap, MT6359_AFE_SGEN_CFG1,
+				   0xffff, 0x0000);
+	}
+
+	dev_info(priv->dev, "%s(), UL sine generator %s\n", __func__,
+		 on ? "on" : "off");
+	return 0;
+}
+
 static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 	/* dl pga gain */
 	SOC_DOUBLE_EXT_TLV("Headset Volume",
@@ -2841,6 +2901,13 @@ static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 	SOC_SINGLE_EXT_TLV("PGA2 Volume",
 			   MT6359_AUDENC_ANA_CON1, RG_AUDPREAMPRGAIN_SFT, 4, 0,
 			   snd_soc_get_volsw, mt6359_put_volsw, capture_tlv),
+	/*
+	 * DIAGNOSTIC (audio9): see mt6359_sgen_ul_put(). Set "AIF Out Mux" to
+	 * "Sgen" as well to route the generator into AIF1TX.
+	 */
+	SOC_SINGLE_EXT("Sgen UL Diagnostic Switch", SND_SOC_NOPM, 0, 1, 0,
+		       mt6359_sgen_ul_get, mt6359_sgen_ul_put),
+
 	SOC_SINGLE_EXT_TLV("PGA3 Volume",
 			   MT6359_AUDENC_ANA_CON2, RG_AUDPREAMP3GAIN_SFT, 4, 0,
 			   snd_soc_get_volsw, mt6359_put_volsw, capture_tlv),

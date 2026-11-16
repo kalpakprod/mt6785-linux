@@ -335,6 +335,149 @@
 			pinmux = <PINMUX_GPIO26__FUNC_PWM_0>;
 		};
 	};
+
+	/* the MTKAIF pins, see the pinctrl-names list on &afe */
+	aud_clk_mosi_off: aud-clk-mosi-off-pins {
+		pins-cmd0-dat {
+			pinmux = <PINMUX_GPIO189__FUNC_GPIO189>;
+			input-enable;
+			bias-pull-down;
+		};
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO190__FUNC_GPIO190>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_clk_mosi_on: aud-clk-mosi-on-pins {
+		pins-cmd0-dat {
+			pinmux = <PINMUX_GPIO189__FUNC_AUD_CLK_MOSI>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO190__FUNC_AUD_SYNC_MOSI>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_mosi_off: aud-dat-mosi-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO191__FUNC_GPIO191>;
+			input-enable;
+			bias-pull-down;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO192__FUNC_GPIO192>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_mosi_on: aud-dat-mosi-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO191__FUNC_AUD_DAT_MOSI0>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO192__FUNC_AUD_DAT_MOSI1>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_miso_off: aud-dat-miso-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_GPIO193>;
+			input-enable;
+			bias-pull-down;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_GPIO194>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_miso_on: aud-dat-miso-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_AUD_DAT_MISO0>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_AUD_DAT_MISO1>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	vow_dat_miso_off: vow-dat-miso-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_GPIO193>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	vow_dat_miso_on: vow-dat-miso-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_VOW_DAT_MISO>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	vow_clk_miso_off: vow-clk-miso-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_GPIO194>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	vow_clk_miso_on: vow-clk-miso-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_VOW_CLK_MISO>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_mosi_ch34_off: aud-dat-mosi-ch34-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO143__FUNC_GPIO143>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_mosi_ch34_on: aud-dat-mosi-ch34-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO143__FUNC_AUD_DAT_MOSI2>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_miso_ch34_off: aud-dat-miso-ch34-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO146__FUNC_GPIO146>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_miso_ch34_on: aud-dat-miso-ch34-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO146__FUNC_AUD_DAT_MISO2>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
 };
 
 /* --------------------------------------------------- speaker amplifiers */
@@ -419,6 +562,42 @@
 		mediatek,topckgen = <&topckgen>;
 		power-domains = <&spm MT6785_POWER_DOMAIN_AUDIO>;
 		#sound-dai-cells = <0>;
+
+		/*
+		 * The MTKAIF pins, as the AFE driver wants them: it looks these
+		 * names up by hand (mt6785-afe-gpio.c, the aud_gpios table) and
+		 * switches MOSI on with input-schmitt and no bias, and MISO to an
+		 * input, around each playback and capture. The loader leaves them
+		 * right already, but until the states existed every gpio_select()
+		 * logged "not prepared" and nothing owned them.
+		 *
+		 * Which pins the vendor's groups carry [L: device-tree.dts,
+		 * aud_clk_mosi_* :6132-6204 region, pinmux values 0xbd..0xc2 and
+		 * 0x8f/0x92]: clk/sync mosi on GPIO189/190, dat mosi on
+		 * GPIO191/192, dat miso on GPIO193/194, the ch34 pair on
+		 * GPIO143/146, and the two Vow alternates on GPIO193/194 mode 2.
+		 */
+		pinctrl-names = "aud_clk_mosi_off", "aud_clk_mosi_on",
+				"aud_dat_mosi_off", "aud_dat_mosi_on",
+				"aud_dat_miso_off", "aud_dat_miso_on",
+				"vow_dat_miso_off", "vow_dat_miso_on",
+				"vow_clk_miso_off", "vow_clk_miso_on",
+				"aud_dat_mosi_ch34_off", "aud_dat_mosi_ch34_on",
+				"aud_dat_miso_ch34_off", "aud_dat_miso_ch34_on";
+		pinctrl-0 = <&aud_clk_mosi_off>;
+		pinctrl-1 = <&aud_clk_mosi_on>;
+		pinctrl-2 = <&aud_dat_mosi_off>;
+		pinctrl-3 = <&aud_dat_mosi_on>;
+		pinctrl-4 = <&aud_dat_miso_off>;
+		pinctrl-5 = <&aud_dat_miso_on>;
+		pinctrl-6 = <&vow_dat_miso_off>;
+		pinctrl-7 = <&vow_dat_miso_on>;
+		pinctrl-8 = <&vow_clk_miso_off>;
+		pinctrl-9 = <&vow_clk_miso_on>;
+		pinctrl-10 = <&aud_dat_mosi_ch34_off>;
+		pinctrl-11 = <&aud_dat_mosi_ch34_on>;
+		pinctrl-12 = <&aud_dat_miso_ch34_off>;
+		pinctrl-13 = <&aud_dat_miso_ch34_on>;
 
 		clocks = <&audsys CLK_AUD_AFE>,
 			 <&audsys CLK_AUD_TML>,
