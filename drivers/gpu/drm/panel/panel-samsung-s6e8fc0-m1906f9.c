@@ -199,6 +199,10 @@ static int s6e8fc0_k7_38_0c_0a_on(struct s6e8fc0_ctx *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
+	/* sleep out, then settle 20 ms, as the vendor's init_setting[] starts */
+	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 20);
+
 	s6e8fc0_test_key_on_lvl3(&dsi_ctx);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03, 0xed);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xed,
