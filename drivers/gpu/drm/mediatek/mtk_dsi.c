@@ -870,9 +870,34 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 
 static s32 mtk_dsi_switch_to_cmd_mode(struct mtk_dsi *dsi, u8 irq_flag, u32 t)
 {
+	struct drm_device *drm = dsi->bridge.dev;
+	u32 status;
+
 	mtk_dsi_irq_data_clear(dsi, irq_flag);
 	mtk_dsi_set_cmd_mode(dsi);
-	struct drm_device *drm = dsi->bridge.dev;
+
+	/*
+	 * The MT6785 engine does not raise the signal this wait expects: trials 13
+	 * and 14 show VM_DONE (bit 3) never arriving, so a DCS read in video mode
+	 * failed with "Wait DSI IRQ(0x00000008) Timeout" and ETIME before it ever
+	 * reached the read. The vendor's video-to-command switch polls the status
+	 * register for a different bit and never waits on VM_DONE - its C2V path
+	 * polls VM_VACT_STR (0x200) after the mode write (ddp_dsi.c, the
+	 * DSI_POLLREG32 call before "check if vdo mode now"). So poll the mode
+	 * write's own evidence briefly and continue: the read path that follows
+	 * carries BTA and waits on RD_RDY, which is what the vendor's read uses
+	 * (DSI_dcs_read_lcm_reg_v2, ddp_dsi.c:4487-4560: it requires command mode,
+	 * sends the read through the command queue with CONFG BTA, and waits for
+	 * read_wq, which the handler wakes on RD_RDY).
+	 */
+	if (dsi->driver_data->poll_completion) {
+		if (!readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+					status & 0x200, 1000, 50000))
+			return 0;
+
+		drm_dbg(drm, "no VM_VACT_STR after the mode write, reading anyway\n");
+		return 0;
+	}
 
 	if (!mtk_dsi_wait_for_irq_done(dsi, irq_flag, t)) {
 		drm_err(drm, "failed to switch cmd mode\n");
