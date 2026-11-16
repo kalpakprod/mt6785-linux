@@ -31,7 +31,6 @@
 #include <linux/regulator/consumer.h>
 
 /* Registers, all from the vendor's FTS_REG_* list */
-#define FT3418_REG_FRAME		0x00	/* write 0x01 to arm a frame read */
 #define FT3418_FRAME_START		0x01	/* frame data starts here */
 #define FT3418_REG_CHIP_ID2		0x9f
 #define FT3418_REG_CHIP_ID		0xa3
@@ -104,19 +103,18 @@ static int ft3418_reg_write(struct i2c_client *client, u8 reg, u8 value)
 	return ret == sizeof(buf) ? 0 : -EIO;
 }
 
+/*
+ * Read one frame so that buf[n] holds register n, the layout the vendor
+ * parses: fts_read_touchdata() sets buf[0] = 0x01 and reads registers 0x01..
+ * into buf + 1 with one write of the address and one read (fts_read(buf, 1,
+ * buf + 1, pnt_buf_size - 1)); nothing is written to the IC's registers.
+ * buf[2] is then the point count and point i starts at buf[3 + 6 * i].
+ */
 static int ft3418_read_frame(struct i2c_client *client, u8 *buf)
 {
-	u8 cmd[2] = { FT3418_REG_FRAME, FT3418_FRAME_START };
-	int ret;
-
-	ret = i2c_master_send(client, cmd, sizeof(cmd));
-	if (ret < 0)
-		return ret;
-	if (ret != sizeof(cmd))
-		return -EIO;
-
-	return ft3418_reg_read(client, FT3418_FRAME_START, buf,
-			       FT3418_FRAME_LEN);
+	buf[0] = FT3418_FRAME_START;
+	return ft3418_reg_read(client, FT3418_FRAME_START, buf + 1,
+			       FT3418_FRAME_LEN - 1);
 }
 
 static void ft3418_reset(struct ft3418_data *ts)
@@ -187,7 +185,7 @@ static void ft3418_report(struct ft3418_data *ts, const u8 *buf)
 	 * so a frame that carries fewer points than the count byte claims still
 	 * reports the points it has, and one whose id byte is stale ends there.
 	 */
-	for (i = 0; i < point_num; i++) {
+	for (i = 0; i < FT3418_MAX_POINTS; i++) {
 		const u8 *p = &buf[3 + FT3418_POINT_LEN * i];
 		unsigned int event = p[0] >> 6;
 		unsigned int id = p[2] >> 4;
@@ -198,6 +196,14 @@ static void ft3418_report(struct ft3418_data *ts, const u8 *buf)
 
 		if (id >= FT3418_MAX_POINTS || event == FT3418_EVENT_RESERVED)
 			break;
+
+		/*
+		 * The last finger's lift comes with a count of 0 and an up
+		 * event; a down or contact with a count of 0 is the firmware's
+		 * "abnormal touch data" (fts_read_parse_touchdata()), not a finger.
+		 */
+		if (!point_num && event != FT3418_EVENT_UP)
+			continue;
 
 		/*
 		 * A point outside the panel is a misparse, not a finger: the id or
