@@ -2491,7 +2491,14 @@ INT32 mtk_wcn_stp_dbg_dump_package(VOID)
 *****************************************************************************/
 INT32 mtk_wcn_stp_ready(INT32 value)
 {
-	STP_DBG_FUNC("set ready (%d)\n", value);
+	/*
+	 * Lead note 10, item 2: the named-predicate line says f_ready is 0 at the
+	 * moments PSM is asked to start, while the patch download over STP
+	 * succeeds. That can only be settled by seeing every write to the flag,
+	 * in order, with who asked for it - so log them at INFO, which the
+	 * phone's log level does keep.
+	 */
+	STP_INFO_FUNC("set ready (%d), was (%d)\n", value, (INT32)STP_IS_READY(stp_core_ctx));
 
 	STP_SET_READY(stp_core_ctx, value);
 	/*if whole chip reset, reset the debuggine mode */
