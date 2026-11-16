@@ -307,18 +307,16 @@ static int prepare(struct ccci_md *md, const struct md_query_ap_feature *q)
 			return -EINVAL;
 		}
 		/*
-		 * Only the features the AP actually answers go into the list.
-		 * The vendor's loop appends inside
-		 * "if (rt_feature.support_info.support_mask == CCCI_FEATURE_MUST_SUPPORT)"
-		 * (ccci_modem.c:2116-2118, with every append_runtime_feature() call
-		 * inside that block), so a feature the modem declared
-		 * NOT_EXIST or that the AP declined is absent from the answer
-		 * instead of being present with an empty body. Sending all 64 made
-		 * the list 744 bytes where the vendor's is a few hundred, with 42
-		 * entries for features the modem had not asked for at all.
+		 * Every feature id 0..FEATURE_COUNT-1 goes into the list, in order.
+		 * The vendor's loop (ccci_modem.c:2055-2482) appends the supported
+		 * ones with their data inside "if (support_mask == MUST_SUPPORT)"
+		 * and every other one in the matching "else" with data_len 0
+		 * (ccci_modem.c:2478-2481). Leaving those out put feature 5 at index 3,
+		 * where the modem reads feature 3, and the modem asserted
+		 * in ccci_apis.c:2337 with parameter 0x3 (trial 7, 16.11).
 		 */
 		if ((sup & 0xf) != FEATURE_MUST_SUPPORT)
-			continue;
+			len = 0;
 		if (p + sizeof(struct rt_feature) + len > base + NC_RUNTIME_AP_SIZE)
 			return -ENOSPC;
 		if (verbose)
