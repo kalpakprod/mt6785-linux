@@ -1823,6 +1823,16 @@
 			};
 		};
 
+		/*
+		 * Not instantiated: mt6785's gamma0 can drive dsi0 directly, and nothing
+		 * in this kernel matches dither@14012000 (see the "Adding component match"
+		 * list of the DRM master in dmesg). A described device that never binds is
+		 * still a consumer of this power controller, and genpd then keeps
+		 * sync_state() pending and every domain of the controller switched on -
+		 * which is what blocked the modem's power cycle and the BT block's cold
+		 * start on other boards. A board that does route through dither0 (the
+		 * vendor's own chain does) enables it in its own file.
+		 */
 		dither0: dither@14012000 {
 			compatible = "mediatek,mt6785-disp-dither",
 				     "mediatek,mt8183-disp-dither";
@@ -1831,6 +1841,7 @@
 			interrupts = <GIC_SPI 259 IRQ_TYPE_LEVEL_LOW>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1401XXXX 0x2000 0x1000>;
+			status = "disabled";
 
 			ports {
 				#address-cells = <1>;
@@ -1926,6 +1937,11 @@
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 		};
 
+		/*
+		 * Not instantiated either, for the reason dither0 above gives plus one the
+		 * vendor's own configuration supplies: the loader programs POSTMASK0 with
+		 * en:0 (pl_lk.txt line 313), so nothing has ever driven it on these boards.
+		 */
 		postmask0: postmask@14021000 {
 			compatible = "mediatek,mt6785-disp-postmask",
 				     "mediatek,mt8192-disp-postmask";
@@ -1934,6 +1950,7 @@
 			interrupts = <GIC_SPI 268 IRQ_TYPE_LEVEL_LOW>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1402XXXX 0x1000 0x1000>;
+			status = "disabled";
 
 			ports {
 				#address-cells = <1>;
