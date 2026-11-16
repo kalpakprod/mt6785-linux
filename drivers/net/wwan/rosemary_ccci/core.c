@@ -312,16 +312,30 @@ static int smem_clear(struct ccci_md *md, const char *window, void *base,
  */
 static void md_dump_state(struct ccci_md *md, const char *when)
 {
-	u32 sta, sta2, busy, rchnum, stage0, stage1;
+	u32 sta, sta_map, sta2, busy, rchnum, stage0, stage1;
 	void __iomem *img;
 
 	sta = readl(md->spm + SPM_PWR_STATUS);
 	sta2 = readl(md->spm + SPM_PWR_STATUS_2ND);
 	busy = md->ccif_ap ? readl(md->ccif_ap + APCCIF_BUSY) : 0;
 	rchnum = md->ccif_ap ? readl(md->ccif_ap + APCCIF_RCHNUM) : 0;
+	/*
+	 * Three independent views of the domain, because they disagreed once and
+	 * the disagreement is the whole diagnosis:
+	 *  - the SPM register through the syscon the genpd driver itself uses,
+	 *  - the same register through the driver's own mapping,
+	 *  - what runtime PM believes, which is a cached opinion, not hardware.
+	 * bit 0 is the md domain: see mt6785-pm-domains.h (MT6785_POWER_DOMAIN_MD,
+	 * sta_mask BIT(0), pwr_sta_offs 0x160) and the vendor clk-mt6785-pg.c:488
+	 * (MD1_PWR_STA_MASK (0x1 << 0), PWR_STATUS SPM_REG(0x0160)).
+	 */
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta_map);
 	dev_info(md->dev,
-		 "%s: PWR_STATUS %#x (md %s), PWR_STATUS_2ND %#x, CCIF busy %#x rchnum %#x\n",
-		 when, sta, sta & BIT(0) ? "on" : "OFF", sta2, busy, rchnum);
+		 "%s: PWR_STATUS via syscon %#x / via ioremap %#x (md bit %u vs %u), PWR_STATUS_2ND %#x, runtime PM %s, CCIF busy %#x rchnum %#x\n",
+		 when, sta_map, sta, (u32)(sta_map & BIT(0)),
+		 (u32)(sta & BIT(0)), sta2,
+		 pm_runtime_active(md->dev) ? "active" : "suspended", busy,
+		 rchnum);
 
 	writel(0, md->pll + MD1_BOOT_STATS_SELECT);
 	readl(md->pll + MD1_CFG_BOOT_STATS);
@@ -404,7 +418,6 @@ static int md_boot(struct ccci_md *md)
 {
 	int limit = stage_limit();
 	unsigned long deadline;
-	u32 v;
 	int ret;
 
 	if (md->no_boot_info) {
@@ -457,38 +470,27 @@ static int md_boot(struct ccci_md *md)
 		if (ret)
 			goto err_seq;
 		/*
-		 * The loader's run of the modem is over; ours starts here.
+		 * The boot-ROM check is the loader's last act; the modem is let
+		 * go from here by writing MD_BOOT_VECTOR_EN below.
 		 *
-		 * The cycle must be SYNCHRONOUS. With plain pm_runtime_put()
-		 * the suspend is only queued: the following put_sync/put dance
-		 * let the queued work power the MTCMOS domain down after the
-		 * boot had already released the modem, and the trial showed
-		 * exactly that -- PWR_STATUS read 0x83f7fffe with bit 0 clear,
-		 * so the modem sat powered off for the whole HS1 wait. A
-		 * powered-off modem cannot answer a handshake.
+		 * The vendor appears to power-cycle the modem at this point
+		 * (md_start_platform() calls md_cd_power_off, md_cd_start() calls
+		 * md_cd_power_on before let_md_go()). That cycle is why the two
+		 * phone trials failed: driving it through runtime PM left the
+		 * domain OFF while genpd still reported it on, and PWR_STATUS --
+		 * whose bit 0 is the md domain, MT6785_POWER_DOMAIN_MD with
+		 * sta_mask BIT(0) in mt6785-pm-domains.h and MD1_PWR_STA_MASK
+		 * (0x1 << 0) over PWR_STATUS SPM_REG(0x0160) in the vendor
+		 * clk-mt6785-pg.c:488 -- read 0x83f7fffe, bit 0 clear, at both
+		 * the int4 HS1 timeout and the int5 power-on check.
+		 *
+		 * There is no need to cycle it. The boot ROM has already run and
+		 * is waiting; MD_BOOT_VECTOR_EN is exactly the release the
+		 * vendor's let_md_go() performs, and the runtime-PM reference
+		 * taken above keeps the domain and its supplies on, so the
+		 * modem starts from a state that is known to be powered.
 		 */
-		pm_runtime_put_sync(md->dev);
-		md_power_seq_release(md);
-		/* the modem must be visibly off before it is started again */
-		if (readl_poll_timeout(md->spm + SPM_PWR_STATUS, v,
-				       !(v & BIT(0)), 100, 50000))
-			dev_warn(md->dev,
-				 "the md domain still reports on after power-off (%#x)\n",
-				 v);
-		ret = md_power_seq_prepare(md);
-		if (ret)
-			goto err_clk;
-		ret = pm_runtime_resume_and_get(md->dev);
-		if (ret)
-			goto err_seq;
-		if (readl_poll_timeout(md->spm + SPM_PWR_STATUS, v,
-				       v & BIT(0), 100, 50000)) {
-			dev_err(md->dev,
-				"the md domain did not come back on (%#x)\n", v);
-			goto err_seq;
-		}
 	}
-
 	/*
 	 * Everything the next trial needs to judge the release, printed before
 	 * the modem is let go: whether the domain is really on, what the CCIF
