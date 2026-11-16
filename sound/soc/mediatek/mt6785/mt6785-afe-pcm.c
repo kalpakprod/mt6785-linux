@@ -1909,9 +1909,17 @@ static int mt6785_afe_runtime_suspend(struct device *dev)
 			   INNER_LOOP_BACK_MODE_MASK_SFT,
 			   0x3f << INNER_LOOP_BACK_MODE_SFT);
 
-	/* cache only */
+	/*
+	 * Gate the clocks first, then go cache-only. The regmap is the
+	 * audiosys syscon map, shared with the audio clock gates
+	 * (clk-mt6785-aud.c, AUDIO_TOP_CON0/1), and a cache-only regmap
+	 * answers every read with -EBUSY: the gates' read-modify-write would
+	 * fail without a word and the clocks would never change state.
+	 */
+	mt6785_afe_disable_clock(afe);
 	regcache_cache_only(afe->regmap, true);
 	regcache_mark_dirty(afe->regmap);
+	return 0;
 
 skip_regmap:
 	mt6785_afe_disable_clock(afe);
@@ -1925,14 +1933,25 @@ static int mt6785_afe_runtime_resume(struct device *dev)
 	int ret;
 	int i;
 
+	/*
+	 * Leave cache-only before the clocks are enabled: the gates live in
+	 * the same syscon regmap (see the suspend path), and on this phone the
+	 * loader hands over AUDIO_TOP_CON0 with the AFE gate (bit 2) closed, so
+	 * a dropped enable leaves the memif DMA stopped (DL1_CUR stays 0).
+	 */
+	if (afe->regmap && !afe_priv->pm_runtime_bypass_reg_ctl)
+		regcache_cache_only(afe->regmap, false);
+
 	ret = mt6785_afe_enable_clock(afe);
-	if (ret)
+	if (ret) {
+		if (afe->regmap && !afe_priv->pm_runtime_bypass_reg_ctl)
+			regcache_cache_only(afe->regmap, true);
 		return ret;
+	}
 
 	if (!afe->regmap || afe_priv->pm_runtime_bypass_reg_ctl)
 		goto skip_regmap;
 
-	regcache_cache_only(afe->regmap, false);
 	regcache_sync(afe->regmap);
 
 	/*
