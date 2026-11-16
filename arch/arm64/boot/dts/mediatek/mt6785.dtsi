@@ -1147,7 +1147,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1175,7 +1175,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1188,7 +1188,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1201,7 +1201,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1252,7 +1252,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1277,7 +1277,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1315,7 +1315,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1328,7 +1328,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1365,7 +1365,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1379,7 +1379,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
