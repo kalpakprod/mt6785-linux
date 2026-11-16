@@ -31,8 +31,7 @@
 #include <linux/platform_device.h>
 #include <linux/remoteproc/mtk_scp.h>
 
-#include "mtk-sensorhub-msg.h"
-#include "mtk-sensorhub-ring.h"
+#include "mtk-sensorhub.h"
 
 /* the vendor's IPI id for the hub: enum ipi_id, scp_cm4.h:17-38 */
 #define MTK_SH_IPI_ID		8
@@ -40,21 +39,6 @@
 #define MTK_SH_ACK_TIMEOUT_MS	200
 /* the ring the vendor reserves for the hub: SENS_MEM_ID, 1 MiB */
 #define MTK_SH_RING_MIN_SIZE	SZ_4K
-
-struct mtk_sh {
-	struct device *dev;
-	struct mtk_scp *scp;
-	void __iomem *ring;
-	u8 *buf;			/* a copy of the ring, for the parser */
-	phys_addr_t ring_phys;
-	size_t ring_size;
-	struct mutex lock;		/* serialises messages and ring updates */
-	u32 last_wp;
-	unsigned int frames;
-	unsigned int errors;
-	unsigned long first_seen[BITS_TO_LONGS(MTK_SH_TYPE_MAX)];
-	struct dentry *debugfs;
-};
 
 static void mtk_sh_note_first_frame(struct mtk_sh *sh, u8 type)
 {
@@ -110,6 +94,7 @@ static void mtk_sh_drain(struct mtk_sh *sh)
 		pos = next;
 		sh->frames++;
 		mtk_sh_note_first_frame(sh, frame.type);
+		mtk_sh_iio_push(sh, &frame);
 	}
 
 	if (pos >= len)
@@ -128,8 +113,7 @@ static void mtk_sh_ipi_handler(void *data, unsigned int len, void *priv)
 	mtk_sh_drain(sh);
 }
 
-static int mtk_sh_send(struct mtk_sh *sh, const u8 *msg, int len,
-		       const char *what)
+int mtk_sh_send(struct mtk_sh *sh, const u8 *msg, int len, const char *what)
 {
 	int ret;
 
@@ -157,14 +141,22 @@ static int mtk_sh_set_config(struct mtk_sh *sh, u8 type)
 	return mtk_sh_send(sh, msg, len, "SET_CONFIG");
 }
 
-static int mtk_sh_activate(struct mtk_sh *sh, u8 type, u32 rate_hz)
+int mtk_sh_activate(struct mtk_sh *sh, u8 type, bool enable)
 {
-	u8 msg[32];
+	u8 msg[MTK_SH_ACTIVATE_LEN];
 	int len;
 
-	len = mtk_sh_encode_config_cmd(msg, sizeof(msg), type, MTK_SH_CFG_ENABLE,
-				       rate_hz, 0, 0);
-	return mtk_sh_send(sh, msg, len, "CONFIG_CMD_ENABLE");
+	len = mtk_sh_encode_activate(msg, sizeof(msg), type, enable);
+	return mtk_sh_send(sh, msg, len, enable ? "ACTIVATE on" : "ACTIVATE off");
+}
+
+int mtk_sh_set_delay(struct mtk_sh *sh, u8 type, u32 delay_ms)
+{
+	u8 msg[MTK_SH_SET_DELAY_LEN];
+	int len;
+
+	len = mtk_sh_encode_set_delay(msg, sizeof(msg), type, delay_ms);
+	return mtk_sh_send(sh, msg, len, "SET_DELAY");
 }
 
 /*
@@ -175,11 +167,7 @@ static int mtk_sh_activate(struct mtk_sh *sh, u8 type, u32 rate_hz)
  * 7094834e4fca19af2ca43a752debf95c0022b949, lines 30-37 - which follow Android's
  * numbering; mtk-sensorhub-ring.h carries them with the same citation.
  */
-static const struct {
-	const char *name;
-	u8 type;
-	u32 rate_hz;
-} mtk_sh_sensors[] = {
+static struct mtk_sh_sensor mtk_sh_sensors[] = {
 	{ "accel", MTK_SH_TYPE_ACCEL, 50 },
 	{ "gyro", MTK_SH_TYPE_GYRO, 50 },
 	{ "mag", MTK_SH_TYPE_MAG, 10 },
@@ -254,6 +242,8 @@ static int mtk_sh_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	sh->dev = &pdev->dev;
+	sh->sensors = mtk_sh_sensors;
+	sh->num_sensors = ARRAY_SIZE(mtk_sh_sensors);
 	mutex_init(&sh->lock);
 
 	sh->scp = scp_get(pdev);
@@ -277,23 +267,18 @@ static int mtk_sh_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, sh);
 
-	/*
-	 * Hand the ring to the firmware and switch the sensors on, one message
-	 * per line so a trial that stalls shows where.
-	 */
-	for (i = 0; i < ARRAY_SIZE(mtk_sh_sensors); i++) {
-		ret = mtk_sh_set_config(sh, mtk_sh_sensors[i].type);
+	/* the ring is handed to the firmware once, before any sensor is used */
+	for (i = 0; i < sh->num_sensors; i++) {
+		ret = mtk_sh_set_config(sh, sh->sensors[i].type);
 		if (ret)
-			break;
-		ret = mtk_sh_activate(sh, mtk_sh_sensors[i].type,
-				      mtk_sh_sensors[i].rate_hz);
-		if (ret)
-			break;
-		dev_info(sh->dev, "%s enabled at %u Hz\n", mtk_sh_sensors[i].name,
-			 mtk_sh_sensors[i].rate_hz);
+			return ret;
 	}
 
-	return 0;
+	/*
+	 * The IIO devices are what the user sees; each sensor is activated when
+	 * its buffer is enabled, so nothing is switched on at probe.
+	 */
+	return mtk_sh_iio_register(sh);
 }
 
 static void mtk_sh_remove(struct platform_device *pdev)

@@ -2,6 +2,7 @@
 config MTK_SENSORHUB
 	tristate "MediaTek SCP sensor hub (IPI_SENSOR client and IIO front end)"
 	depends on MTK_SCP
+	depends on IIO
 	help
 	  Say yes here to expose the sensors behind MediaTek's SCP sensor hub as
 	  IIO devices. The hub speaks MediaTek's own protocol over the SCP's
