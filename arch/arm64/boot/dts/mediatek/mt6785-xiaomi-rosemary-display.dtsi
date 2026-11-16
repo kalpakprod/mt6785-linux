@@ -128,20 +128,7 @@
 	status = "okay";
 };
 
-/*
- * mt6785.dtsi wires the graph through postmask0 (gamma0_out -> postmask0_in ->
- * postmask0_out -> dither0_in). postmask0 is not in the path, so gamma0 takes
- * dither0 directly instead. postmask0_in keeps pointing at gamma0_out, which is
- * inert: the path walk only follows port 1 forwards.
- */
-&gamma0_out {
-	remote-endpoint = <&dither0_in>;
-};
-
-&dither0_in {
-	remote-endpoint = <&gamma0_out>;
-};
-
+/* mt6785.dtsi already wires gamma0 straight into dither0; the rest of the chain is here. */
 &dither0_out {
 	remote-endpoint = <&dsi0_in>;
 };

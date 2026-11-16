@@ -1610,7 +1610,7 @@
 					reg = <1>;
 
 					gamma0_out: endpoint {
-						remote-endpoint = <&postmask0_in>;
+						remote-endpoint = <&dither0_in>;
 					};
 				};
 			};
@@ -1633,7 +1633,7 @@
 					reg = <0>;
 
 					dither0_in: endpoint {
-						remote-endpoint = <&postmask0_out>;
+						remote-endpoint = <&gamma0_out>;
 					};
 				};
 
@@ -1727,27 +1727,11 @@
 			interrupts = <GIC_SPI 268 IRQ_TYPE_LEVEL_LOW>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1402XXXX 0x1000 0x1000>;
-
-			ports {
-				#address-cells = <1>;
-				#size-cells = <0>;
-
-				port@0 {
-					reg = <0>;
-
-					postmask0_in: endpoint {
-						remote-endpoint = <&gamma0_out>;
-					};
-				};
-
-				port@1 {
-					reg = <1>;
-
-					postmask0_out: endpoint {
-						remote-endpoint = <&dither0_in>;
-					};
-				};
-			};
+			/*
+			 * Not in this SoC's display path: gamma0 feeds dither0 directly, so
+			 * postmask0 has no graph endpoints to point anywhere.
+			 */
+			status = "disabled";
 		};
 
 		imgsys: clock-controller@15020000 {
