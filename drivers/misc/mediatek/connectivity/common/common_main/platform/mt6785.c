@@ -625,6 +625,19 @@ static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 		CONSYS_REG_WRITE((conn_reg.ap_rgu_base + CONSYS_CPU_SW_RST_OFFSET),
 				CONSYS_REG_READ(conn_reg.ap_rgu_base + CONSYS_CPU_SW_RST_OFFSET) |
 				CONSYS_CPU_SW_RST_BIT | CONSYS_CPU_SW_RST_CTRL_KEY);
+
+		/*
+		 * The value the MCU leaves in 0x18002600 before its reset is
+		 * asserted is the state it was in, so read it here as well as after
+		 * the reset. Lead note 7 asks for the same register on every
+		 * power-on, the first (working) one included, to tell "the MCU
+		 * never ran" from "the MCU ran and later stopped".
+		 */
+		WMT_PLAT_PR_ERR("MCU state before reset: 0x18002600=0x%x, 0x18004154=0x%x\n",
+				CONSYS_REG_READ(conn_reg.mcu_base + 0x600),
+				conn_reg.mcu_conn_hif_pdma_base ?
+				CONSYS_REG_READ(conn_reg.mcu_conn_hif_pdma_base +
+					CONSYS_HIF_PDMA_AXI_RREADY) : 0);
 	} else {
 		/*16.deassert CONNSYS CPU SW reset 0x10007018 "[12]=1'b0 [31:24] =8'h88 (key)" */
 		CONSYS_REG_WRITE(conn_reg.ap_rgu_base + CONSYS_CPU_SW_RST_OFFSET,
@@ -657,6 +670,11 @@ static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 			WMT_PLAT_PR_ERR(
 				"connector MCU did not boot: 0x18002600=0x%x after %u polls\n",
 				consys_ver_id, cnt);
+		else
+			WMT_PLAT_PR_ERR("connector MCU booted: 0x18002600=0x1d1e, 0x18004154=0x%x\n",
+					conn_reg.mcu_conn_hif_pdma_base ?
+					CONSYS_REG_READ(conn_reg.mcu_conn_hif_pdma_base +
+						CONSYS_HIF_PDMA_AXI_RREADY) : 0);
 	}
 }
 
