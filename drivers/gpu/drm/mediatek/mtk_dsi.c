@@ -1443,31 +1443,107 @@ static ssize_t mtk_dsi_vm_cmd_send(struct mtk_dsi *dsi,
 }
 
 /*
- * Send one command-queue entry and wait for its status bit in DSI_INTSTA. The
- * MT6785 engine signals completion only in that register (trials 10-15), so every
- * wait here is a bounded poll of it and returns -ETIME rather than continuing.
+ * Read a panel register with the sequence measured to work on this phone
+ * (poco-m5s/evidence/disp-trial9/dcsread.py, and the vendor's
+ * DSI_dcs_read_lcm_reg_v2(), ddp_dsi.c:4487): the maximum-return-size packet on its
+ * own with its own start, then the read with BTA in low power, then RD_RDY, the RX
+ * registers, RACK and an idle engine.
+ *
+ * Two things of the vendor's three-entry queue (DSI_send_read_cmd(), ddp_dsi.c:4014)
+ * are deliberately not used here: its first entry, a DCS 0x15 write of 0xB0 (the
+ * manufacturer global-parameter offset register, which nothing proves for this
+ * s6e8fc0 panel), and its HSTX config bit. Trial 17 shows why the queue as a whole
+ * cannot be a starting point: with the three entries and HSTX the engine never ran at
+ * all - INTSTA stayed 0x0 with DSI_START 0x1 and CMDQ_SIZE 3 - while the hand
+ * sequence, one entry per start and no HSTX, reads the panel correctly on the same
+ * kernel. So each step waits for a bit that measurment shows: the engine going idle
+ * (BUSY clear) after the size packet, and RD_RDY for the read.
  */
-static int mtk_dsi_send_cmdq_word(struct mtk_dsi *dsi, u32 word, u32 flag,
-				  unsigned int timeout_us)
+static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
+				    const struct mipi_dsi_msg *msg)
 {
+	struct drm_device *drm = dsi->bridge.dev;
+	u32 reg_cmdq_off = dsi->driver_data->reg_cmdq_off;
+	u32 size = min_t(u32, msg->rx_len, 10);
+	u8 read_data[16], cmd = *((u8 *)msg->tx_buf);
+	void *src_addr;
+	ssize_t recv_cnt;
 	u32 status;
-	int ret;
+	int ret, i;
 
-	mtk_dsi_wait_for_idle(dsi);
-	mtk_dsi_mask(dsi, DSI_INTSTA, DSI_INT_STATUS_MASK, 0);
+	if (!msg->rx_buf)
+		return -EINVAL;
 
-	writel(word, dsi->regs + dsi->driver_data->reg_cmdq_off);
+	/* nothing may be queued while the engine still works */
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 !(status & DSI_BUSY), 100, 1000000);
+	if (ret) {
+		drm_err(drm, "engine busy before the read\n");
+		return -ETIME;
+	}
+
+	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
+
+	/* 1. the maximum return size: its own packet, its own start */
+	writel((0x37 << 8) | (size << 16), dsi->regs + reg_cmdq_off);
 	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
 	mtk_dsi_start(dsi);
 
-	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status, status & flag,
-				 10, timeout_us);
-	if (ret)
-		return ret;
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 !(status & DSI_BUSY), 100, 300000);
+	if (ret) {
+		drm_err(drm, "engine still busy after the size packet\n");
+		mtk_dsi_dump_state(dsi);
+		mtk_dsi_reset_engine(dsi);
+		return -ETIME;
+	}
 
-	mtk_dsi_mask(dsi, DSI_INTSTA, status & flag, 0);
+	/* 2. the read itself: BTA, low power, one entry, one start */
+	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
+	writel((msg->type << 8) | (cmd << 16) | BTA, dsi->regs + reg_cmdq_off);
+	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
+	mtk_dsi_start(dsi);
 
-	return 0;
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 status & LPRX_RD_RDY_INT_FLAG, 100, 300000);
+	if (ret) {
+		drm_err(drm, "no read-ready from the panel\n");
+		mtk_dsi_dump_state(dsi);
+		mtk_dsi_reset_engine(dsi);
+		return -ETIME;
+	}
+
+	for (i = 0; i < 16; i++)
+		read_data[i] = readb(dsi->regs + DSI_RX_DATA0 + i);
+
+	mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
+
+	/* 3. and the engine has to be idle again, as the vendor's cmddone_wq waits */
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 !(status & DSI_BUSY), 100, 2000000);
+	if (ret) {
+		drm_err(drm, "engine still busy after the read\n");
+		mtk_dsi_dump_state(dsi);
+		mtk_dsi_reset_engine(dsi);
+		return -ETIME;
+	}
+
+	mtk_dsi_mask(dsi, DSI_INTSTA,
+		     status & (LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG), 0);
+
+	recv_cnt = mtk_dsi_recv_cnt(read_data[0], read_data);
+
+	if (recv_cnt > 2)
+		src_addr = &read_data[4];
+	else
+		src_addr = &read_data[1];
+
+	recv_cnt = min(recv_cnt, 10);
+	recv_cnt = min(recv_cnt, (ssize_t)msg->rx_len);
+	if (recv_cnt > 0)
+		memcpy(msg->rx_buf, src_addr, recv_cnt);
+
+	return recv_cnt;
 }
 
 static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
@@ -1493,31 +1569,22 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 			goto restore_dsi_mode;
 	}
 
+	/*
+	 * The MT6785 read has its own sequence (see mtk_dsi_read_lcm_reg): the size
+	 * packet, then the read with BTA, each with its own start.
+	 */
+	if (MTK_DSI_HOST_IS_READ(msg->type) && dsi->driver_data->poll_completion) {
+		ssize_t cnt = mtk_dsi_read_lcm_reg(dsi, msg);
+
+		ret = (cnt < 0) ? (int)cnt : 0;
+		recv_cnt = cnt;
+		goto restore_dsi_mode;
+	}
+
 	if (MTK_DSI_HOST_IS_READ(msg->type))
 		irq_flag |= LPRX_RD_RDY_INT_FLAG;
 
 	mtk_dsi_lane_ready(dsi);
-
-	/*
-	 * The MT6785 read is the loader's pair of packets, which is what worked by
-	 * hand on this phone (poco-m5s/evidence/disp-trial9/dcsread.py: send
-	 * 0x00013700, poll CMD_DONE, then the read with BTA, poll RD_RDY, read the
-	 * RX registers). 0x37 is the DCS "set maximum return packet size" and the
-	 * vendor sends it as the first of its three command-queue entries before
-	 * every read, with the size in Data0 (DSI_send_read_cmd(), ddp_dsi.c:4014,
-	 * t1 = {Data_ID 0x37, Data0 = buffer_size <= 10}). Without it the panel
-	 * answers with its default size and the read returns nothing usable.
-	 */
-	if (MTK_DSI_HOST_IS_READ(msg->type) && dsi->driver_data->poll_completion) {
-		u32 size = min_t(u32, msg->rx_len, 10);
-		u32 word = (0x37 << 8) | (size << 16);
-
-		ret = mtk_dsi_send_cmdq_word(dsi, word, CMD_DONE_INT_FLAG, 300000);
-		if (ret) {
-			drm_err(drm, "set max return size failed: %d\n", ret);
-			goto restore_dsi_mode;
-		}
-	}
 
 	ret = mtk_dsi_host_send_cmd(dsi, msg, irq_flag);
 	if (ret)
