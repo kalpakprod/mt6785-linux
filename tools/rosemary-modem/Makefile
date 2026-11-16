@@ -26,6 +26,8 @@ install: $(BIN)
 	install -Dm755 $(BIN) "$(DESTDIR)$(PREFIX)/bin/$(BIN)"
 	install -Dm755 rosemary-modem-nvram-import \
 		"$(DESTDIR)$(PREFIX)/bin/rosemary-modem-nvram-import"
+	install -Dm755 rosemary-modem-datalink \
+		"$(DESTDIR)$(PREFIX)/bin/rosemary-modem-datalink"
 	install -Dm644 rosemary-modem.service \
 		"$(DESTDIR)/usr/lib/systemd/system/rosemary-modem.service"
 	install -Dm644 78-rosemary-modem.rules \

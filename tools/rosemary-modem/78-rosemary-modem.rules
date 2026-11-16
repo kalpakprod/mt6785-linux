@@ -25,5 +25,11 @@
 #     devices without it unless the subsystem is whitelisted).
 SUBSYSTEM=="wwan", KERNEL=="wwan*at0", DRIVERS=="rosemary-ccci", ENV{ID_MM_CANDIDATE}="1", ENV{ID_MM_PORT_TYPE_AT_PRIMARY}="1"
 SUBSYSTEM=="wwan", KERNEL=="wwan*at0", DRIVERS=="rosemary-ccci", TEST!="/run/rosemary-modem/at-ready", ENV{ID_MM_DEVICE_IGNORE}="1"
+# Two ways to recognise the data links, because the second one cannot fail:
+# the driver string, and the md_interface attribute that only these interfaces
+# carry (the WWAN framework's own netdevs are created by userspace with
+# "ip link add ... type wwan", and udev has to walk up to the platform device to
+# find the driver there).
 SUBSYSTEM=="net", DRIVERS=="rosemary-ccci", ENV{ID_MM_CANDIDATE}="1", ENV{ID_MM_PORT_TYPE_NET}="1"
+SUBSYSTEM=="net", TEST=="md_interface", ENV{ID_MM_CANDIDATE}="1", ENV{ID_MM_PORT_TYPE_NET}="1"
 SUBSYSTEM=="net", DRIVERS=="rosemary-ccci", TEST!="/run/rosemary-modem/at-ready", ENV{ID_MM_DEVICE_IGNORE}="1"
