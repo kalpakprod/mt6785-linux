@@ -676,6 +676,29 @@ INT32 wmt_plat_eirq_ctrl(ENUM_PIN_ID id, ENUM_PIN_STATE state)
 				if (iret)
 					WMT_PLAT_PR_ERR("enable irq wake fail,irq_no(%d),iret(%d)\n",
 							irq_num, iret);
+
+				/*
+				 * Lead note 10, item 1: the line is armed and never fires, so
+				 * print what it was actually configured with. The request
+				 * above resolves through the interrupt hierarchy, which on
+				 * MT6785 is the root `interrupt-parent = <&sysirq>`
+				 * (mt6577-sysirq) in front of the GIC: irq_of_parse_and_map()
+				 * returns the Linux virq of that stack, so the GIC hardware
+				 * number, the trigger the chip was finally told, and the
+				 * domain in use all have to be read back at runtime rather
+				 * than assumed from the DT cell `00 0x141 0x08`.
+				 */
+				{
+					struct irq_data *d = irq_get_irq_data(irq_num);
+
+					WMT_PLAT_PR_INFO("BGF irq %u: DT trigger 0x%x, hwirq %lu, "
+							 "domain %s, effective trigger 0x%x\n",
+							 irq_num, irq_flag,
+							 d ? d->hwirq : 0UL,
+							 (d && d->domain && d->domain->name) ?
+								d->domain->name : "?",
+							 d ? irqd_get_trigger_type(d) : 0);
+				}
 			} else {
 				struct device_node *node;
 
