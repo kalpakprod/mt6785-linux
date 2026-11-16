@@ -9,60 +9,10 @@
 #include <linux/arm-smccc.h>
 #include <linux/clk.h>
 #include <linux/mfd/syscon.h>
-#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 
 #include "mt6785-afe-clk.h"
 #include "mt6785-afe-common.h"
-
-/*
- * TEMPORARY, int7 debugging: how many times the AFE's own clock set was
- * enabled minus disabled, and the register dump the driver prints at the
- * moments that decide whether a memif stream can start. Removed with the dump
- * commit.
- */
-static int mt6785_clk_prepared;
-
-void mt6785_afe_dump_state(struct mtk_base_afe *afe, const char *where)
-{
-	struct mt6785_afe_private *afe_priv = afe->platform_priv;
-	struct device *dev = afe->dev;
-	unsigned int top_con0 = 0, dac_con0 = 0, dac_mon = 0, dl1_con0 = 0;
-	unsigned int base = 0, base_msb = 0, cur = 0, cur_msb = 0;
-	unsigned int end = 0, end_msb = 0;
-	unsigned int irq_con0 = 0, irq_con1 = 0, irq_en = 0;
-	unsigned int irq_status = 0, irq_cnt0 = 0;
-
-	if (!afe->regmap)
-		return;
-
-	regmap_read(afe->regmap, AUDIO_TOP_CON0, &top_con0);
-	regmap_read(afe->regmap, AFE_DAC_CON0, &dac_con0);
-	regmap_read(afe->regmap, AFE_DAC_MON, &dac_mon);
-	regmap_read(afe->regmap, AFE_DL1_CON0, &dl1_con0);
-	regmap_read(afe->regmap, AFE_DL1_BASE, &base);
-	regmap_read(afe->regmap, AFE_DL1_BASE_MSB, &base_msb);
-	regmap_read(afe->regmap, AFE_DL1_CUR, &cur);
-	regmap_read(afe->regmap, AFE_DL1_CUR_MSB, &cur_msb);
-	regmap_read(afe->regmap, AFE_DL1_END, &end);
-	regmap_read(afe->regmap, AFE_DL1_END_MSB, &end_msb);
-	regmap_read(afe->regmap, AFE_IRQ_MCU_CON0, &irq_con0);
-	regmap_read(afe->regmap, AFE_IRQ_MCU_CON1, &irq_con1);
-	regmap_read(afe->regmap, AFE_IRQ_MCU_EN, &irq_en);
-	regmap_read(afe->regmap, AFE_IRQ_MCU_STATUS, &irq_status);
-	regmap_read(afe->regmap, AFE_IRQ_MCU_CNT0, &irq_cnt0);
-
-	dev_info(dev, "AFE-DUMP[%s] TOP_CON0=0x%08x DAC_CON0=0x%08x DAC_MON=0x%08x DL1_CON0=0x%08x\n",
-		 where, top_con0, dac_con0, dac_mon, dl1_con0);
-	dev_info(dev, "AFE-DUMP[%s] DL1 base=0x%08x:%08x cur=0x%08x:%08x end=0x%08x:%08x\n",
-		 where, base_msb, base, cur_msb, cur, end_msb, end);
-	dev_info(dev, "AFE-DUMP[%s] IRQ con0=0x%08x con1=0x%08x en=0x%08x status=0x%08x cnt0=0x%08x\n",
-		 where, irq_con0, irq_con1, irq_en, irq_status, irq_cnt0);
-	dev_info(dev, "AFE-DUMP[%s] pm: suspended=%d enabled=%d usage=%d afe_suspended=%d bypass=%d clk_prepared=%d\n",
-		 where, pm_runtime_status_suspended(dev), pm_runtime_enabled(dev),
-		 atomic_read(&dev->power.usage_count), afe->suspended,
-		 afe_priv->pm_runtime_bypass_reg_ctl, mt6785_clk_prepared);
-}
 
 static const char *aud_clks[CLK_NUM] = {
 	[CLK_AFE] = "aud_afe",
@@ -307,17 +257,12 @@ int mt6785_afe_enable_clock(struct mtk_base_afe *afe)
 	}
 
 EXIT:
-	if (!ret)
-		mt6785_clk_prepared++;
-
 	return ret;
 }
 
 void mt6785_afe_disable_clock(struct mtk_base_afe *afe)
 {
 	struct mt6785_afe_private *afe_priv = afe->platform_priv;
-
-	mt6785_clk_prepared--;
 
 	clk_disable_unprepare(afe_priv->clk[CLK_AFE]);
 	mt6785_set_audio_int_bus_parent(afe, CLK_CLK26M);

@@ -1989,9 +1989,6 @@ static int mt6785_afe_runtime_resume(struct device *dev)
 	/* enable AFE */
 	regmap_update_bits(afe->regmap, AFE_DAC_CON0, AFE_ON_MASK_SFT, 0x1);
 
-	/* TEMPORARY, int7 debugging: the state the AFE is left in on power-up */
-	mt6785_afe_dump_state(afe, "runtime-resume");
-
 skip_regmap:
 	return 0;
 }
@@ -2150,9 +2147,6 @@ static int mt6785_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	/* init sub_dais */
 	INIT_LIST_HEAD(&afe->sub_dais);
-
-	/* TEMPORARY, int7 debugging */
-	afe->dump_state = mt6785_afe_dump_state;
 
 	for (i = 0; i < ARRAY_SIZE(dai_register_cbs); i++) {
 		ret = dai_register_cbs[i](afe);

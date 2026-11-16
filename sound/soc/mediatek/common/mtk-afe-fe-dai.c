@@ -177,10 +177,6 @@ int mtk_afe_fe_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
-	/* TEMPORARY, int7 debugging */
-	if (afe->dump_state)
-		afe->dump_state(afe, "hw_params");
-
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_afe_fe_hw_params);
@@ -222,10 +218,6 @@ int mtk_afe_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 				__func__, id, ret);
 			return ret;
 		}
-
-		/* TEMPORARY, int7 debugging: right after the memif enable bit */
-		if (afe->dump_state)
-			afe->dump_state(afe, "trigger-start");
 
 		/* set irq counter */
 		mtk_regmap_update_bits(afe->regmap, irq_data->irq_cnt_reg,
@@ -282,11 +274,6 @@ int mtk_afe_fe_prepare(struct snd_pcm_substream *substream,
 			mtk_memif_set_pbuf_size(afe, id, pbuf_size);
 		}
 	}
-
-	/* TEMPORARY, int7 debugging */
-	if (afe->dump_state)
-		afe->dump_state(afe, "prepare");
-
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_afe_fe_prepare);

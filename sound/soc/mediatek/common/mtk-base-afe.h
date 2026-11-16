@@ -135,12 +135,6 @@ struct mtk_base_afe {
 	int (*request_dram_resource)(struct device *dev);
 	int (*release_dram_resource)(struct device *dev);
 
-	/*
-	 * TEMPORARY, int7 debugging: register dumps at the moments that decide
-	 * whether a memif stream can start. Removed with the dump commit.
-	 */
-	void (*dump_state)(struct mtk_base_afe *afe, const char *where);
-
 	void *platform_priv;
 };
 

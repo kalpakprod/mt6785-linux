@@ -224,12 +224,6 @@ int mt6785_init_clock(struct mtk_base_afe *afe);
 int mt6785_afe_enable_clock(struct mtk_base_afe *afe);
 void mt6785_afe_disable_clock(struct mtk_base_afe *afe);
 
-/*
- * TEMPORARY, int7 debugging: register dump called from the FE ops and from
- * the pointer callback. Removed with the dump commit.
- */
-void mt6785_afe_dump_state(struct mtk_base_afe *afe, const char *where);
-
 int mt6785_apll1_enable(struct mtk_base_afe *afe);
 void mt6785_apll1_disable(struct mtk_base_afe *afe);
 
