@@ -85,8 +85,10 @@ properties:
       mediatek,rdma-fifo-size of mt8173-rdma0 is 8K
       mediatek,rdma-fifo-size of mt8183-rdma0 is 5K
       mediatek,rdma-fifo-size of mt8183-rdma1 is 2K
+      mediatek,rdma-fifo-size of mt6785-rdma0 in video mode is 1536, the value the vendor
+      bootloader programmes into RDMA_FIFO_CON for that SoC
     $ref: /schemas/types.yaml#/definitions/uint32
-    enum: [8192, 5120, 2048]
+    enum: [8192, 5120, 2048, 1536]
 
   mediatek,gce-client-reg:
     description: The register of client driver can be configured by gce with
