@@ -270,12 +270,26 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
+	struct snd_soc_component *cmpnt_afe = snd_soc_rtd_to_cpu(rtd, 0)->component;
 	struct snd_soc_component *cmpnt_codec =
 		snd_soc_rtd_to_codec(rtd, 0)->component;
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt_afe);
+	struct mt6785_afe_private *afe_priv = afe->platform_priv;
 	int ret;
 
-	/* The AFE and the PMIC codec talk over MTKAIF protocol 2, clock phase 2 */
+	/*
+	 * The AFE and the PMIC codec talk over MTKAIF protocol 2, clock phase 2.
+	 * Both sides have to be told: the codec keeps the protocol in its own
+	 * private data, the AFE keeps it in its own, and the AFE uses it to pick
+	 * the pad-top value, the MTKAIF configuration and the receive delays. A
+	 * card that only tells the codec leaves the AFE framing the stream as
+	 * protocol 1 while the codec sends protocol 2, which a capture cannot
+	 * parse: AFE_ADDA_MTKAIF_CFG0 stays 0 instead of 0x80010000 and
+	 * AFE_AUD_PAD_TOP holds 0x31 instead of 0x38, and every recording is
+	 * exact zeros with the whole path powered.
+	 */
 	mt6359_set_mtkaif_protocol(cmpnt_codec, MT6359_MTKAIF_PROTOCOL_2_CLK_P2);
+	afe_priv->mtkaif_protocol = MTKAIF_PROTOCOL_2_CLK_P2;
 
 	/*
 	 * Then sweep the MTKAIF receive phase and keep the one that samples the
