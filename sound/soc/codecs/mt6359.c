@@ -2250,6 +2250,19 @@ static const struct snd_soc_dapm_widget mt6359_dapm_widgets[] = {
 
 	SND_SOC_DAPM_INPUT("SGEN DL"),
 
+	/*
+	 * DIAGNOSTIC, NOT FOR UPSTREAM (see mt6359_sgen_ul_put() below): the
+	 * uplink generator needs a widget of its own to be a valid source of
+	 * "AIF Out Mux". The enum's "Sgen" value exists for both muxes - the
+	 * vendor's own route table wires it for "DAC In Mux" only and leaves
+	 * "AIF Out Mux" with "Normal Path" alone - so without this node selecting
+	 * Sgen powers nothing, DAPM never reaches MISO0_MUX and UL_SRC, and a
+	 * capture through it returns silence while the codec's uplink source stays
+	 * off (audio12 measured 0x238e = 0x0000 during exactly that test). The
+	 * generator's registers are driven by the switch below, not here.
+	 */
+	SND_SOC_DAPM_SUPPLY("SGEN UL", SND_SOC_NOPM, 0, 0, NULL, 0),
+
 	/* Uplinks */
 	SND_SOC_DAPM_AIF_OUT("AIF1TX", "AIF1 Capture", 0,
 			     SND_SOC_NOPM, 0, 0),
@@ -2463,6 +2476,8 @@ static const struct snd_soc_dapm_route mt6359_dapm_routes[] = {
 
 	{"AIF Out Mux", "Normal Path", "MISO0_MUX"},
 	{"AIF Out Mux", "Normal Path", "MISO1_MUX"},
+	/* DIAGNOSTIC, NOT FOR UPSTREAM: the uplink generator's own branch */
+	{"AIF Out Mux", "Sgen", "SGEN UL"},
 	{"AIF2 Out Mux", "Normal Path", "MISO2_MUX"},
 
 	{"MISO0_MUX", "UL1_CH1", "UL_SRC_MUX"},
@@ -2864,7 +2879,10 @@ static const DECLARE_TLV_DB_SCALE(capture_tlv, 0, 600, 0);
  * powers up (AFUNC_AUD_CON2/CON0 for the SDM and scrambler clocks,
  * AFE_SGEN_CFG0/CFG1 for the generator itself); only the *source select* is
  * left to the existing "AIF Out Mux" control, whose "Sgen" value routes this
- * generator into AIF1TX. Nothing here touches the DL side: no DAC, no LINOUT,
+ * generator into AIF1TX - that value is only a valid source because of the
+ * "SGEN UL" node in the widget table; without it the branch is dead and the
+ * capture is silent no matter what the generator does. Nothing here touches the
+ * DL side: no DAC, no LINOUT,
  * no HPOUT, no speaker amplifier, so no speaker, earpiece or headphone can be
  * driven by this switch, whatever the muxes say.
  *
