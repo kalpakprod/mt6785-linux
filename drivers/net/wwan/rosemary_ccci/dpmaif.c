@@ -556,8 +556,49 @@ static int dpmaif_poll(struct napi_struct *napi, int budget)
 
 /* ---- the WWAN links ---------------------------------------------------- */
 
+/*
+ * A link is a point-to-point WWAN device, so it must be brought up before it can
+ * carry anything: iproute2 and NetworkManager both do that, and ModemManager
+ * expects a data interface that answers isatty() no and can be opened. Without
+ * these two ops the interface exists but every `ip link set up` fails with
+ * EOPNOTSUPP, and no packet can ever leave it -- the whole data path would be
+ * built and unreachable.
+ *
+ * The carrier follows the link's state rather than the modem's: it is on while the
+ * link is open, which is what a bearer looks like to the stack. Nothing else is
+ * needed at open, because the DPMAIF rings are shared by all links and are already
+ * running by the time a link can be opened.
+ */
+static int link_open(struct net_device *ndev)
+{
+	struct dpmaif_link *l = wwan_netdev_drvpriv(ndev);
+	struct ccci_dpmaif *dp = l->dp;
+
+	if (!READ_ONCE(dp->running))
+		return -ENODEV;
+	netif_carrier_on(ndev);
+	netif_tx_start_all_queues(ndev);
+	return 0;
+}
+
+static int link_stop(struct net_device *ndev)
+{
+	netif_carrier_off(ndev);
+	netif_tx_disable(ndev);
+	return 0;
+}
+
+static void link_tx_timeout(struct net_device *ndev, unsigned int txqueue)
+{
+	DEV_STATS_INC(ndev, tx_errors);
+	netif_tx_wake_all_queues(ndev);
+}
+
 static const struct net_device_ops link_ops = {
+	.ndo_open = link_open,
+	.ndo_stop = link_stop,
 	.ndo_start_xmit = link_xmit,
+	.ndo_tx_timeout = link_tx_timeout,
 };
 
 static void link_setup(struct net_device *ndev)
