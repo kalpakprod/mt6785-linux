@@ -30,12 +30,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -138,6 +140,148 @@ static void dump_kmsg(const char *path, const char *tag)
 		close(fd);
 	}
 	fclose(out);
+}
+
+/*
+ * Resolve the device to mount.
+ *
+ * A capture kernel has a bare devtmpfs: /dev/<DEVNAME> exists for every block
+ * device the kernel found, but /dev/disk/by-partlabel is made by udev and there is
+ * no udev here. That is why three capture runs wrote nothing - the mount of
+ * "/dev/disk/by-partlabel/userdata" failed, so no file could be created, and the
+ * ~12 s round trip was just the reboot after that. The argument is therefore a
+ * PARTLABEL= name that is resolved through sysfs, plus a plain /dev path for
+ * anyone who prefers to give one.
+ *
+ * UFS probes asynchronously, so the partition can appear after the initramfs
+ * starts: poll for up to 30 s and write every attempt to /dev/kmsg, which
+ * crash-init later saves next to the dump.
+ */
+#define PARTLABEL_MAX_TRIES	300	/* 300 x 100 ms = 30 s */
+#define PARTLABEL_FAIL_MS	100
+
+static void kmsg_line(const char *fmt, ...)
+{
+	char buf[512];
+	char path[512];
+	va_list ap;
+	int fd, n;
+
+	va_start(ap, fmt);
+	n = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	if (n <= 0)
+		return;
+
+	fd = open(root_path("/dev/kmsg", path, sizeof(path)), O_WRONLY | O_NONBLOCK);
+	if (fd < 0)
+		return;
+	write(fd, buf, (size_t)n);
+	close(fd);
+}
+
+static int read_uevent_field(const char *dir, const char *field, char *out,
+			     size_t len)
+{
+	char path[512], line[256];
+	FILE *f;
+	int found = 0;
+
+	snprintf(path, sizeof(path), "%s/uevent", dir);
+	f = fopen(path, "r");
+	if (!f)
+		return 0;
+	while (fgets(line, sizeof(line), f)) {
+		size_t fl = strlen(field);
+
+		if (strncmp(line, field, fl) || line[fl] != '=')
+			continue;
+		snprintf(out, len, "%s", line + fl + 1);
+		out[strcspn(out, "\n")] = '\0';
+		found = 1;
+		break;
+	}
+	fclose(f);
+	return found;
+}
+
+/*
+ * PARTLABEL=<name> -> /dev/<DEVNAME>, by scanning /sys/class/block. Returns 0 and
+ * fills outpath on success, -1 when the partition never appeared, and 1 when the
+ * argument was a plain path and was copied through.
+ */
+static int resolve_dev(const char *arg, char *outpath, size_t len)
+{
+	char blockdir[512], dir[1024];
+	int max_tries = PARTLABEL_MAX_TRIES;
+	long poll_us = PARTLABEL_FAIL_MS * 1000;
+	int tries, ret = -1;
+
+#ifdef CRASH_TEST
+	/* The tests cannot wait 30 s per case; the bounds are overridable there. */
+	if (getenv("CRASH_TEST_TRIES"))
+		max_tries = atoi(getenv("CRASH_TEST_TRIES"));
+	if (getenv("CRASH_TEST_POLL_US"))
+		poll_us = atol(getenv("CRASH_TEST_POLL_US"));
+#endif
+
+	if (strncmp(arg, "PARTLABEL=", 10)) {
+		snprintf(outpath, len, "%s", arg);
+		return 1;
+	}
+
+	for (tries = 1; tries <= max_tries; tries++) {
+		DIR *d;
+		struct dirent *de;
+
+		snprintf(blockdir, sizeof(blockdir), "%s/sys/class/block",
+			 MOUNT_DIR);
+		d = opendir(blockdir);
+		if (d) {
+			while ((de = readdir(d))) {
+				char name[128], devname[128], majors[16], minors[16];
+
+				if (de->d_name[0] == '.')
+					continue;
+				snprintf(dir, sizeof(dir), "%s/%s", blockdir,
+					 de->d_name);
+				if (!read_uevent_field(dir, "PARTNAME", name,
+						       sizeof(name)))
+					continue;
+				if (strcmp(name, arg + 10))
+					continue;
+				if (!read_uevent_field(dir, "DEVNAME", devname,
+						       sizeof(devname)))
+					continue;
+				snprintf(outpath, len, "/dev/%s", devname);
+				/* devtmpfs has the node; if not, make it from the
+				 * major/minor the same uevent carries. */
+				if (access(outpath, F_OK) != 0 &&
+				    read_uevent_field(dir, "MAJOR", majors,
+						      sizeof(majors)) &&
+				    read_uevent_field(dir, "MINOR", minors,
+						      sizeof(minors))) {
+					char real[600];
+
+					snprintf(real, sizeof(real), "%s%s",
+						 MOUNT_DIR, outpath);
+					mknod(real, S_IFBLK | 0600,
+					      makedev(atoi(majors), atoi(minors)));
+				}
+				kmsg_line("crash-init: %s resolved to %s after %d tries\n",
+					  arg, outpath, tries);
+				closedir(d);
+				return 0;
+			}
+			closedir(d);
+		}
+		if (tries == 1 || tries % 50 == 0)
+			kmsg_line("crash-init: %s not in /sys/class/block yet (try %d)\n",
+				  arg, tries);
+		usleep((useconds_t)poll_us);
+	}
+	kmsg_line("crash-init: %s never appeared - is the driver built in?\n", arg);
+	return ret;
 }
 
 static int mkdir_p(const char *path)
@@ -327,6 +471,26 @@ int main(int argc, char **argv)
 			selftest = 1;
 			logmsg("crash-init: no /proc/vmcore - self-test boot");
 		}
+	}
+
+	/*
+	 * The device is resolved in both builds: the tests plant a /sys tree with a
+	 * partition that appears late (or never) and check what crash-init does, and
+	 * the capture kernel needs the same code because it has no udev.
+	 */
+	{
+		char devpath[256];
+		int r = resolve_dev(crashdev, devpath, sizeof(devpath));
+
+		if (r < 0) {
+			logmsg("crash-init: cannot resolve %s: %s", crashdev,
+			       strerror(errno));
+			goto out;
+		}
+		crashdev = strdup(devpath);
+		if (!crashdev)
+			goto out;
+		logmsg("crash-init: userdata device is %s", crashdev);
 	}
 
 #ifndef CRASH_TEST

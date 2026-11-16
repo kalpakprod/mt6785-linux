@@ -40,4 +40,7 @@ ls -l "$archive" | awk '{print "archive:", $9, "(" $5 " bytes)"}'
 echo
 echo "load it on the phone with:"
 echo "  kexec -p /boot/Image-capture --initrd=$archive \\"
-echo "      --command-line=\"poco.crashdev=/dev/disk/by-partlabel/userdata poco.crashdir=/var/lib/poco/crash\""
+echo "      --command-line=\"poco.crashdev=PARTLABEL=userdata poco.crashdir=/var/lib/poco/crash\""
+echo
+echo "PARTLABEL=, not /dev/disk/by-partlabel/...: the capture kernel has a bare"
+echo "devtmpfs and no udev, so those symlinks do not exist there."

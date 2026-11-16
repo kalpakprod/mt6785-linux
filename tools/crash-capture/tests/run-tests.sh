@@ -124,6 +124,45 @@ else
 	fail "a self-test boot leaves its own log and no fake dump"
 fi
 
+# --- 8. PARTLABEL resolution: the partition appears only after a few polls
+#        (UFS probes asynchronously in the capture kernel, which has no udev)
+root=$work/partlabel
+mkdir -p "$root/sys/class/block" "$root/dev" "$root/proc" "$root/var/lib/poco/crash" "$root/mnt"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'poco.crashdev=PARTLABEL=userdata poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'kernel: waiting for userdata\n' > "$root/dev/kmsg"
+(
+	usleep 250000 2>/dev/null || sleep 0.25
+	mkdir -p "$root/sys/class/block/mmcblk0p42"
+	printf 'MAJOR=179\nMINOR=42\nDEVNAME=mmcblk0p42\nPARTNAME=userdata\n' \
+		> "$root/sys/class/block/mmcblk0p42/uevent"
+) &
+waiter=$!
+CRASH_TEST_ROOT=$root CRASH_TEST_TRIES=40 CRASH_TEST_POLL_US=100000 \
+	"$work/crash-init" >"$root/log.txt" 2>&1 || true
+wait $waiter 2>/dev/null || true
+if grep -q "PARTLABEL=userdata resolved to /dev/mmcblk0p42 after" "$root"/var/lib/poco/crash/*.kmsg 2>/dev/null; then
+	pass "a PARTLABEL that appears late is found and logged"
+else
+	fail "a PARTLABEL that appears late is found and logged"
+fi
+
+# --- 9. planted fault: the partition never appears -> resolution fails, nothing
+#        is written as a dump, and the reason is in the kernel log
+root=$work/nopartlabel
+mkdir -p "$root/sys/class/block" "$root/dev" "$root/proc" "$root/var/lib/poco/crash" "$root/mnt"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'poco.crashdev=PARTLABEL=userdata poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'kernel: no userdata here\n' > "$root/dev/kmsg"
+CRASH_TEST_ROOT=$root CRASH_TEST_TRIES=2 CRASH_TEST_POLL_US=1000 \
+	"$work/crash-init" >"$root/log.txt" 2>&1 || true
+if ! ls "$root"/var/lib/poco/crash/*.txt >/dev/null 2>&1 &&
+   grep -q "PARTLABEL=userdata never appeared" "$root/dev/kmsg"; then
+	pass "a PARTLABEL that never appears is reported, not guessed"
+else
+	fail "a PARTLABEL that never appears is reported, not guessed"
+fi
+
 echo
 echo "$fails case(s) failed"
 exit "$fails"
