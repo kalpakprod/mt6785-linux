@@ -798,18 +798,6 @@ static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 		return;
 	}
 
-	/*
-	 * Arm the frame completion interrupt of the first component from the
-	 * start. DRM only calls ->enable_vblank() when a user arms a vblank
-	 * through the vblank counter, which the fbdev console never does, so
-	 * drm_atomic_helper_wait_for_vblanks() has nothing to wait on and times
-	 * out on the first commit (trial 10: "vblank wait timed out" twice at
-	 * fbcon init, with OVL_INTEN reading 0). The loader runs with that
-	 * interrupt enabled all the time: its OVL0 INTEN (0x14008004) reads
-	 * 0x0000201e, bits 1..4 and 13.
-	 */
-	mtk_ddp_comp_enable_vblank(comp);
-
 	drm_crtc_vblank_on(crtc);
 	mtk_crtc->enabled = true;
 }
