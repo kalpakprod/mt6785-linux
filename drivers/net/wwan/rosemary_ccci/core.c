@@ -529,7 +529,6 @@ static int md_boot(struct ccci_md *md)
 	int limit = stage_limit();
 	unsigned long deadline;
 	u32 before = 0, after = 0;
-	u32 gate_off_bit = 0;
 	int ret;
 
 	if (md->no_boot_info) {
@@ -608,92 +607,64 @@ static int md_boot(struct ccci_md *md)
 	 * rosemary_ccci_probe()), so genpd has not powered it off since, and the
 	 * modem is in the state the loader left it in.
 	 *
-	 * The 26 MHz request and srclkena belong to that powered state, and they are
-	 * set BEFORE anything tries to quiesce the modem's bus: the MTCMOS
-	 * bus-protection acknowledgement comes from the modem side, so a modem whose
-	 * clock request is missing cannot acknowledge it. Trial 16 measured exactly
-	 * that: PROTECTEN bit 7 set, PROTECT_STA never matching, scpsys returning
-	 * -ETIMEDOUT after its one-second poll (MTK_POLL_TIMEOUT,
-	 * drivers/pmdomain/mediatek/mtk-pm-domains.c:38) -- where the vendor waits for
-	 * the same bit without any timeout at all (clk-mt6785-pg.c:1010-1020).
+	 * On the loader's boot this driver now touches NO power at all -- no gate
+	 * cycle, no rails, no clock request -- and the reasons are measured, not
+	 * assumed:
+	 *
+	 *  1. The release works from the loader's state. Kernel -modem4 (commit
+	 *     aae062530) reached `state ready` and answered AT with no power cycle
+	 *     in the first-boot path at all; its first_boot block was the boot-ROM
+	 *     check and then the release. Trial 15 run 2, which did cycle, reached
+	 *     READY the same way. So the cycle is not what makes the modem start.
+	 *
+	 *  2. The cycle is what this port cannot do safely. The vendor's restart is
+	 *     real: md_start_platform() powers the modem off after the boot-ROM
+	 *     check (mt6785/md_sys1_platform.c:591-653, ending in
+	 *     md_cd_power_off()), and md_cd_start() powers it on again before
+	 *     let_md_go() (modem_sys1.c:409-417 -> md_cd_power_on(), :705-770).
+	 *     But its MTCMOS power-off waits for the bus-protection acknowledgement
+	 *     with no timeout at all -- three `while (...) ram_console_update();`
+	 *     loops (clk-mt6785-pg.c:1010-1042) -- while the mainline power-domain
+	 *     driver polls for one second and returns -ETIMEDOUT
+	 *     (MTK_POLL_TIMEOUT, drivers/pmdomain/mediatek/mtk-pm-domains.c:38).
+	 *
+	 *  3. A running modem needs seconds to acknowledge, not milliseconds. Trial
+	 *     15 run 2 asked at 31.759 s and got -110 after its one second; by
+	 *     35.953 s the same bit read back acknowledged in PROTECT_STA
+	 *     (0x961c7080). Trial 17 run 2 asked at the boot and gave up, and run 1
+	 *     of the same trial shows a modem that was already halted acknowledging
+	 *     at once (both directions ret=0). Nothing in the vendor's mt6785 path
+	 *     quiesces the modem first: no sleep request, no watchdog disable, no
+	 *     PLL handover -- md_cd_power_off() is gate, srclkena, PMIC
+	 *     (:809-828) and nothing else.
+	 *
+	 *  4. A failed attempt is worse than none. It leaves PROTECTEN bit 7 set
+	 *     with PWR_ON still 1 -- a half-protected bus -- and the release write
+	 *     then does not land (trial 16: `before 0x0, after 0x0`).
+	 *
+	 * So the driver releases the modem the loader handed it, and only powers a
+	 * modem it brought up itself. That also removes the last dependency on the
+	 * power-domain provider being synced: nothing here needs the domain switched.
 	 */
-	md_clock_request(md, true);
-
 	if (md->first_boot) {
 		ret = md_first_boot_check(md);
 		md_step(md, "brom_check");
 		if (ret)
 			goto err_seq;
+	} else {
 		/*
-		 * The loader ran the boot ROM once; the modem is started again from
-		 * here, and the vendor restarts it by powering it down and up again,
-		 * in this order:
-		 *
-		 *   md_start_platform() on first boot waits for the boot ROM, dumps
-		 *   the boot status, and then powers the modem off:
-		 *   mt6785/md_sys1_platform.c:591-653, ending in md_cd_power_off().
-		 *   md_cd_power_off() disables the MTCMOS gate clock first
-		 *   (clk_disable_unprepare(clk_table[0]), i.e. "scp-sys-md1-main",
-		 *   :809), then clears INFRA_AO_MD_SRCCLKENA (:812-818), then the
-		 *   PMIC (:821-828).
-		 *   md_cd_start() then calls md_cd_power_on() before let_md_go()
-		 *   (modem_sys1.c:409-417); md_cd_power_on() is the same three steps
-		 *   the other way round: PMIC (:713), srclkena = 0x21 (:727-733),
-		 *   MTCMOS gate (:744-745).
-		 *
-		 * Here the gate is the md power domain's, and only runtime PM may
-		 * touch it: pm_runtime_put_sync() is the vendor's
-		 * clk_disable_unprepare(), pm_runtime_resume_and_get() is its
-		 * clk_prepare_enable(). The supplies and the 26 MHz request are ours
-		 * to drive, and they follow the gate exactly as the vendor orders it.
-		 *
-		 * Whether the gate really moves is not assumed: the two checks below
-		 * report it. genpd keeps domains with stay_on set (until its provider
-		 * syncs), and when that happens the gate does not move at all -- which
-		 * is a fact the trial has to show, not something to paper over with a
-		 * raw write to 0x318.
+		 * Not the loader's boot: nothing has powered this modem, so the rails
+		 * and the clock request are ours, and the vendor's power_on order
+		 * applies (PMIC, srclkena, gate).
 		 */
-		pm_runtime_put_sync(md->dev);
-		gate_off_bit = md_domain_is_on(md) ? 1 : 0;
-		md_step(md, "restart: gate off");
-		/*
-		 * The vendor's power-off, in its order: gate (done above), then
-		 * srclkena, then the PMIC (mt6785/md_sys1_platform.c:809-828). The
-		 * rails are released only here, with the gate already off, which is
-		 * the one condition this driver must not break -- trial 15 measured
-		 * the modem domain dropping when they were re-applied under a live
-		 * domain.
-		 */
-		md_power_seq_release(md);
-		md_step(md, "restart: supplies off");
-		/* ... and its power-on: PMIC, srclkena, then the gate again (:713-745) */
 		ret = md_power_seq_prepare(md);
 		if (ret)
 			goto err_clk;
 		ret = pm_runtime_resume_and_get(md->dev);
-		md_step(md, "restart: gate on");
-		if (ret)
+		if (ret) {
+			dev_err(md->dev, "cannot power the md domain: %d\n", ret);
 			goto err_seq;
-		/*
-		 * One line, because this is the one thing a trial has to see at a
-		 * glance: the vendor restarts the modem by taking the domain down and
-		 * bringing it back, and genpd can refuse to move it. `gate off 0` and
-		 * `gate on 1` means the restart was real.
-		 */
-		dev_info(md->dev, "restart before the release: gate off md_bit=%u, gate on md_bit=%u\n",
-			 gate_off_bit, (u32)md_domain_is_on(md));
-		if (!md_domain_is_on(md))
-			dev_warn(md->dev,
-				 "the md domain did not come back on; the vendor's restart could not run here\n");
-	} else {
-		/*
-		 * Not the loader's boot: nothing has powered this modem, so the rails
-		 * are ours to bring up. This is the vendor's md_cd_power_on(), with the
-		 * gate already held by the probe's reference.
-		 */
-		ret = md_power_seq_prepare(md);
-		if (ret)
-			goto err_clk;
+		}
 	}
 	md_dump_state(md, "before release");
 
@@ -705,6 +676,14 @@ static int md_boot(struct ccci_md *md)
 	 * so a write that does not take is reported with both numbers instead of
 	 * only being noticed.
 	 */
+	/*
+	 * A modem that is not powered cannot take the release, and that is worth a
+	 * line of its own: trial 14 wrote the vector into a powered-off modem and the
+	 * write simply did not stick, which looked like a handshake failure 30 s
+	 * later.
+	 */
+	if (!md_domain_is_on(md))
+		dev_warn(md->dev, "the md domain is not powered: the release cannot take\n");
 	before = readl(md->boot_vector);
 	writel(1, md->boot_vector);
 	after = readl(md->boot_vector);
@@ -1051,8 +1030,20 @@ static void rosemary_ccci_remove(struct platform_device *pdev)
 {
 	struct ccci_md *md = platform_get_drvdata(pdev);
 
-	if (md)
-		ccci_md_stop(md);
+	if (!md)
+		return;
+	/*
+	 * Everything the probe registered has to go back, in the reverse order: the
+	 * modem's power, then the three things that hold kernel objects --
+	 * the WWAN data-path ops, the channel devices and the class itself.
+	 * Trial 17 measured what a half-undone remove costs: the class stayed
+	 * registered, and the next probe failed with
+	 * "sysfs: cannot create duplicate filename '/class/ccci'" (-EEXIST), so the
+	 * driver could not be reloaded after a single rmmod.
+	 */
+	ccci_md_stop(md);
+	rosemary_ccci_dpmaif_exit(md);
+	ccci_ports_exit(md);
 }
 
 static struct platform_driver rosemary_ccci_driver = {
