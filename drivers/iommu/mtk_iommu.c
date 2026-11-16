@@ -1046,6 +1046,59 @@ static int mtk_iommu_of_xlate(struct device *dev,
 	return iommu_fwspec_add_ids(dev, args->args, 1);
 }
 
+/*
+ * The display the bootloader left scanning out: its masters still read the framebuffer at
+ * the physical address the loader programmed, and this IOMMU knows nothing about that
+ * memory - trial 23 has the first fault at 1.893 s, "iova=0x7cbcf010 pa=0x0
+ * master=0x500000d(larb=0 port=3) read", larb 0 port 3 being M4U_PORT_DISP_OVL0, before
+ * any display driver has bound.
+ *
+ * Upstream states exactly this case as a reserved-memory node carrying reg and
+ * iommu-addresses: of_iommu_get_resv_regions() turns it into a DIRECT region for the
+ * device (drivers/iommu/of_iommu.c:204-268; the type is DIRECT when the physical and IOVA
+ * ranges coincide, :171-190), and iommu_create_device_direct_mappings() maps such a region
+ * one-to-one into the domain as soon as it is set up (drivers/iommu/iommu.c:1200-1250) -
+ * early enough for the loader-lit display, and known to the IOVA allocator.
+ *
+ * A reserved-memory node cannot be used on this board: the loader's
+ * reserved_memory_conflict_check refuses any DT node overlapping one of its own records
+ * (measured 13.11 with a ramoops node at the pstore range, evidence/try-force1/
+ * boot-force1.lk.txt:2334-2384, and this board's reserved_memory node is empty for that
+ * reason). So the region is taken from the /chosen framebuffer the board already
+ * describes, and reported for the display's components - the nodes that carry a GCE client
+ * register on this SoC family. It stays for the life of the device, as Tegra keeps its
+ * framebuffer: the memory itself is the loader's no-map mblock, Linux never allocates it.
+ */
+static void mtk_iommu_bootfb_resv(struct device *dev, struct list_head *head)
+{
+	struct iommu_resv_region *region;
+	struct device_node *fb;
+	struct resource res;
+
+	if (!of_property_present(dev->of_node, "mediatek,gce-client-reg"))
+		return;
+
+	fb = of_find_node_by_path("/chosen/framebuffer0");
+	if (!fb)
+		return;
+
+	if (of_address_to_resource(fb, 0, &res)) {
+		of_node_put(fb);
+		return;
+	}
+	of_node_put(fb);
+
+	region = iommu_alloc_resv_region(res.start, PAGE_ALIGN(resource_size(&res)),
+					 IOMMU_READ | IOMMU_WRITE,
+					 IOMMU_RESV_DIRECT, GFP_KERNEL);
+	if (!region) {
+		dev_warn(dev, "cannot reserve the boot framebuffer\n");
+		return;
+	}
+
+	list_add_tail(&region->list, head);
+}
+
 static void mtk_iommu_get_resv_regions(struct device *dev,
 				       struct list_head *head)
 {
@@ -1054,6 +1107,8 @@ static void mtk_iommu_get_resv_regions(struct device *dev,
 	const struct mtk_iommu_iova_region *resv, *curdom;
 	struct iommu_resv_region *region;
 	int prot = IOMMU_WRITE | IOMMU_READ;
+
+	mtk_iommu_bootfb_resv(dev, head);
 
 	if ((int)regionid < 0)
 		return;
