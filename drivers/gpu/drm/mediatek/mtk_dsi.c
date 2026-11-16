@@ -97,6 +97,13 @@
 
 #define DSI_HSTX_CKL_WC		0x64
 #define HSTX_CKL_WC			GENMASK(15, 2)
+/*
+ * Let the engine work out the clock low-power word count per line itself and
+ * leave the result in DSI_HSTX_CKL_WC_AUTO_RESULT (0x68). This is how the MT6785
+ * loader runs: 0x64 = 0x00010000, i.e. only this bit, with 0x68 = 0x1cf holding
+ * the value it computed (poco-m5s/evidence/disp-trial8/regs-loader.txt).
+ */
+#define HSTX_CKL_WC_AUTO		BIT(16)
 
 #define DSI_RX_DATA0		0x74
 #define DSI_RX_DATA1		0x78
@@ -207,6 +214,7 @@ struct mtk_dsi_driver_data {
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
 	bool needs_mem_conti;
+	bool has_hstx_cklp_auto;
 };
 
 struct mtk_dsi {
@@ -458,7 +466,8 @@ static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
 	if (config_vact) {
 		vact_nl = FIELD_PREP(VACT_NL, dsi->vm.vactive);
 		writel(vact_nl, dsi->regs + DSI_VACT_NL);
-		writel(ps_wc, dsi->regs + DSI_HSTX_CKL_WC);
+		if (!dsi->driver_data->has_hstx_cklp_auto)
+			writel(ps_wc, dsi->regs + DSI_HSTX_CKL_WC);
 	}
 	writel(ps_val, dsi->regs + DSI_PSCTRL);
 }
@@ -518,8 +527,18 @@ static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
 	hstx_cklp_wc_max = (DIV_ROUND_UP((cklp_wc_max_adjust + horizontal_backporch_byte +
 			   ps_wc), dsi->lanes) + da_hs_trail + 1) * dsi->lanes / 6 - 1;
 
-	hstx_cklp_wc = FIELD_PREP(HSTX_CKL_WC, (hstx_cklp_wc_min + hstx_cklp_wc_max) / 2);
-	writel(hstx_cklp_wc, dsi->regs + DSI_HSTX_CKL_WC);
+	if (dsi->driver_data->has_hstx_cklp_auto) {
+		/*
+		 * The engine computes the window from the timings above and
+		 * reports it in DSI_HSTX_CKL_WC_AUTO_RESULT (0x68), the way the
+		 * MT6785 loader runs it.
+		 */
+		writel(HSTX_CKL_WC_AUTO, dsi->regs + DSI_HSTX_CKL_WC);
+	} else {
+		hstx_cklp_wc = FIELD_PREP(HSTX_CKL_WC,
+					  (hstx_cklp_wc_min + hstx_cklp_wc_max) / 2);
+		writel(hstx_cklp_wc, dsi->regs + DSI_HSTX_CKL_WC);
+	}
 
 	hs_vb_ps_wc = ps_wc - (dsi->phy_timing.lpx + dsi->phy_timing.da_hs_exit +
 		      dsi->phy_timing.da_hs_prepare + dsi->phy_timing.da_hs_zero + 2) * dsi->lanes;
@@ -1457,6 +1476,7 @@ static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
 	.has_shadow_ctl = false,
 	.has_size_ctl = true,
 	.needs_mem_conti = true,
+	.has_hstx_cklp_auto = true,
 };
 
 static const struct mtk_dsi_driver_data mt8186_dsi_driver_data = {
