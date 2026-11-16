@@ -30,6 +30,8 @@ install: $(BIN)
 		"$(DESTDIR)/usr/lib/systemd/system/rosemary-modem.service"
 	install -Dm644 78-rosemary-modem.rules \
 		"$(DESTDIR)/usr/lib/udev/rules.d/78-rosemary-modem.rules"
+	install -Dm644 rosemary-modem-properties \
+		"$(DESTDIR)/usr/share/rosemary-modem/properties"
 
 clean:
 	rm -f $(BIN)

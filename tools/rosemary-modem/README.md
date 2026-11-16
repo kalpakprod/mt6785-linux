@@ -17,8 +17,9 @@ changed line in the sources below says which row of the delta table
 
 | File | What it is |
 |---|---|
-| `rosemary-modemd.c` | the daemon: NVRAM file service (CCCI 14/15), RPC service (32/33), MD boot, AT init, then handover to ModemManager |
+| `rosemary-modemd.c` | the daemon: NVRAM file service (CCCI 14/15), RPC service (32/33), MD boot, AT init, then handover to ModemManager. `-v` logs each file request with its path, flags and result |
 | `rosemary-modem-nvram-import` | copies `nvdata nvcfg protect1 protect2` to `dd` copies, `e2fsck -fy` on the copy, mounts it read-only and copies the tree out — the live partitions are never mounted |
+| `rosemary-modem-properties` | the properties the modem asks for, in the stock phone's own values: `key=value`, one per line, generated from `device-dump-2026-11-13/stock/getprop-filtered.txt`. Installed as `/usr/share/rosemary-modem/properties` |
 | `rosemary-modem.service` | systemd unit for the daemon |
 | `78-rosemary-modem.rules` | udev rules: the AT port is primary AT for ModemManager, and nothing is handed over before the SIM is up |
 | `0003-plugins-new-mtk-ccmni-plugin.patch` | ModemManager plugin `mtk-ccmni`: AT on `wwan0at0`, data on the DPMAIF netdevs, `+EIF` → `/sys/class/net/<link>/md_interface`, address from `+CGPADDR`, SIM hot-swap from `+ESIMS`. The only change from cezanne's is the udev driver string |

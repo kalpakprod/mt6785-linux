@@ -20,6 +20,7 @@ install -Dm755 "$DIR/rosemary-modemd" /usr/local/bin/rosemary-modemd
 install -Dm755 "$DIR/rosemary-modem-nvram-import" /usr/local/bin/rosemary-modem-nvram-import
 install -Dm644 "$DIR/rosemary-modem.service" /usr/lib/systemd/system/rosemary-modem.service
 install -Dm644 "$DIR/78-rosemary-modem.rules" /usr/lib/udev/rules.d/78-rosemary-modem.rules
+install -Dm644 "$DIR/rosemary-modem-properties" /usr/share/rosemary-modem/properties
 install -d /usr/lib/firmware/mediatek/rosemary/mdota \
 	   /usr/lib/firmware/mediatek/rosemary/md \
 	   /usr/lib/firmware/mediatek/rosemary/modem

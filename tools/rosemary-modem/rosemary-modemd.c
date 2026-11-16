@@ -67,7 +67,12 @@
  * match the driver name through DRIVERS==, which is a different thing.
  */
 #define SYS		"/sys/devices/platform/10209000.modem"
-#define AT_PORT		"/dev/wwan0at0"
+/*
+ * The AT port is not always wwan0: this phone has a second WWAN device, so the
+ * modem's own AT port came up as /dev/wwan1at0 (trial 10), and a fixed name made
+ * the daemon wait 10 s and give up. at_port_find() asks the driver instead.
+ */
+#define AT_PORT_GLOB	"/dev/wwan*at0"
 #define AT_READY	"/run/rosemary-modem/at-ready"
 #define AT_TIMEOUT	10
 #define MORE		0x80000000u	/* data[0]: more fragments follow */
@@ -563,23 +568,27 @@ static const struct {
 	{ NULL, 0 },
 };
 
+/* loaded from the phone's own dump; defined below, used by the RPC handler */
+static const char *properties_get(const char *key);
+static void properties_report_missing(const char *key);
+
 /*
  * Android system properties the MD may ask for (IPC_RPC_QUERY_AP_SYS_PROPERTY).
- * Delta rows "GPIO_SIM*" do not cover these: they are the phone's identity,
- * taken from the Poco M5s vendor build (ro.product.* of rosemary).
+ *
+ * These come from the phone's own dump, not from a hand-kept list, and the reason
+ * is a real failure. Trial 9 answered ro.miui.build.region as the empty string
+ * because the key was not in the list, and the modem -- which branches on the
+ * market it is told it is in -- asserted 0.2 s after READY inside its NVRAM
+ * security layer (mcu/custom/service/nvram/custom_nvram_sec.c:1634). Trial 10,
+ * with nothing changed but that one value to the stock "global", stayed READY and
+ * answered AT. An absent key is not a harmless absence: the modem reads the empty
+ * answer as a value.
+ *
+ * So the answers are loaded from rosemary-modem-properties, installed beside this
+ * binary and generated from poco-m5s/device-dump-2026-11-13/stock/getprop-filtered.txt.
+ * A key the file does not have is reported once, so the next missing property is
+ * visible in the log instead of becoming an assert.
  */
-static const struct {
-	const char *key, *v;
-} properties[] = {
-	{ "ro.product.vendor.name", "rosemary" },
-	{ "ro.product.vendor.device", "rosemary" },
-	{ "ro.product.name", "rosemary" },
-	{ "ro.product.device", "rosemary" },
-	{ "ro.product.model", "M2103K19PG" },
-	{ "ro.product.brand", "POCO" },
-	{ "ro.product.manufacturer", "Xiaomi" },
-	{ NULL, NULL },
-};
 
 /*
  * input level of an AP pin from the pinctrl debugfs, or -1: the first line
@@ -735,12 +744,14 @@ static void rpc_op(uint32_t opc, struct arg *args, int argc, struct res *r)
 		break;
 	}
 	case 0x400f: {
-		const char *v = "";
+		const char *v;
 
 		cstr(ARG(0), 0, SIZE_MAX, name, sizeof(name));
-		for (i = 0; properties[i].key; i++)
-			if (!strcmp(properties[i].key, name))
-				v = properties[i].v;
+		v = properties_get(name);
+		if (!v) {
+			properties_report_missing(name);
+			v = "";
+		}
 		log_msg("rpc: property %s = \"%s\"", name, v);
 		res_u32(r, strlen(v));
 		res_bytes(r, v, strlen(v) + 1);
@@ -1103,9 +1114,21 @@ static int fs_open_path(const struct arg *wpath, uint32_t flags)
 	}
 	fd = open(p, mode | O_CLOEXEC, 0660);
 	if (fd < 0) {
+		int err = err_conv(errno);
+
+		/*
+		 * In -v mode the path and the flags of every failed open are the
+		 * one fact an assert cannot show by itself: the modem asserts with
+		 * a file and a line of its own, and this line is what ties it to
+		 * the request behind it.
+		 */
+		if (verbose)
+			log_msg("fs open flags 0x%x -> %d: %s", flags, err, p);
 		free(p);
-		return err_conv(errno);
+		return err;
 	}
+	if (verbose)
+		log_msg("fs open flags 0x%x -> handle %d: %s", flags, h, p);
 	files[h] = (struct file){ .used = 1, .fd = fd, .path = p };
 	return h;
 }
@@ -1199,6 +1222,90 @@ static char *py_join(const char *a, const char *b)
 		exit(1);
 	}
 	return r;
+}
+
+static const char *const properties_file = "/usr/share/rosemary-modem/properties";
+
+static char *properties_text;		/* the file, kept for the life of the run */
+static char at_port_uevent[128];	/* uevent of the AT port actually opened */
+static char **properties_missing;	/* keys already reported as absent */
+static size_t properties_missing_n;
+
+static void properties_load(const char *root)
+{
+	char *paths[2];
+	struct stat st;
+	int i, fd;
+	ssize_t n;
+	char *p;
+
+	paths[0] = py_join(root, "properties");
+	paths[1] = (char *)properties_file;
+	for (i = 0; i < 2; i++) {
+		fd = open(paths[i], O_RDONLY);
+		if (fd < 0)
+			continue;
+		if (!fstat(fd, &st) && st.st_size > 0) {
+			properties_text = malloc(st.st_size + 1);
+			if (properties_text) {
+				n = read(fd, properties_text, st.st_size);
+				if (n > 0) {
+					properties_text[n] = 0;
+					for (p = properties_text; *p; p++)
+						if (*p == '\n' && p[1] == '#')
+							*p = 0;
+				}
+			}
+		}
+		close(fd);
+		break;
+	}
+	free(paths[0]);
+}
+
+/* the value of one key, or NULL: the file's format is key=value, one per line */
+static const char *properties_get(const char *key)
+{
+	size_t klen = strlen(key);
+	char *line, *next, *eq, *end;
+
+	if (!properties_text)
+		return NULL;
+	for (line = properties_text; line && *line; line = next) {
+		next = strchr(line, '\n');
+		if (next)
+			*next++ = 0;
+		while (*line == ' ' || *line == '\t')
+			line++;
+		if (*line == '#')
+			continue;
+		eq = strchr(line, '=');
+		if (!eq)
+			continue;
+		if ((size_t)(eq - line) != klen || memcmp(line, key, klen))
+			continue;
+		/* the last assignment wins, as a property set twice would */
+		end = eq + 1;
+		return end;
+	}
+	return NULL;
+}
+
+/* report a key the file does not carry, once per run */
+static void properties_report_missing(const char *key)
+{
+	size_t i;
+
+	for (i = 0; i < properties_missing_n; i++)
+		if (!strcmp(properties_missing[i], key))
+			return;
+	properties_missing = realloc(properties_missing,
+				     (properties_missing_n + 1) * sizeof(*properties_missing));
+	if (!properties_missing)
+		return;
+	properties_missing[properties_missing_n++] = strdup(key);
+	log_msg("rpc: property %s is not in %s (answering empty)", key,
+		properties_file);
 }
 
 static char *rstrip_slash(const char *p)
@@ -2136,6 +2243,23 @@ static int fs_packet(const unsigned char *pkt, size_t len, struct buf **out)
 				log_msg("fs: unknown op 0x%x", opc);
 				res_u32(&r, E_PARAM);
 			}
+			/*
+			 * The result the modem was given, in -v mode: the code and,
+			 * when the reply carries one, the first result word, which is
+			 * what an FS error number is. Together with the paths logged
+			 * above this ties a modem assert to the request behind it.
+			 */
+			if (verbose && r.n > 0) {
+				const char *nm = fs_op_name(opc) ?: "?";
+				const struct buf *it = &r.items[0];
+
+				if (it->len >= 4)
+					log_msg("fs %s -> %u result, code 0x%x",
+						nm, r.n, get_u32(it->p));
+				else
+					log_msg("fs %s -> %u result, no code",
+						nm, r.n);
+			}
 		}
 		free(args);
 	}
@@ -2153,7 +2277,7 @@ static int fs_packet(const unsigned char *pkt, size_t len, struct buf **out)
  * while it runs, call at_tick() at least every 200 ms
  */
 struct at {
-	int active, fd, step;
+	int active, fd, step, opened;
 	double created, step_start, sent;
 	struct buf buf;
 };
@@ -2205,7 +2329,8 @@ static void at_finish(struct at *a)
 		FILE *f;
 
 		snprintf(path, sizeof(path), "%s/uevent",
-			 i < 0 ? "/sys/class/wwan/wwan0at0" : links[i]);
+			 i < 0 ? (at_port_uevent[0] ? at_port_uevent :
+				  "/sys/class/wwan/wwan0at0") : links[i]);
 		f = fopen(path, "we");
 		if (!f) {
 			log_msg("udev change: [Errno %d] %s: '%s'", errno, strerror(errno), path);
@@ -2256,14 +2381,71 @@ static void at_new(struct at *a)
 	*a = (struct at){ .active = 1, .fd = -1, .created = now_s() };
 }
 
+/*
+ * The modem's own AT port: a /dev/wwan*at0 whose device sits under
+ * 10209000.modem. The index is not fixed (another WWAN device may own wwan0), and
+ * the port is only ours if the driver created it, so the sysfs parent is what is
+ * matched -- not the name.
+ */
+static char *at_port_find(void)
+{
+	glob_t g;
+	size_t i;
+	char *found = NULL;
+
+	if (glob(AT_PORT_GLOB, 0, NULL, &g))
+		return NULL;
+	for (i = 0; i < g.gl_pathc; i++) {
+		char link[64], *linkpath, *slash;
+		char real[PATH_MAX];
+		const char *name = strrchr(g.gl_pathv[i], '/') + 1;
+
+		snprintf(link, sizeof(link), "/sys/class/wwan/%s/device", name);
+		linkpath = realpath(link, real);
+		if (!linkpath)
+			continue;
+		/* the modem's platform device is the parent of the WWAN device */
+		for (slash = linkpath; (slash = strchr(slash, '/')); slash++) {
+			if (!strncmp(slash, "/10209000.modem", 15)) {
+				found = strdup(g.gl_pathv[i]);
+				break;
+			}
+		}
+		if (found)
+			break;
+	}
+	globfree(&g);
+	return found;
+}
+
 /* open the port; 0 while udev has not made the node yet */
 static int at_start(struct at *a)
 {
-	a->fd = open(AT_PORT, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+	static char *port;
+
+	if (!port)
+		port = at_port_find();
+	if (!port) {
+		if (now_s() - a->created < 10)
+			return 0;
+		log_msg("AT port did not appear (no %s under 10209000.modem)",
+			AT_PORT_GLOB);
+		at_finish(a);
+		return 1;
+	}
+	if (!a->opened) {
+		const char *base = strrchr(port, '/') + 1;
+
+		snprintf(at_port_uevent, sizeof(at_port_uevent),
+			 "/sys/class/wwan/%s/uevent", base);
+		log_msg("AT port %s", port);
+	}
+	a->fd = open(port, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+	a->opened = 1;
 	if (a->fd < 0) {
 		if (now_s() - a->created < 10)
 			return 0;
-		log_msg("AT port did not appear");
+		log_msg("AT port %s did not open: %s", port, strerror(errno));
 		at_finish(a);
 		return 1;
 	}
@@ -2443,6 +2625,7 @@ int main(int argc, char **argv)
 	}
 	if (optind < argc)
 		usage(2);
+	properties_load(root);
 	z = py_join(root, drive('Z'));
 	if (!is_dir(z)) {
 		fprintf(stderr, "no NVRAM in %s (run rosemary-modem-nvram-import)\n", root);
