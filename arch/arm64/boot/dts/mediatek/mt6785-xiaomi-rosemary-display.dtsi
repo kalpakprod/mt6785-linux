@@ -3,3 +3,4 @@
  * Poco M5s (rosemary): board nodes of the display area (poco-m5s/plan-full-phone.md).
  * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
  */
+
