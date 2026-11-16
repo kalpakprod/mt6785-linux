@@ -9,6 +9,8 @@
 #include <linux/iopoll.h>
 #include <linux/irq.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
@@ -44,7 +46,21 @@
 #define VM_DONE_INT_FLAG		BIT(3)
 #define EXT_TE_RDY_INT_FLAG		BIT(4)
 #define VM_CMD_DONE_INT_FLAG		BIT(5)
+#define BUFFER_UNDERRUN_INT_FLAG	BIT(12)
+#define INP_UNFINISH_INT_FLAG		BIT(14)
 #define DSI_BUSY			BIT(31)
+/* every event bit of DSI_INTSTA, the BUSY bit left out */
+#define DSI_INT_STATUS_MASK		GENMASK(15, 0)
+
+/*
+ * The interrupt set the vendor enables on MT6785, from _dsi_basic_irq_enable()
+ * in ddp_dsi.c: CMD_DONE, TE_READY, VM_DONE, BUFFER_UNDERRUN and INP_UNFINISH,
+ * plus RD_RDY which it arms around reads and which we keep on for DCS reads.
+ * Field names from ddp_reg_dsi.h's FLD_*_INT_EN.
+ */
+#define MT6785_DSI_INTEN	(LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | \
+				 TE_RDY_INT_FLAG | VM_DONE_INT_FLAG | \
+				 BUFFER_UNDERRUN_INT_FLAG | INP_UNFINISH_INT_FLAG)
 
 #define DSI_CON_CTRL		0x10
 #define DSI_RESET			BIT(0)
@@ -234,6 +250,7 @@ struct mtk_dsi_driver_data {
 	bool needs_mem_conti;
 	bool has_hstx_cklp_auto;
 	bool vm_cmd_writes;
+	bool vendor_inten;
 };
 
 struct mtk_dsi {
@@ -262,6 +279,7 @@ struct mtk_dsi {
 	bool enabled;
 	bool lanes_ready;
 	u32 irq_data;
+	unsigned int irq_count;
 	wait_queue_head_t irq_wait_queue;
 	const struct mtk_dsi_driver_data *driver_data;
 };
@@ -677,6 +695,9 @@ static void mtk_dsi_set_interrupt_enable(struct mtk_dsi *dsi)
 {
 	u32 inten = LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | VM_DONE_INT_FLAG;
 
+	if (dsi->driver_data->vendor_inten)
+		inten = MT6785_DSI_INTEN;
+
 	writel(inten, dsi->regs + DSI_INTEN);
 }
 
@@ -764,8 +785,9 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 		status = readl(dsi->regs + DSI_INTSTA);
 		if (status & irq_flag) {
 			dev_warn_once(dsi->host.dev,
-				      "dsi completion 0x%08x seen in INTSTA without an interrupt\n",
-				      status & irq_flag);
+				      "dsi completion 0x%08x seen in INTSTA without an interrupt (irq count %u, INTEN 0x%08x)\n",
+				      status & irq_flag, dsi->irq_count,
+				      readl(dsi->regs + DSI_INTEN));
 			mtk_dsi_mask(dsi, DSI_INTSTA, status & irq_flag, 0);
 			return 1;
 		}
@@ -792,7 +814,13 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 	u32 flag = LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | VM_DONE_INT_FLAG;
 	unsigned int i;
 
-	status = readl(dsi->regs + DSI_INTSTA) & flag;
+	dsi->irq_count++;
+	/*
+	 * Read every event bit, not just the ones we wait on: with the vendor's
+	 * wider enable set an unhandled bit would keep a level-triggered line
+	 * asserted and the interrupt would storm. Wake on our own flags only.
+	 */
+	status = readl(dsi->regs + DSI_INTSTA) & DSI_INT_STATUS_MASK;
 
 	if (status) {
 		/*
@@ -818,7 +846,7 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 					     tmp);
 
 		mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
-		mtk_dsi_irq_data_set(dsi, status);
+		mtk_dsi_irq_data_set(dsi, status & flag);
 		wake_up_interruptible(&dsi->irq_wait_queue);
 	}
 
@@ -1454,6 +1482,63 @@ static const struct mipi_dsi_host_ops mtk_dsi_ops = {
 	.transfer = mtk_dsi_host_transfer,
 };
 
+/*
+ * One-shot diagnostic of the interrupt path, asked for on trial 10: the sysirq
+ * polarity bit that the mt6577-sysirq chip programs for the DSI's SPI, the GIC's
+ * two-bit trigger configuration for the same SPI, the INTEN value we wrote and
+ * the interrupt count at this point. All three are read from the nodes the device
+ * tree gives us, and failures are silent: this must never be the reason a probe
+ * fails.
+ */
+#define MTK_SYSIRQ_SPI_PER_WORD	32
+#define GIC_ICFGR_SPI_PER_WORD	16
+
+static void mtk_dsi_report_irq_setup(struct mtk_dsi *dsi)
+{
+	struct device_node *np = dsi->host.dev->of_node;
+	struct device_node *sysirq, *gic;
+	void __iomem *base;
+	u32 word, bit, val;
+	int irq = platform_get_irq(to_platform_device(dsi->host.dev), 0);
+
+	if (!np)
+		return;
+
+	sysirq = of_irq_find_parent(np);
+	if (sysirq && of_device_is_compatible(sysirq, "mediatek,mt6577-sysirq")) {
+		base = of_iomap(sysirq, 0);
+		if (base) {
+			word = 260 / MTK_SYSIRQ_SPI_PER_WORD;
+			bit = 260 % MTK_SYSIRQ_SPI_PER_WORD;
+			val = readl_relaxed(base + word * 4);
+			dev_info(dsi->host.dev,
+				 "sysirq: SPI 260 polarity word %u = 0x%08x, bit %u = %u (1 means level-low inverted to level-high for the GIC)\n",
+				 word, val, bit, !!(val & BIT(bit)));
+			iounmap(base);
+		}
+
+		gic = of_irq_find_parent(sysirq);
+		if (gic) {
+			base = of_iomap(gic, 0);
+			if (base) {
+				/* GICD_ICFGR0 + n*4, two bits per SPI; bit 1 = edge */
+				word = 0xc00 + (260 / GIC_ICFGR_SPI_PER_WORD) * 4;
+				bit = ((260 % GIC_ICFGR_SPI_PER_WORD) / 2) * 2;
+				val = readl_relaxed(base + word);
+				dev_info(dsi->host.dev,
+					 "gic: SPI 260 ICFGR 0x%03x = 0x%08x, field bits %u:%u = 0x%x (0 = level)\n",
+					 word, val, bit + 1, bit, (val >> bit) & 0x3);
+				iounmap(base);
+			}
+		}
+	}
+
+	dev_info(dsi->host.dev,
+		 "irq %d: INTEN 0x%08x (vendor mask 0x%08x), count %u at probe\n",
+		 irq, readl(dsi->regs + DSI_INTEN), (u32)MT6785_DSI_INTEN,
+		 dsi->irq_count);
+}
+
 static int mtk_dsi_probe(struct platform_device *pdev)
 {
 	struct mtk_dsi *dsi;
@@ -1513,6 +1598,8 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 		mipi_dsi_host_unregister(&dsi->host);
 		return dev_err_probe(&pdev->dev, ret, "Failed to request DSI irq\n");
 	}
+
+	mtk_dsi_report_irq_setup(dsi);
 
 	dsi->bridge.of_node = dev->of_node;
 	dsi->bridge.type = DRM_MODE_CONNECTOR_DSI;
@@ -1579,6 +1666,7 @@ static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
 	.needs_mem_conti = true,
 	.has_hstx_cklp_auto = true,
 	.vm_cmd_writes = true,
+	.vendor_inten = true,
 };
 
 static const struct mtk_dsi_driver_data mt8186_dsi_driver_data = {
