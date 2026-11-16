@@ -132,10 +132,40 @@ static void ap_mdsrc_req(struct ccci_md *md, bool on)
  * unlock. The MTCMOS gate itself (0x318, 0x3b0 and the bus protection) belongs
  * to the genpd driver and is not written here.
  */
-static int md_power_seq_prepare(struct ccci_md *md)
+/*
+ * The two halves of the modem's power state, kept apart because the vendor keeps
+ * them apart and the order between them matters.
+ *
+ * Vendor md_cd_power_on() for this SoC (mt6785/md_sys1_platform.c:705-770) is, in
+ * this order: the PMIC (:713), then the modem's 26 MHz source request
+ * INFRA_AO_MD_SRCCLKENA low byte 0x21 (:727-733), then the MTCMOS gate (:744-745).
+ * md_cd_power_off() (:794-828) is the same three steps backwards: the gate first
+ * (:809), then srclkena (:812-818), then the PMIC (:821-828).
+ *
+ * The AP's own clock request to the modem -- the SMC in spm_ap_mdsrc_req() plus its
+ * ack poll, base/power/spm/mt6785/mtk_spm_utils.c:64-120 -- belongs to that same
+ * middle step: the vendor sets it while the modem is powered and holds it until the
+ * power-off.
+ *
+ * Splitting them here is what lets the boot keep the vendor's order without ever
+ * touching the rails while the domain is on: the clock can be asked for with the
+ * domain live, the rails cannot.
+ */
+static void md_rails_release(struct ccci_md *md)
+{
+	if (!md->rails_on)
+		return;
+	md->rails_on = false;
+	regulator_disable(md->vmodem);
+	regulator_disable(md->vsram_md);
+}
+
+static int md_rails_prepare(struct ccci_md *md)
 {
 	int ret;
 
+	if (md->rails_on)
+		return 0;
 	ret = regulator_set_voltage(md->vsram_md, VSRAM_MD_UV, VSRAM_MD_UV);
 	if (ret)
 		dev_warn(md->dev, "vsram_md voltage: %d\n", ret);
@@ -147,6 +177,18 @@ static int md_power_seq_prepare(struct ccci_md *md)
 		regulator_disable(md->vsram_md);
 		return dev_err_probe(md->dev, ret, "vmodem\n");
 	}
+	md->rails_on = true;
+	return 0;
+}
+
+static void md_clock_request(struct ccci_md *md, bool on)
+{
+	if (!on) {
+		writel(readl(md->infra + INFRA_MD_SRCCLKENA) & ~0xff,
+		       md->infra + INFRA_MD_SRCCLKENA);
+		ap_mdsrc_req(md, false);
+		return;
+	}
 	ap_mdsrc_req(md, true);
 	/* the modem's 26 MHz source clock request: low byte 0x21 */
 	writel((readl(md->infra + INFRA_MD_SRCCLKENA) & ~0xff) | 0x21,
@@ -154,16 +196,24 @@ static int md_power_seq_prepare(struct ccci_md *md)
 	/* SPM register control unlock, then srclken_o1 for the 32 kHz request */
 	writel(SPM_PROJECT_KEY | 1, md->spm + SPM_POWERON_CONFIG_EN);
 	writel(readl(md->spm + SPM_CLK_CON) | BIT(21), md->spm + SPM_CLK_CON);
+}
+
+/* the vendor's power-on: rails and clock, then the gate by the caller */
+static int md_power_seq_prepare(struct ccci_md *md)
+{
+	int ret = md_rails_prepare(md);
+
+	if (ret)
+		return ret;
+	md_clock_request(md, true);
 	return 0;
 }
 
+/* the vendor's power-off: clock and rails, the gate already off by the caller */
 static void md_power_seq_release(struct ccci_md *md)
 {
-	writel(readl(md->infra + INFRA_MD_SRCCLKENA) & ~0xff,
-	       md->infra + INFRA_MD_SRCCLKENA);
-	ap_mdsrc_req(md, false);
-	regulator_disable(md->vmodem);
-	regulator_disable(md->vsram_md);
+	md_clock_request(md, false);
+	md_rails_release(md);
 }
 
 /*
@@ -420,21 +470,6 @@ static int clear_smem(struct ccci_md *md)
 
 /* ---- the boot state machine ------------------------------------------- */
 
-/**
- * md_domain_on() - power the modem's MTCMOS domain and prove it is on
- * @md: the modem
- *
- * Taking the runtime-PM reference is not the same as having a powered domain.
- * Trial 8a booted the modem at 11 s, early in the boot, and the domain read
- * OFF with runtime PM reporting "active": genpd's cached status said on, its
- * power_on() returned early on that belief ("if (genpd_status_on(genpd))
- * return 0", drivers/pmdomain/core.c:1043), and the hardware was never asked.
- * A reference alone therefore proves nothing, so this asks twice: take the
- * reference, then read PWR_STATUS bit 0 -- the md domain's own bit -- and if it
- * is clear, force the domain down and up again through genpd itself, and read
- * again. If it still reads clear the boot says so with the value instead of
- * failing 30 s later at the handshake.
- */
 /*
  * One line per attempt, with the registers that decide it, so a trial can be read
  * instead of argued about. PWR_CON is the domain's own control register (0x318),
@@ -488,57 +523,6 @@ static void md_step(struct ccci_md *md, const char *step)
 		step, (u32)(sta & BIT(0)), sta, con);
 }
 
-static int md_domain_on(struct ccci_md *md)
-{
-	unsigned int status = 0;
-	int ret;
-
-	md_domain_trace(md, "before get");
-	ret = pm_runtime_resume_and_get(md->dev);
-	if (ret) {
-		md_domain_trace(md, "get failed");
-		return ret;
-	}
-	md_domain_trace(md, "after get");
-
-	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
-	if (status & BIT(0))
-		return 0;
-
-	dev_warn(md->dev,
-		 "the md domain is off while runtime PM reports it on (%#x): powering it again\n",
-		 status);
-	/*
-	 * Drop the reference so genpd really suspends the domain, then take it
-	 * again. pm_runtime_put_sync() waits for the suspend, so the second
-	 * resume cannot be answered by the same stale belief that caused this.
-	 */
-	pm_runtime_put_sync(md->dev);
-	usleep_range(1000, 2000);
-	ret = pm_runtime_resume_and_get(md->dev);
-	if (ret)
-		return ret;
-
-	status = 0;
-	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
-	if (!(status & BIT(0))) {
-		/*
-		 * genpd reported success and the hardware says otherwise. Record what
-		 * the hardware says after a short wait too: if the bit appears on its
-		 * own the domain was still settling, and if it does not the power-on
-		 * genuinely did not take. Both are facts a trial can use; neither is
-		 * assumed here.
-		 */
-		msleep(20);
-		md_domain_trace(md, "20ms later");
-		pm_runtime_put_sync(md->dev);
-		md_domain_trace(md, "after put");
-		return dev_err_probe(md->dev, -EIO,
-				     "the md domain will not power on (PWR_STATUS %#x)\n",
-				     status);
-	}
-	return 0;
-}
 
 static int md_boot(struct ccci_md *md)
 {
@@ -619,29 +603,27 @@ static int md_boot(struct ccci_md *md)
 	 * Which sub-step inside power_seq_prepare does it is not measured; what is
 	 * measured is that the vendor never performs that step with the gate on,
 	 * and this driver now does not either.
+	 *
+	 * The domain is already powered: the probe holds its reference (see
+	 * rosemary_ccci_probe()), so genpd has not powered it off since, and the
+	 * modem is in the state the loader left it in.
+	 *
+	 * The 26 MHz request and srclkena belong to that powered state, and they are
+	 * set BEFORE anything tries to quiesce the modem's bus: the MTCMOS
+	 * bus-protection acknowledgement comes from the modem side, so a modem whose
+	 * clock request is missing cannot acknowledge it. Trial 16 measured exactly
+	 * that: PROTECTEN bit 7 set, PROTECT_STA never matching, scpsys returning
+	 * -ETIMEDOUT after its one-second poll (MTK_POLL_TIMEOUT,
+	 * drivers/pmdomain/mediatek/mtk-pm-domains.c:38) -- where the vendor waits for
+	 * the same bit without any timeout at all (clk-mt6785-pg.c:1010-1020).
 	 */
-	if (md->first_boot) {
-		ret = md_domain_on(md);
-		if (ret) {
-			dev_err(md->dev, "cannot power the md domain: %d\n", ret);
-			goto err_clk;
-		}
-	} else {
-		ret = md_power_seq_prepare(md);
-		if (ret)
-			goto err_clk;
-		ret = md_domain_on(md);
-		if (ret) {
-			dev_err(md->dev, "cannot power the md domain: %d\n", ret);
-			goto err_seq;
-		}
-	}
+	md_clock_request(md, true);
 
 	if (md->first_boot) {
 		ret = md_first_boot_check(md);
 		md_step(md, "brom_check");
 		if (ret)
-			goto err_pm;
+			goto err_seq;
 		/*
 		 * The loader ran the boot ROM once; the modem is started again from
 		 * here, and the vendor restarts it by powering it down and up again,
@@ -674,8 +656,17 @@ static int md_boot(struct ccci_md *md)
 		pm_runtime_put_sync(md->dev);
 		gate_off_bit = md_domain_is_on(md) ? 1 : 0;
 		md_step(md, "restart: gate off");
+		/*
+		 * The vendor's power-off, in its order: gate (done above), then
+		 * srclkena, then the PMIC (mt6785/md_sys1_platform.c:809-828). The
+		 * rails are released only here, with the gate already off, which is
+		 * the one condition this driver must not break -- trial 15 measured
+		 * the modem domain dropping when they were re-applied under a live
+		 * domain.
+		 */
 		md_power_seq_release(md);
 		md_step(md, "restart: supplies off");
+		/* ... and its power-on: PMIC, srclkena, then the gate again (:713-745) */
 		ret = md_power_seq_prepare(md);
 		if (ret)
 			goto err_clk;
@@ -694,6 +685,15 @@ static int md_boot(struct ccci_md *md)
 		if (!md_domain_is_on(md))
 			dev_warn(md->dev,
 				 "the md domain did not come back on; the vendor's restart could not run here\n");
+	} else {
+		/*
+		 * Not the loader's boot: nothing has powered this modem, so the rails
+		 * are ours to bring up. This is the vendor's md_cd_power_on(), with the
+		 * gate already held by the probe's reference.
+		 */
+		ret = md_power_seq_prepare(md);
+		if (ret)
+			goto err_clk;
 	}
 	md_dump_state(md, "before release");
 
@@ -745,12 +745,6 @@ static int md_boot(struct ccci_md *md)
 	}
 	return 0;
 
-err_pm:
-	/*
-	 * A boot that already took the domain reference must give it back before
-	 * the supplies go away, or the domain stays powered with nothing using it.
-	 */
-	pm_runtime_put_sync(md->dev);
 err_seq:
 	md_power_seq_release(md);
 err_clk:
@@ -934,8 +928,25 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret, "cannot power the md domain\n");
 	md_domain_trace(md, "probe after get");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
-	pm_runtime_put_sync(dev);
-	md_domain_trace(md, "probe after put");
+	/*
+	 * The reference is HELD from here until the modem is stopped, on purpose.
+	 *
+	 * Trial 16 measured what happens when it is not: the provider was synced at
+	 * 26.87 s, the domain had no user, and genpd powered it off by itself while
+	 * the modem was still in the state the loader left it in -- and the MTCMOS
+	 * bus-protection acknowledgement never came (PROTECT_STA 0x16181000 against
+	 * PROTECTEN bit 7), so scpsys returned -ETIMEDOUT and left the bit set for
+	 * every later attempt.
+	 *
+	 * genpd will not power off a domain whose device is in use
+	 * (genpd_power_off() returns when a device is not suspended,
+	 * drivers/pmdomain/core.c), so holding the reference is what keeps the modem's
+	 * domain alive between probe and the boot -- exactly what the vendor does with
+	 * clk_prepare_enable() in md_cd_power_on() and clk_disable_unprepare() in
+	 * md_cd_power_off() (mt6785/md_sys1_platform.c:744-745, :809).
+	 */
+	dev_info(dev, "rosemary_ccci: M0 md power status %u (reference held until stop)\n",
+		 (u32)(status & BIT(0)));
 	/* BIT() is unsigned long, so the expression is narrowed for the format */
 	dev_info(dev, "rosemary_ccci: M0 md power status %u\n",
 		 (u32)(status & BIT(0)));
@@ -1019,8 +1030,34 @@ static const struct of_device_id rosemary_ccci_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, rosemary_ccci_of_match);
 
+/**
+ * ccci_md_stop() - give the modem's domain, clock request and rails back
+ * @md: the modem
+ *
+ * The mirror of the probe and the boot: the reference the probe took is put back,
+ * then the 26 MHz request and the rails go, in the vendor's power-off order with
+ * the gate already off (mt6785/md_sys1_platform.c:809-828).
+ */
+void ccci_md_stop(struct ccci_md *md)
+{
+	pm_runtime_put_sync(md->dev);
+	md_power_seq_release(md);
+	ccci_dpmaif_stop(md);
+	clk_bulk_disable_unprepare(md->num_clks, md->clks);
+	ccci_set_state(md, MD_STATE_OFF);
+}
+
+static void rosemary_ccci_remove(struct platform_device *pdev)
+{
+	struct ccci_md *md = platform_get_drvdata(pdev);
+
+	if (md)
+		ccci_md_stop(md);
+}
+
 static struct platform_driver rosemary_ccci_driver = {
 	.probe = rosemary_ccci_probe,
+	.remove = rosemary_ccci_remove,
 	.driver = {
 		.name = "rosemary-ccci",
 		.dev_groups = ccci_groups,

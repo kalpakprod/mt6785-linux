@@ -385,6 +385,7 @@ struct ccci_md {
 
 	/* boot */
 	struct work_struct boot_work;
+	bool rails_on;		/* this driver enabled vmodem and vsram_md */
 	struct mutex lock;
 	enum ccci_state state;
 	bool first_boot;
@@ -471,6 +472,7 @@ void ccci_dpmaif_stop(struct ccci_md *md);
 void ccci_recv_control(struct ccci_md *md, const struct ccci_header *h,
 		       const void *pkt, size_t len);
 void ccci_ee_on_channel(struct ccci_md *md, unsigned int ch);
+void ccci_md_stop(struct ccci_md *md);
 void ccci_set_state(struct ccci_md *md, enum ccci_state state);
 
 #endif /* __ROSEMARY_CCCI_H */
