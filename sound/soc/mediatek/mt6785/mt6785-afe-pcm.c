@@ -1923,6 +1923,7 @@ static int mt6785_afe_runtime_resume(struct device *dev)
 	struct mtk_base_afe *afe = dev_get_drvdata(dev);
 	struct mt6785_afe_private *afe_priv = afe->platform_priv;
 	int ret;
+	int i;
 
 	ret = mt6785_afe_enable_clock(afe);
 	if (ret)
@@ -1934,9 +1935,28 @@ static int mt6785_afe_runtime_resume(struct device *dev)
 	regcache_cache_only(afe->regmap, false);
 	regcache_sync(afe->regmap);
 
+	/*
+	 * Route the memif period counters to the AP. AFE_IRQ_MCU_CON0 only
+	 * gates a counter; AFE_IRQ_MCU_EN decides which of them reach the MCU
+	 * interrupt line, and this generation powers up with that register
+	 * clear, so a stream without this write never gets a period interrupt.
+	 * The vendor's mt6785 irq data carries both registers per interrupt
+	 * (irq_en_shift in AFE_IRQ_MCU_CON0, irq_ap_en_shift in
+	 * AFE_IRQ_MCU_EN) and IRQn_MCU_EN_SFT equals IRQn_MCU_ON_SFT for every
+	 * interrupt that has both, so the gate is set from the same shift.
+	 */
+	for (i = 0; i < afe->irqs_size; i++) {
+		const struct mtk_base_irq_data *irq_data = afe->irqs[i].irq_data;
+
+		if (irq_data->irq_en_shift < 0)
+			continue;
+
+		regmap_update_bits(afe->regmap, AFE_IRQ_MCU_EN,
+				   BIT(irq_data->irq_en_shift),
+				   BIT(irq_data->irq_en_shift));
+	}
+
 	/* enable audio sys DCM for power saving */
-	regmap_update_bits(afe_priv->infracfg,
-			   PERI_BUS_DCM_CTRL, 0x1 << 29, 0x1 << 29);
 	regmap_update_bits(afe->regmap, AUDIO_TOP_CON0, 0x1 << 29, 0x1 << 29);
 
 	/* force cpu use 8_24 format when writing 32bit data */
