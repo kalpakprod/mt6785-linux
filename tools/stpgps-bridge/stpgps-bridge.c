@@ -160,6 +160,54 @@ static int send_bytes(int fd, const char *spec)
 	return 0;
 }
 
+/*
+ * Capture the first bytes the engine sends, in a form a human can read and a
+ * script can decode. Stage 5 of the phone plan needs exactly one answer - what
+ * the engine says first, PMTK010 or binary - and until now that needed a
+ * hexdump piped from a device that also has to stay owned by the bridge. One
+ * session now yields both the capture and the running bridge.
+ */
+static void capture_open(const char *path, const char *dev, long bytes)
+{
+	FILE *f = fopen(path, "w");
+
+	if (!f) {
+		fprintf(stderr, "stpgps-bridge: capture %s: %s\n", path,
+			strerror(errno));
+		exit(1);
+	}
+	fprintf(f, "# stpgps-bridge capture of %s, first %ld bytes\n", dev, bytes);
+	fprintf(f, "# <ms since start> <bytes, hex>\n");
+	fclose(f);
+}
+
+static void capture_chunk(const char *path, long long ms,
+			  const unsigned char *buf, size_t len)
+{
+	FILE *f = fopen(path, "a");
+	size_t off = 0;
+
+	if (!f)
+		return;
+#ifdef STPGPS_NAIVE_FRAMING
+	/* The planted fault for the capture test: lose the first byte. */
+	if (len > 0) {
+		buf++;
+		len--;
+	}
+#endif
+	while (off < len) {
+		size_t i, n = len - off > 16 ? 16 : len - off;
+
+		fprintf(f, "%lld ", ms);
+		for (i = 0; i < n; i++)
+			fprintf(f, " %02x", buf[off + i]);
+		fprintf(f, "\n");
+		off += n;
+	}
+	fclose(f);
+}
+
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -172,6 +220,8 @@ static void usage(const char *prog)
 		"  --send STR        bytes to send once after open, C escapes ok\n"
 		"  --once            exit after the first silence timeout\n"
 		"  --max-lines N     exit after N republished lines\n"
+		"  --capture PATH    write the first bytes the engine sends, hex\n"
+		"  --capture-bytes N how many bytes to capture (default 256)\n"
 		"  --quiet           no status lines on stderr\n"
 		"  --help            this text\n",
 		prog);
@@ -186,15 +236,20 @@ int main(int argc, char **argv)
 		{ "send", required_argument, NULL, 'S' },
 		{ "once", no_argument, NULL, '1' },
 		{ "max-lines", required_argument, NULL, 'm' },
+		{ "capture", required_argument, NULL, 'c' },
+		{ "capture-bytes", required_argument, NULL, 'C' },
 		{ "quiet", no_argument, NULL, 'q' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
 	const char *dev_path = "/dev/stpgps";
+	long long start_ms;
 	const char *pty_link = "/run/stpgps/nmea";
 	const char *send_spec = NULL;
+	const char *capture_path = NULL;
 	long silence_ms = 1000;
 	long max_lines = -1;
+	long capture_left = 0;
 	int once = 0, quiet = 0;
 	struct sigaction sa;
 	struct repub repub;
@@ -221,6 +276,12 @@ int main(int argc, char **argv)
 			break;
 		case 'm':
 			max_lines = strtol(optarg, NULL, 10);
+			break;
+		case 'c':
+			capture_path = optarg;
+			break;
+		case 'C':
+			capture_left = strtol(optarg, NULL, 10);
 			break;
 		case 'q':
 			quiet = 1;
@@ -255,6 +316,7 @@ int main(int argc, char **argv)
 	sigaction(SIGTERM, &sa, NULL);
 	signal(SIGPIPE, SIG_IGN);
 
+	start_ms = now_ms();
 	master = make_pty(&slave, &slave_fd);
 	if (master < 0) {
 		fprintf(stderr, "stpgps-bridge: cannot create a pty: %s\n",
@@ -269,6 +331,12 @@ int main(int argc, char **argv)
 			slave, pty_link);
 
 	repub_init(&repub);
+
+	if (capture_path) {
+		if (capture_left <= 0)
+			capture_left = 256;
+		capture_open(capture_path, dev_path, capture_left);
+	}
 
 	dev_fd = -1;
 	while (!g_stop) {
@@ -330,6 +398,21 @@ int main(int argc, char **argv)
 				if (n == 0)
 					break;
 				last_rx = now_ms();
+				if (capture_path && capture_left > 0) {
+					size_t take = (size_t)n;
+
+					if ((long)take > capture_left)
+						take = (size_t)capture_left;
+					capture_chunk(capture_path,
+						      now_ms() - start_ms,
+						      (const unsigned char *)rx,
+						      take);
+					capture_left -= (long)take;
+					if (capture_left == 0)
+						fprintf(stderr,
+							"stpgps-bridge: capture complete, %s\n",
+							capture_path);
+				}
 				repub_feed(&repub, rx, (size_t)n, emit_line,
 					   &master);
 				if (max_lines >= 0 &&

@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -167,12 +168,54 @@ struct scenario {
 	int nframes;
 	int glue_last_two;
 	int split_middle;
+	int capture;
 };
+
+/*
+ * Decode a capture file back into bytes: sheet lines start with '#', every other
+ * line is "<ms> <hex pairs>". What comes out must equal the stream the device
+ * was given, which is the only property the capture has to have to be trusted
+ * as evidence of what the engine sent.
+ */
+static size_t decode_capture(const char *path, char *out, size_t cap)
+{
+	FILE *f = fopen(path, "r");
+	char line[4096];
+	size_t len = 0;
+
+	if (!f)
+		return 0;
+	while (fgets(line, sizeof(line), f)) {
+		char *p;
+
+		if (line[0] == '#')
+			continue;
+		p = strchr(line, ' ');
+		if (!p)
+			continue;
+		while (*p) {
+			while (*p == ' ')
+				p++;
+			if (!isxdigit((unsigned char)p[0]) ||
+			    !isxdigit((unsigned char)p[1]))
+				break;
+			if (len + 1 >= cap)
+				break;
+			out[len++] = (char)strtol((char[]){ p[0], p[1], 0 },
+						  NULL, 16);
+			p += 2;
+		}
+	}
+	fclose(f);
+	out[len] = '\0';
+	return len;
+}
 
 static int run_one(const struct scenario *sc, const char *bridge,
 		   int expect_pass)
 {
 	char dev_slave[256], link[256], got[BUF], want[BUF];
+	char capture[256], captured[BUF];
 	char maxl[16];
 	int dev_master = -1, dev_slave_fd = -1, out_fd, status, i, ok;
 	pid_t pid;
@@ -180,6 +223,10 @@ static int run_one(const struct scenario *sc, const char *bridge,
 	snprintf(link, sizeof(link), "/tmp/stpgps-bridge-test-%d.nmea",
 		 (int)getpid());
 	unlink(link);
+	snprintf(capture, sizeof(capture), "/tmp/stpgps-bridge-test-%d.capture",
+		 (int)getpid());
+	if (sc->capture)
+		unlink(capture);
 
 	if (mkpty(dev_slave, sizeof(dev_slave), &dev_master, &dev_slave_fd) != 0) {
 		fprintf(stderr, "FAIL %s: cannot create the device pty\n", sc->name);
@@ -198,6 +245,11 @@ static int run_one(const struct scenario *sc, const char *bridge,
 	if (pid == 0) {
 		/* No shell in between: the pid we kill must be the bridge, or a
 		 * leftover keeps the pty open and the harness never returns. */
+		if (sc->capture)
+			execl(bridge, bridge, "--dev", dev_slave, "--pty-link",
+			      link, "--silence-ms", "400", "--max-lines", maxl,
+			      "--quiet", "--capture", capture,
+			      "--capture-bytes", "4096", (char *)NULL);
 		execl(bridge, bridge, "--dev", dev_slave, "--pty-link", link,
 		      "--silence-ms", "400", "--max-lines", maxl, "--quiet",
 		      (char *)NULL);
@@ -262,10 +314,23 @@ static int run_one(const struct scenario *sc, const char *bridge,
 	ok = same_lines(want, got);
 
 	stop_child(pid, &status);
+	if (ok && sc->capture) {
+		size_t clen = decode_capture(capture, captured, sizeof(captured));
+
+		/* The capture is the raw stream, byte for byte: it is what a phone
+		 * log will be read as. */
+		ok = clen == strlen(want) && memcmp(captured, want, clen) == 0;
+		if (!ok)
+			fprintf(stderr,
+				"  capture: %zu bytes, stream: %zu bytes\n",
+				clen, strlen(want));
+	}
 	close(out_fd);
 	close(dev_master);
 	close(dev_slave_fd);
 	unlink(link);
+	if (sc->capture)
+		unlink(capture);
 
 	if (ok == expect_pass) {
 		printf("PASS %s%s\n", sc->name,
@@ -301,11 +366,18 @@ int main(int argc, char **argv)
 		.nframes = 2,
 		.glue_last_two = 1,
 	};
+	struct scenario cap = {
+		.name = "capture-file-equals-the-stream",
+		.frames = { f1, f2 },
+		.nframes = 2,
+		.capture = 1,
+	};
 
 	if (!faults) {
 		failures += run_one(&one, bridge, 1);
 		failures += run_one(&split, bridge, 1);
 		failures += run_one(&glue, bridge, 1);
+		failures += run_one(&cap, bridge, 1);
 	} else {
 		/*
 		 * The planted fault is a moved frame boundary: one sentence arrives
@@ -314,6 +386,18 @@ int main(int argc, char **argv)
 		 * that is what proves the passing runs above are not vacuous.
 		 */
 		failures += run_one(&split, bridge, 0);
+		/* Same idea for the capture: the naive build loses a byte, so the
+		 * decode must not match the stream and the harness must say so. */
+		{
+			struct scenario capf = {
+				.name = "capture-file-equals-the-stream",
+				.frames = { f1, f2 },
+				.nframes = 2,
+				.capture = 1,
+			};
+
+			failures += run_one(&capf, bridge, 0);
+		}
 	}
 
 	if (failures) {

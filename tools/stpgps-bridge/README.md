@@ -28,6 +28,12 @@ C, libc only, no threads. The phone build is static:
    GNSS session without a connsys power cycle is known to return `EIO`.
 5. `--send 'STR'` writes a byte sequence once after each open; this is how a
    proven start sequence will be injected without touching the code.
+6. `--capture PATH --capture-bytes N` records the first N bytes the engine sends
+   as `<ms> <hex bytes>` lines. One session then answers the open question
+   ("does the engine say `$PMTK010,001` first, or something binary?") while the
+   bridge keeps serving gpsd. The file is plain text, so it can be pasted into a
+   report as it is, and the host test decodes it back and requires it to equal
+   the stream byte for byte.
 
 ## What is proven, and from where
 
@@ -93,6 +99,7 @@ command line the moment one is proven.
 | `one-sentence-per-frame` | three sentences, one per write | all three republished, in order, unchanged |
 | `sentence-split-across-frames` | one sentence cut in half, 200 ms apart | still republished as one sentence |
 | `two-sentences-glued-in-one-frame` | two sentences in one write | republished as two sentences |
+| `capture-file-equals-the-stream` | two sentences, capture on | the capture decodes back to the same bytes |
 
 Both pty ends are put in raw mode by the harness; without that, a pty's line discipline would hold the
 first half of a sentence until its newline and the "split frame" scenario would silently test nothing.
@@ -100,15 +107,36 @@ first half of a sentence until its newline and the "split frame" scenario would 
 discards partial lines.)
 
 `make show-fault-fails` builds the same program with `-DSTPGPS_NAIVE_FRAMING`, which treats each read as a
-complete line and throws away any unterminated tail - the mistake a hand-written bridge actually makes -
-and requires the harness to reject it:
+complete line, throws away any unterminated tail - the mistake a hand-written bridge actually makes - and
+loses the first captured byte, and requires the harness to reject both:
 
     FAIL sentence-split-across-frames: expected the published stream to match the engine's
     EXPECTED: the broken bridge failed the test
+
+## Installing on the phone
+
+    install -Dm755 stpgps-bridge-aarch64-linux-musl /usr/local/bin/stpgps-bridge
+    install -Dm644 stpgps-bridge.service /etc/systemd/system/stpgps-bridge.service
+    install -Dm644 stpgps-bridge-gpsd.conf \
+        /etc/systemd/system/gpsd.service.d/stpgps-bridge.conf
+    systemctl daemon-reload
+    systemctl enable --now stpgps-bridge
+    systemctl restart gpsd
+
+The binary is static, so nothing else has to be installed and no library version
+on the phone matters. `/run/stpgps/nmea` appears once the bridge is up; `cgps`
+or `gpsmon` shows whether gpsd found it.
+
+To answer "what does the engine say first" in the same session:
+
+    stpgps-bridge --dev /dev/stpgps --pty-link /run/stpgps/nmea \
+        --capture /run/stpgps/first-bytes.txt --capture-bytes 256
 
 ## Files
 
     stpgps-bridge.c   device handling, pty publication, reopen loop, --send
     republish.c/.h    byte stream -> NMEA lines, no syscalls, unit-testable
-    test-bridge.c     pty-pair harness, three scenarios plus the fault mode
+    test-bridge.c     pty-pair harness, four scenarios plus the fault mode
+    stpgps-bridge.service   systemd unit for the phone
+    stpgps-bridge-gpsd.conf gpsd drop-in that points gpsd at the pty
     Makefile          host build, zig static aarch64 build, tests
