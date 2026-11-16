@@ -646,9 +646,6 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to request irq %d\n", irq);
 
-	/* after the request, so the polarity this irq set is the one read */
-	mtk_ovl_report_irq_setup(dev, irq);
-
 	pm_runtime_enable(dev);
 
 	ret = component_add(dev, &mtk_disp_ovl_component_ops);
