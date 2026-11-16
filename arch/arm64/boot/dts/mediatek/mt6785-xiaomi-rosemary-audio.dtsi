@@ -321,11 +321,14 @@
  * Addresses, reset pin and channels are the phone's own [L: device-tree.dts,
  * i2c9@11015000, aw87xxx_pa_5B@5b and aw87xxx_pa_58@58; the vendor board file
  * cust_aw87xxx_audio.dtsi says the same]:
- *   0x5b  reset-gpio GPIO24, pa-channel 0
- *   0x58  no reset gpio,      pa-channel 1
- * The part itself is detected by the driver from register 0x00, so no part
- * name is claimed here: the profile files are named with the id the chip
- * reports and with its channel.
+ *   0x5b  reset-gpio GPIO24, pa-channel 0  - the bottom speaker
+ *   0x58  no reset gpio,      pa-channel 1  - the earpiece
+ * The speaker is the one on channel 0: the vendor machine driver loads the
+ * speaker scene onto AW87XXX_RIGHT_CHANNEL, which that enum sets to 0, and
+ * the earpiece scene onto AW87XXX_LEFT_CHANNEL = 1. The part itself is
+ * detected by the driver from register 0x00, so no part name is claimed here:
+ * the profile files are named with the id the chip reports and with its
+ * channel.
  *
  * sound-name-prefix makes the two amplifiers' DAPM widgets distinguishable in
  * the card's routes ("Spk Amp" and "Rcv Amp").
@@ -334,18 +337,18 @@
 	status = "okay";
 	clock-frequency = <400000>;		/* [L] */
 
-	spk_amp: amplifier@58 {
-		compatible = "awinic,aw87xxx";
-		reg = <0x58>;
-		awinic,pa-channel = <1>;		/* [L] */
-		sound-name-prefix = "Spk";
-	};
-
-	rcv_amp: amplifier@5b {
+	spk_amp: amplifier@5b {
 		compatible = "awinic,aw87xxx";
 		reg = <0x5b>;
 		reset-gpios = <&pio 24 GPIO_ACTIVE_LOW>;	/* [L] */
 		awinic,pa-channel = <0>;		/* [L] */
+		sound-name-prefix = "Spk";
+	};
+
+	rcv_amp: amplifier@58 {
+		compatible = "awinic,aw87xxx";
+		reg = <0x58>;
+		awinic,pa-channel = <1>;		/* [L] */
 		sound-name-prefix = "Rcv";
 	};
 };
