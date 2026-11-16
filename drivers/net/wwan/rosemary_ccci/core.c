@@ -350,12 +350,18 @@ static void md_dump_state(struct ccci_md *md, const char *when)
 
 	if (!md->md_mem_base)
 		return;
-	img = devm_ioremap(md->dev, md->md_mem_base, 32);
+	/*
+	 * The modem's DRAM window is ordinary system memory, already mapped by
+	 * the linear map: ioremap() refuses it ("ioremap attempted on RAM pfn")
+	 * and the trial printed a WARN instead of the image. memremap() is the
+	 * call that is meant for RAM, and it returns the linear-map address.
+	 */
+	img = memremap(md->md_mem_base, 32, MEMREMAP_WB);
 	if (!img)
 		return;
 	dev_info(md->dev, "%s: md image at %#llx: %*phN\n", when,
 		 md->md_mem_base, 32, img);
-	devm_iounmap(md->dev, img);
+	memunmap(img);
 }
 
 /**
