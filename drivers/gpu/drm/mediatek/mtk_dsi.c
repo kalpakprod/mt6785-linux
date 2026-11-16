@@ -1560,8 +1560,8 @@ static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
 	else
 		src_addr = &read_data[1];
 
-	recv_cnt = min(recv_cnt, 10);
-	recv_cnt = min(recv_cnt, (ssize_t)msg->rx_len);
+	recv_cnt = min_t(ssize_t, recv_cnt, 10);
+	recv_cnt = min_t(ssize_t, recv_cnt, msg->rx_len);
 	if (recv_cnt > 0)
 		memcpy(msg->rx_buf, src_addr, recv_cnt);
 
