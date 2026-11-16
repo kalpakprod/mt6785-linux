@@ -515,6 +515,26 @@ static u32 mt6785_elf_segment_size(const struct firmware *fw, u32 paddr)
 	return 0;
 }
 
+/*
+ * A boot that never answers leaves nothing behind: the image loaded, the registers
+ * were writable, and then two seconds of silence. The core keeps its own state in
+ * the SCP block (vendor scp_reg.h:11-40, dumped by scp_A_dump_regs() there), and
+ * it distinguishes the two cases that matter: a PC/SP that never moved means the
+ * core is not executing at all (clock, reset), a PC inside or just past the image
+ * means it started and faulted (image layout, wrong load base).
+ */
+static void mt6785_scp_dump_regs(struct mtk_scp *scp)
+{
+	void __iomem *cfg = scp->cluster->reg_base;
+
+	dev_err(scp->dev, "core PC %#x LR %#x SP %#x PSP %#x\n",
+		readl(cfg + MT8183_SCP_DEBUG_PC), readl(cfg + MT8183_SCP_DEBUG_LR),
+		readl(cfg + MT8183_SCP_DEBUG_SP), readl(cfg + MT8183_SCP_DEBUG_PSP));
+	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
+		readl(cfg + MT8183_SCP_SLEEP_STATUS),
+		readl(cfg + MT8183_SCP_TO_HOST), readl(cfg + MT8183_HOST_TO_SCP));
+}
+
 static int mt6785_scp_after_load(struct mtk_scp *scp,
 				 const struct firmware *fw)
 {
@@ -882,6 +902,8 @@ static int scp_start(struct rproc *rproc)
 
 	if (ret == 0) {
 		dev_err(dev, "wait SCP initialization timeout!\n");
+		if (scp->data->scp_dump_regs)
+			scp->data->scp_dump_regs(scp);
 		ret = -ETIME;
 		goto stop;
 	}
@@ -1661,6 +1683,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_reset_assert = mt8183_scp_reset_assert,
 	.scp_reset_deassert = mt8183_scp_reset_deassert,
 	.scp_stop = mt8183_scp_stop,
+	.scp_dump_regs = mt6785_scp_dump_regs,
 	.scp_da_to_va = mt8192_scp_da_to_va,
 	.host_to_scp_reg = MT8183_HOST_TO_SCP,
 	.host_to_scp_int_bit = MT8183_HOST_IPC_INT_BIT,

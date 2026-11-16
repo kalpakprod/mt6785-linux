@@ -15,6 +15,13 @@
 #define MT8183_SW_RSTN			0x0
 #define MT8183_SW_RSTN_BIT		BIT(0)
 #define MT8183_SCP_TO_HOST		0x1C
+/* the core's own state, for a boot that never answers (vendor scp_reg.h:11-40) */
+#define MT8183_SCP_DEBUG_SP		0xA8
+#define MT8183_SCP_DEBUG_LR		0xAC
+#define MT8183_SCP_DEBUG_PSP		0xB0
+#define MT8183_SCP_DEBUG_PC		0xB4
+#define MT8183_SCP_SLEEP_STATUS		0x114
+#define MT8183_SCP_BUS_RESOURCE		0x08
 #define MT8183_SCP_IPC_INT_BIT		BIT(0)
 #define MT8183_SCP_WDT_INT_BIT		BIT(8)
 #define MT8183_HOST_TO_SCP		0x28
@@ -110,6 +117,8 @@ struct mtk_scp_of_data {
 	void (*scp_reset_assert)(struct mtk_scp *scp);
 	void (*scp_reset_deassert)(struct mtk_scp *scp);
 	void (*scp_stop)(struct mtk_scp *scp);
+	/* a boot that times out is otherwise silent: let the SoC report where the core is */
+	void (*scp_dump_regs)(struct mtk_scp *scp);
 	void *(*scp_da_to_va)(struct mtk_scp *scp, u64 da, size_t len);
 
 	u32 host_to_scp_reg;
