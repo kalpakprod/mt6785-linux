@@ -215,6 +215,7 @@ struct mtk_dsi_driver_data {
 	bool support_per_frame_lp;
 	bool needs_mem_conti;
 	bool has_hstx_cklp_auto;
+	bool legacy_ps_sel;
 };
 
 struct mtk_dsi {
@@ -432,6 +433,58 @@ static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
 		writel(RWMEM_CONTI, dsi->regs + DSI_MEM_CONTI);
 }
 
+/*
+ * DSI_PS_SEL is not numbered the same on every MediaTek SoC. Mainline uses the
+ * MT8183 numbering (0 RGB565, 1 packed 18-bit, 2 loosely 24-bit, 3 packed
+ * 24-bit RGB888); the MT6785 vendor enumerates the very same field differently
+ * and passes its values straight into the register:
+ *
+ *   lcm_drv.h:210-216, enum LCM_PS_TYPE
+ *       0 packed 16-bit RGB565, 1 loosely 18-bit RGB666,
+ *       2 packed 24-bit RGB888, 3 packed 18-bit RGB666
+ *   ddp_dsi.c:1728-1731, DSI_PS_Control()
+ *       ps_sel_bitvalue = PS      for values 0 to 2, taken as they are
+ *
+ * so writing 3 for RGB888 on an MT6785 selects packed 18-bit instead, and a
+ * 1080-pixel line declared as 3240 bytes then carries 1440 pixels of 2.25 bytes
+ * - more than a line holds.
+ */
+static u32 mtk_dsi_ps_sel(struct mtk_dsi *dsi)
+{
+	u32 sel;
+
+	switch (dsi->format) {
+	default:
+		fallthrough;
+	case MIPI_DSI_FMT_RGB888:
+		sel = PACKED_PS_24BIT_RGB888;
+		break;
+	case MIPI_DSI_FMT_RGB666:
+		sel = LOOSELY_PS_24BIT_RGB666;
+		break;
+	case MIPI_DSI_FMT_RGB666_PACKED:
+		sel = PACKED_PS_18BIT_RGB666;
+		break;
+	case MIPI_DSI_FMT_RGB565:
+		sel = PACKED_PS_16BIT_RGB565;
+		break;
+	}
+
+	if (!dsi->driver_data->legacy_ps_sel)
+		return sel;
+
+	switch (sel) {
+	case PACKED_PS_24BIT_RGB888:
+		return 2;
+	case LOOSELY_PS_24BIT_RGB666:
+		return 1;
+	case PACKED_PS_18BIT_RGB666:
+		return 3;
+	default:
+		return PACKED_PS_16BIT_RGB565;
+	}
+}
+
 static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
 {
 	u32 dsi_buf_bpp, ps_val, ps_wc, vact_nl;
@@ -446,22 +499,7 @@ static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
 	ps_val = ps_wc;
 
 	/* Pixel Stream type */
-	switch (dsi->format) {
-	default:
-		fallthrough;
-	case MIPI_DSI_FMT_RGB888:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_24BIT_RGB888);
-		break;
-	case MIPI_DSI_FMT_RGB666:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, LOOSELY_PS_24BIT_RGB666);
-		break;
-	case MIPI_DSI_FMT_RGB666_PACKED:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_18BIT_RGB666);
-		break;
-	case MIPI_DSI_FMT_RGB565:
-		ps_val |= FIELD_PREP(DSI_PS_SEL, PACKED_PS_16BIT_RGB565);
-		break;
-	}
+	ps_val |= FIELD_PREP(DSI_PS_SEL, mtk_dsi_ps_sel(dsi));
 
 	if (config_vact) {
 		vact_nl = FIELD_PREP(VACT_NL, dsi->vm.vactive);
@@ -1477,6 +1515,7 @@ static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
 	.has_size_ctl = true,
 	.needs_mem_conti = true,
 	.has_hstx_cklp_auto = true,
+	.legacy_ps_sel = true,
 };
 
 static const struct mtk_dsi_driver_data mt8186_dsi_driver_data = {
