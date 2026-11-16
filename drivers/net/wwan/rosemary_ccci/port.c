@@ -208,7 +208,23 @@ static ssize_t port_write(struct file *file, const char __user *buf,
 	      (port->tx_ch == CCCI_FS_TX || port->tx_ch == CCCI_RPC_TX)))
 		return -ENODEV;
 	if (port->user_header) {
+		/*
+		 * The vendor's limit for a user-header port is CCCI_MTU plus the
+		 * header, plus four more bytes on the file-service port:
+		 *
+		 *   header_len = sizeof(struct ccci_header) +
+		 *           (port->rx_ch == CCCI_FS_RX ? sizeof(unsigned int) : 0);
+		 *   if (count > (CCCI_MTU + header_len)) ...
+		 *   -- port/port_proxy.c:492-499
+		 *
+		 * so an FS reply may be 3472 bytes, not 3456. The daemon chunks its
+		 * replies to 0xd80 = 3456 payload bytes + 16 header = 3472, which is
+		 * exactly the vendor's limit and was rejected by four bytes; that
+		 * killed the daemon on a large reply (trial 8).
+		 */
 		max = CCCI_MTU + hlen;
+		if (port->rx_ch == CCCI_FS_RX)
+			max += sizeof(u32);
 		if (count < hlen || count > max)
 			return -EMSGSIZE;
 		h = memdup_user(buf, count);
