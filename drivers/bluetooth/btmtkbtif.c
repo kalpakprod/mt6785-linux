@@ -78,6 +78,10 @@ struct btmtkbtif_data {
 	struct sk_buff *rx_skb;
 
 	bool bt_on;
+
+	/* Raw byte tracing, bounded so a healthy link does not flood the log. */
+	unsigned int traced_tx;
+	unsigned int traced_rx;
 };
 
 static unsigned int btmtkbtif_le_mask_or = BTMTKBTIF_LE_MASK_OR;
@@ -89,6 +93,35 @@ static bool btmtkbtif_sync_train_fake = true;
 module_param_named(sync_train_fake, btmtkbtif_sync_train_fake, bool, 0644);
 MODULE_PARM_DESC(sync_train_fake,
 		 "Answer opcode 0x0c77 locally instead of letting the firmware reject it");
+
+/*
+ * How many packets at each end of the link are dumped byte by byte.
+ *
+ * The point is to answer one question with evidence rather than theory: does the
+ * controller ever receive what we put on the BT channel, and does it ever answer
+ * on it? A packet that goes out but never comes back, with the WMT channel still
+ * working, means the BT task itself is not running; a packet that never reaches
+ * the wire at all means the STP/hif path is wrong. Both look identical from HCI.
+ * Set to 0 to silence; the log then carries nothing per packet.
+ */
+static unsigned int btmtkbtif_trace_frames = 8;
+module_param_named(trace_frames, btmtkbtif_trace_frames, uint, 0644);
+MODULE_PARM_DESC(trace_frames,
+		 "Dump this many raw TX and RX frames on the BT channel at open, 0 to disable");
+
+/* One line per packet: the STP payload is exactly the H4 frame. */
+static void btmtkbtif_trace(struct hci_dev *hdev, const char *dir,
+			    const u8 *buf, unsigned int len)
+{
+	char hex[3 * 32 + 4];
+	unsigned int i, shown = min(len, 32u);
+
+	for (i = 0; i < shown; i++)
+		snprintf(hex + 3 * i, 4, "%02x ", buf[i]);
+
+	bt_dev_info(hdev, "BT %s %u bytes: %s%s", dir, len, hex,
+		    len > shown ? "..." : "");
+}
 
 /* The STP event callback takes no argument, so the instance lives here. */
 static struct btmtkbtif_data *btmtkbtif_active;
@@ -152,6 +185,11 @@ static int btmtkbtif_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 			goto drop;
 	}
 	memcpy(skb_push(skb, 1), &pkt_type, 1);
+
+	if (btdev->traced_tx < btmtkbtif_trace_frames) {
+		btdev->traced_tx++;
+		btmtkbtif_trace(hdev, "tx", skb->data, skb->len);
+	}
 
 	mutex_lock(&btdev->tx_mutex);
 	err = mtk_wcn_stp_send_data(skb->data, skb->len, BT_TASK_INDX);
@@ -292,6 +330,11 @@ static int btmtkbtif_rx_kthread(void *data)
 				break;
 
 			hdev->stat.byte_rx += cnt;
+
+			if (btdev->traced_rx < btmtkbtif_trace_frames) {
+				btdev->traced_rx++;
+				btmtkbtif_trace(hdev, "rx", btdev->rx_buf, cnt);
+			}
 
 			btdev->rx_skb = h4_recv_buf(hdev, btdev->rx_skb,
 						    btdev->rx_buf, cnt,
