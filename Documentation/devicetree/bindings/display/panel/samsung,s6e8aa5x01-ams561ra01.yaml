@@ -35,7 +35,10 @@ required:
   - compatible
   - reg
 
-additionalProperties: false
+# The panel graph properties (port, backlight, power-domains) come in through
+# panel-common.yaml above; additionalProperties: false would hide them and reject
+# a panel node that describes its DSI endpoint.
+unevaluatedProperties: false
 
 examples:
   - |
