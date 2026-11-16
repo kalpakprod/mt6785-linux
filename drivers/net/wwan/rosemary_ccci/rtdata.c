@@ -25,6 +25,7 @@
  */
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/moduleparam.h>
 #include <linux/random.h>
 #include <linux/string.h>
 #include <linux/timekeeping.h>
@@ -33,6 +34,15 @@
 
 /* the world-mode bitmap for a 4G-only phone: Lf|Lt|W|G */
 #define SBP_ULWG		0x39
+
+/*
+ * Print every feature the answer carries: its id, the mask it was given, its
+ * payload length and the first words of the payload. Set at load time with
+ * rosemary_ccci.verbose=1, or at run time before the boot.
+ */
+static bool verbose;
+module_param(verbose, bool, 0644);
+MODULE_PARM_DESC(verbose, "print each runtime-data feature the AP answers");
 
 enum {
 	FEATURE_NOT_EXIST,
@@ -109,8 +119,17 @@ static int feature_data(struct ccci_md *md, int id, u32 *d)
 	case EE_AFTER_EPOF:
 		return 16;
 	case EXCEPTION_SHARE_MEMORY:
+		/*
+		 * The modem is told CCCI_EE_SMEM_TOTAL_SIZE, not the size of the
+		 * MDCCCI_DBG region itself: the exception record covers the whole
+		 * first 64 KiB of this window (MDCCCI_DBG 2 KiB + MDSS_DBG 10 KiB
+		 * + reserved 46 KiB + RUNTIME_DATA 4 KiB + FORCE_ASSERT 1 KiB +
+		 * DBM), which is what the vendor sends -- ccci_modem.c:2134
+		 * rt_shm.size = CCCI_EE_SMEM_TOTAL_SIZE, with the constant from
+		 * mt6785/ccci_config.h:44 "(64*1024)".
+		 */
 		d[0] = NC_MD_VIEW + NC_MDCCCI_DBG;
-		d[1] = 2 * 1024;
+		d[1] = 64 * 1024;
 		return 8;
 	case CCIF_SHARE_MEMORY:
 		d[0] = NC_MD_VIEW + NC_CCISM_MCU;
@@ -133,12 +152,14 @@ static int feature_data(struct ccci_md *md, int id, u32 *d)
 		return 16;		/* time zone and DST stay 0 */
 	case MISC_INFO_C2K:
 		/*
-		 * There is no C2K subsystem on this SoC and the phone's own
-		 * configuration is 4G-only, so the feature is answered as not
-		 * supported by leaving it out of the answer. Its absence is
-		 * reported here rather than silently.
+		 * No C2K RAT on this board, so the flags word is zero -- but it is
+		 * still sent, because that is what the vendor sends: ccci_modem.c
+		 * :2312-2325 builds c2k_flags from check_rat_at_rt_setting(MD_SYS1,
+		 * "C") and appends the element either way. Telling the modem the
+		 * feature is unsupported is a different statement from telling it
+		 * there is no C2K.
 		 */
-		return -1;
+		return 16;
 	case MD_IMAGE_START_MEMORY:
 		d[0] = lower_32_bits(md->md_mem_base);
 		d[1] = md->md_mem_size;
@@ -266,7 +287,7 @@ static int prepare(struct ccci_md *md, const struct md_query_ap_feature *q)
 {
 	u8 *base = md->nc + NC_RUNTIME_DATA, *p = base;
 	u32 d[12];
-	int i, len;
+	int i, len, cnt = 0;
 
 	if (q->head_pattern != MD_FEATURE_QUERY_PATTERN ||
 	    q->tail_pattern != MD_FEATURE_QUERY_PATTERN) {
@@ -285,13 +306,34 @@ static int prepare(struct ccci_md *md, const struct md_query_ap_feature *q)
 			dev_err(md->dev, "HS1: the modem needs feature %d\n", i);
 			return -EINVAL;
 		}
+		/*
+		 * Only the features the AP actually answers go into the list.
+		 * The vendor's loop appends inside
+		 * "if (rt_feature.support_info.support_mask == CCCI_FEATURE_MUST_SUPPORT)"
+		 * (ccci_modem.c:2116-2118, with every append_runtime_feature() call
+		 * inside that block), so a feature the modem declared
+		 * NOT_EXIST or that the AP declined is absent from the answer
+		 * instead of being present with an empty body. Sending all 64 made
+		 * the list 744 bytes where the vendor's is a few hundred, with 42
+		 * entries for features the modem had not asked for at all.
+		 */
 		if ((sup & 0xf) != FEATURE_MUST_SUPPORT)
-			len = 0;
+			continue;
 		if (p + sizeof(struct rt_feature) + len > base + NC_RUNTIME_AP_SIZE)
 			return -ENOSPC;
+		if (verbose)
+			dev_info(md->dev,
+				 "HS1: feature %2d mask %u len %u data %08x %08x %08x %08x\n",
+				 i, sup & 0xf, len, len > 0 ? d[0] : 0,
+				 len > 4 ? d[1] : 0, len > 8 ? d[2] : 0,
+				 len > 12 ? d[3] : 0);
 		p = put(p, i, sup, d, len);
+		cnt++;
 	}
 	wmb();
+	if (verbose)
+		dev_info(md->dev, "HS1: %zu bytes, %d features answered\n",
+			 (size_t)(p - base), cnt);
 	return p - base;
 }
 
