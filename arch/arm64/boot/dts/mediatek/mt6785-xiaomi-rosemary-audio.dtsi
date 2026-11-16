@@ -207,23 +207,41 @@
 /* ------------------------------------------------- camera flash (MT6360) */
 
 /*
- * The MT6360 sub-PMIC on I2C5 carries the phone's two flash channels. It is
- * described in the board dts as `pmic@34` (compatible "mediatek,mt6360"), so
- * the LED block is added to that node rather than declared again.
+ * The MT6360 sub-PMIC on I2C5 carries the phone's two flash channels, and the
+ * LED block is added to the board's own `pmic@34` node.
+ *
+ * Why a node of our own: the tree appended by the bootloader has the chip at
+ * the same address as `subpmic@34` with `compatible = "mediatek,subpmic"`
+ * [L: device-tree.dts:4381-4386], which no mainline driver claims, so the MFD
+ * would never bind to it and its LED cell would have no of_node — that is the
+ * `mt6360-led: Failed to locate of_node` line the base kernel prints
+ * [B: poco-m5s/evidence/b11/hang-boot-journal.txt:338]. Our `pmic@34` with
+ * `compatible = "mediatek,mt6360"` is the node the MFD binds to, which is why
+ * the audio kernels print no such line and register the two LEDs instead
+ * [B: poco-m5s/evidence/audio-trial7/dmesg.txt:316, int-trial1: white:flash-1
+ * and white:flash-2].
  *
  * Currents and the strobe timeout are the ones the chip is programmed with on
- * the stock phone [L: mt6360_pmu_dts/fled, which agrees with the vendor
- * values in V: v1/mt6360.dtsi]:
- *   torch  37500 uA  on both channels		(fled1_tor_cur, fled2_tor_cur)
- *   strobe 750000 uA on FLASH1			(fled1_strb_cur)
- *   strobe 800000 uA on FLASH2			(fled2_strb_cur, vendor value;
- *						 the live dump has the cell garbled,
- *						 every other channel agrees)
- *   strobe timeout 1248 ms = 1248000 us		(fled_strb_tout = 1248)
+ * the stock phone [L: device-tree.dts:4266-4275, mt6360_pmu_dts/fled, which
+ * agrees with the vendor values in V: v1/mt6360.dtsi]:
+ *   torch  37500 uA  on both channels	(device-tree.dts:4272,4274
+ *					 fled1_tor_cur = fled2_tor_cur = 0x927c)
+ *   strobe 750000 uA on FLASH1		(device-tree.dts:4273
+ *					 fled1_strb_cur = 0xb71b0)
+ *   strobe 800000 uA on FLASH2		(vendor v1/mt6360.dtsi: the live cell
+ *					 at device-tree.dts:4275 is garbled,
+ *					 every other channel agrees)
+ *   strobe timeout 1248 ms = 1248000 us	(device-tree.dts:4271
+ *					 fled_strb_tout = 0x4e0)
  * They are written under mainline's names: leds-mt6360 takes led-max-microamp
  * as the torch ceiling, flash-max-microamp as the strobe ceiling and
- * flash-max-timeout-us as the timer, all three clamped to the chip's own
- * ranges on probe [K: drivers/leds/flash/leds-mt6360.c].
+ * flash-max-timeout-us as the timer, and clamps all three to the chip's own
+ * ranges on probe [K: drivers/leds/flash/leds-mt6360.c:64-73, :700-780], whose
+ * limits are torch 25 mA..400 mA in 12.5 mA steps, strobe 50 mA..1.5 A in
+ * 12.5 mA steps and timeout 64 ms..2432 ms in 32 ms steps. Every value above is
+ * inside them and none exceeds the vendor's own number: the torch ceiling of
+ * 37.5 mA gives two brightness levels (25 mA and 37.5 mA), which is why
+ * brightness 1 is the lowest torch current the chip can be asked for.
  */
 &{/soc/i2c@11016000/pmic@34} {
 	led-controller {
@@ -293,10 +311,19 @@
 };
 
 /*
- * The board dts describes the motor with the generic "regulator-haptic" model,
- * a rail switched by a GPIO-less regulator. That is not this hardware — the
- * phone has the AW8622 above — so the old node is switched off instead of
- * being left to claim the same job.
+ * Two other ways to drive a motor exist in this phone's tree and neither is
+ * this hardware. The appended tree has the framework vibrator
+ * [L: device-tree.dts:6277-6281, `vibrator@0` with `mediatek,vibrator`,
+ * vib_timer = 25, vib_limit = 9, vib_vol = 9] which mainline has no driver for,
+ * and the MT6359's own vibrator rail `mt_pmic_vibr_ldo_reg` / `ldo_vibr`
+ * [L: device-tree.dts:2490-2495; mainline's table at
+ * drivers/regulator/mt6358-regulator.c:255-262 and :540], which only that
+ * framework path switches. The AW8622 node in the phone's tree names no supply
+ * at all — `hwen-gpio`, `pwm_ch`, `center_freq`, `default_pwm_freq` and the two
+ * pinctrl states are its whole description [L: device-tree.dts:7715-7724] — so
+ * there is no rail for this board to describe and no voltage to set: the motor
+ * runs from a fixed rail and the chip is gated by GPIO202. The framework node is
+ * switched off here so it cannot claim the same job.
  */
 &{/vibrator} {
 	status = "disabled";
