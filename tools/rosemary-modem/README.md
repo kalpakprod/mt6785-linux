@@ -23,7 +23,7 @@ changed line in the sources below says which row of the delta table
 | `rosemary-modem-properties` | the properties the modem asks for, in the stock phone's own values: `key=value`, one per line, generated from `device-dump-2026-11-13/stock/getprop-filtered.txt`. Installed as `/usr/share/rosemary-modem/properties` |
 | `rosemary-modem.service` | systemd unit for the daemon |
 | `78-rosemary-modem.rules` | udev rules: the AT port is primary AT for ModemManager, and nothing is handed over before the SIM is up |
-| `0003-plugins-new-mtk-ccmni-plugin.patch` | ModemManager plugin `mtk-ccmni`: AT on `wwan0at0`, data on the DPMAIF netdevs, `+EIF` → `/sys/class/net/<link>/md_interface`, address from `+CGPADDR`, SIM hot-swap from `+ESIMS`. The only change from cezanne's is the udev driver string |
+| `modemmanager-mtk-ccmni/` | the ModemManager plugin and its packaging: `0003-plugins-new-mtk-ccmni-plugin.patch` (plugin `mtk-ccmni`: AT on `wwan<instance>at0`, data on the DPMAIF netdevs, `+EIF` → `/sys/class/net/<link>/md_interface`, address from `+CGPADDR`, SIM hot-swap from `+ESIMS`), the `+EIF` parser as its own testable file with a unit test, and a `PKGBUILD` for Arch ARM that builds ModemManager 1.24.2 with the plugin |
 | `Makefile` | `cc` only, no cross compiler: the lead builds it on the phone |
 
 ## What the lead has to do on the phone
@@ -37,8 +37,9 @@ changed line in the sources below says which row of the delta table
    never reaches the second handshake.
 2. `rosemary-modem-nvram-import` once, with the stock partitions present.
 3. Build and install: `make && sudo make install`.
-4. Apply `0003-plugins-new-mtk-ccmni-plugin.patch` to the ModemManager source and
-   install the patched build; `sudo udevadm control --reload`.
+4. Build the variant ModemManager with the plugin: `cd modemmanager-mtk-ccmni &&
+   makepkg -si` (it provides and conflicts `modemmanager`, so it replaces the distro
+   package). Then `sudo udevadm control --reload` and `systemctl restart ModemManager`.
 5. `systemctl enable --now rosemary-modem`, then the phone checks in the card.
 
 ## Two things this directory deliberately does not do
