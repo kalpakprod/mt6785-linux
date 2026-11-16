@@ -265,11 +265,15 @@ struct mtk_dsi {
 
 	/* DIAG (not for upstream): every DSI access around one panel read */
 	struct mtk_dsi_trace {
-		struct {
+		struct mtk_dsi_trace_entry {
 			bool wr;
 			u32 off;
 			u32 val;
 			s64 ns;
+			s64 first_ns;
+			void *caller;
+			unsigned int rep;
+			bool irq;
 		} e[512];
 		unsigned int n;
 		bool on;
@@ -332,13 +336,39 @@ static inline struct mtk_dsi *host_to_dsi(struct mipi_dsi_host *h)
  */
 static void mtk_dsi_trace_add(struct mtk_dsi *dsi, bool wr, u32 off, u32 val)
 {
-	if (!dsi->trace.on || dsi->trace.n >= ARRAY_SIZE(dsi->trace.e))
+	s64 now = ktime_get_ns();
+	struct mtk_dsi_trace_entry *last;
+
+	if (!dsi->trace.on)
 		return;
 
-	dsi->trace.e[dsi->trace.n].wr = wr;
-	dsi->trace.e[dsi->trace.n].off = off;
-	dsi->trace.e[dsi->trace.n].val = val;
-	dsi->trace.e[dsi->trace.n].ns = ktime_get_ns();
+	/*
+	 * Collapse runs of identical accesses (a poll of a register that never
+	 * changes fills the ring and evicts everything else): one entry keeps the
+	 * first and the last time plus the count.
+	 */
+	if (dsi->trace.n) {
+		last = &dsi->trace.e[dsi->trace.n - 1];
+		if (last->wr == wr && last->off == off && last->val == val) {
+			last->rep++;
+			last->ns = now;
+			return;
+		}
+	}
+
+	if (dsi->trace.n >= ARRAY_SIZE(dsi->trace.e))
+		return;
+
+	last = &dsi->trace.e[dsi->trace.n];
+	last->wr = wr;
+	last->off = off;
+	last->val = val;
+	last->ns = now;
+	last->first_ns = now;
+	last->rep = 1;
+	last->irq = in_hardirq();
+	/* who touched the register: the handler and the read path must be told apart */
+	last->caller = __builtin_return_address(0);
 	dsi->trace.n++;
 }
 
@@ -416,11 +446,21 @@ static void mtk_dsi_trace_dump(struct mtk_dsi *dsi)
 	dev_info(dsi->host.dev, "diag: %u accesses in the failed read\n",
 		 dsi->trace.n);
 
-	for (i = 0; i < dsi->trace.n; i++)
-		dev_info(dsi->host.dev, "diag: [%03u] %lld us %s 0x%03x = 0x%08x\n",
-			 i, div_s64(dsi->trace.e[i].ns, 1000),
-			 dsi->trace.e[i].wr ? "W" : "R", dsi->trace.e[i].off,
-			 dsi->trace.e[i].val);
+	for (i = 0; i < dsi->trace.n; i++) {
+		struct mtk_dsi_trace_entry *e = &dsi->trace.e[i];
+
+		if (e->rep > 1)
+			dev_info(dsi->host.dev,
+				 "diag: [%03u] %lld..%lld us %s%s 0x%03x = 0x%08x x%u %pS\n",
+				 i, div_s64(e->first_ns, 1000), div_s64(e->ns, 1000),
+				 e->wr ? "W" : "R", e->irq ? "!" : " ", e->off, e->val,
+				 e->rep, e->caller);
+		else
+			dev_info(dsi->host.dev,
+				 "diag: [%03u] %lld us %s%s 0x%03x = 0x%08x %pS\n",
+				 i, div_s64(e->ns, 1000), e->wr ? "W" : "R",
+				 e->irq ? "!" : " ", e->off, e->val, e->caller);
+	}
 }
 
 static void mtk_dsi_mask(struct mtk_dsi *dsi, u32 offset, u32 mask, u32 data)
@@ -1646,32 +1686,29 @@ static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
 	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
 	mtk_dsi_start(dsi);
 
-	ret = mtk_dsi_poll_traced(dsi, DSI_INTSTA, LPRX_RD_RDY_INT_FLAG, true,
-				  100, 300000, &status);
-	if (ret) {
+	/*
+	 * The read-ready comes from the interrupt and only from it: mtk_dsi_irq()
+	 * acknowledges the read (RACK), clears the status word and wakes this queue,
+	 * so there is exactly one owner of DSI_INTSTA and this path must not poll
+	 * the flag the handler has already cleared. Trial 22 measured the race in
+	 * its DIAG trace: RD_RDY set (INTSTA 0x80000001), then "R 0x084 = 0,
+	 * W 0x084 = 1, R 0x00c, W 0x00c" - the handler's ack - and then 346 polls of
+	 * a register that no longer carried the flag, so the RX data was never read.
+	 */
+	ret = wait_event_interruptible_timeout(dsi->irq_wait_queue,
+					       dsi->irq_data & LPRX_RD_RDY_INT_FLAG,
+					       msecs_to_jiffies(300));
+	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
+	if (ret <= 0) {
 		drm_err(drm, "no read-ready from the panel\n");
 		mtk_dsi_dump_state(dsi);
 		mtk_dsi_reset_engine(dsi);
 		return -ETIME;
 	}
 
+	/* the handler stopped the engine and acknowledged before waking us */
 	for (i = 0; i < 16; i++)
 		read_data[i] = mtk_dsi_readb(dsi, DSI_RX_DATA0 + i);
-
-	mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
-
-	/* 3. and the engine has to be idle again, as the vendor's cmddone_wq waits */
-	ret = mtk_dsi_poll_traced(dsi, DSI_INTSTA, DSI_BUSY, false, 100,
-				  2000000, &status);
-	if (ret) {
-		drm_err(drm, "engine still busy after the read\n");
-		mtk_dsi_dump_state(dsi);
-		mtk_dsi_reset_engine(dsi);
-		return -ETIME;
-	}
-
-	mtk_dsi_mask(dsi, DSI_INTSTA,
-		     status & (LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG), 0);
 
 	recv_cnt = mtk_dsi_recv_cnt(read_data[0], read_data);
 
