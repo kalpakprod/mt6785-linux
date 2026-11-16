@@ -1,36 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * mt6785-xiaomi-rosemary-scp.dtsi -- the SCP (a Cortex-M4) of the Poco M5s.
+ * mt6785-xiaomi-rosemary-scp.dtsi -- the SCP (a Cortex-M4) of the Poco M5s,
+ * and the sensor hub that runs on it.
  *
  * The SCP runs the sensor hub the four motion and environment sensors sit
  * behind, so this node is what makes them reachable at all.
  *
  * Addresses and sizes come from the phone's own tree [L: device-tree.dts:2975,
  * scp@10500000]: SRAM (TCM) at 0x10500000 with 0xc0000 bytes, cfg at
- * 0x105c0000, and the strobe of the clock block at 0x105c4000 which, on the
- * vendor tree, is a region of its own. mainline's mtk_scp addresses the clock
- * registers as cfg + 0x4000 (see MT8183_SCP_CLK_SW_SEL in
- * drivers/remoteproc/mtk_common.h), so cfg has to cover them: 0x5000, not the
- * vendor's 0x3000.
+ * 0x105c0000, and the clock block at 0x105c4000 which the vendor tree has as a
+ * region of its own. mainline's mtk_scp addresses the clock registers as
+ * cfg + 0x4000 (MT8183_SCP_CLK_SW_SEL and the SRAM power registers in
+ * drivers/remoteproc/mtk_common.h:23-27), so cfg has to cover them: 0x5000, not
+ * the vendor's 0x3000.
  *
  * The interrupt is GIC SPI 201, level high [L: same node,
  * interrupts = <0x00 0xc9 0x04>].
  *
  * The firmware is not loaded by the bootloader on this phone: the TCM reads
- * zero and every SRAM power-down register reads 0xffffffff, so the kernel
- * stages it. See tools/scp-repack.py for how the vendor's tinysys container
- * becomes the ELF this driver loads, and REPORT.md "sensors: the SCP under
- * mainline" for the whole story.
+ * zero, the clock enable register reads zero and every SRAM power-down register
+ * reads 0xffffffff, so the kernel stages it. See tools/scp-repack.py for how the
+ * vendor's tinysys container becomes the ELF this driver loads, and REPORT.md
+ * "sensors: the SCP under mainline" for the whole story.
  */
-/*
- * The board file still carries the vendor's inert placeholder for the SCP
- * (`scp { compatible = "mediatek,scp"; }`), which no mainline driver claims and
- * which has no registers: replace it with the node below.
- */
-&{/} {
-	/delete-node/ scp;
-};
-
 / {
 	reserved-memory {
 		/*
@@ -47,6 +39,22 @@
 			reg = <0 0x50000000 0 0x400000>;
 			no-map;
 		};
+
+		/*
+		 * The hub's sample ring: the vendor splits this out of its
+		 * scp_share block as the sensor block (SENS_MEM_ID), 1 MiB
+		 * [L: mt6785.dts scp_mem_tbl = <1 0x100000>, the sensor entry;
+		 * the live tree has the same table at device-tree.dts:2986].
+		 * The client maps it and hands its address to the SCP with
+		 * SENSOR_HUB_SET_CONFIG, so this one may be dynamic.
+		 */
+		sensorhub_ring: sensorhub-ring {
+			compatible = "shared-dma-pool";
+			size = <0 0x100000>;
+			alignment = <0 0x1000>;
+			alloc-ranges = <0 0x40000000 0 0x50000000>;
+			no-map;
+		};
 	};
 
 	scp: scp@10500000 {
@@ -58,4 +66,24 @@
 		memory-region = <&scp_mem_reserved>;
 		firmware-name = "mediatek/mt6785/scp.img";
 	};
+
+	/*
+	 * The sensor hub on top of the SCP: the client of IPI 8 that speaks
+	 * MediaTek's sensorhub protocol (REPORT.md, "SCP step 2"). The vendor
+	 * calls the same block "sensorHub" in its tree.
+	 */
+	sensorhub {
+		compatible = "mediatek,mt6785-sensorhub";
+		mediatek,scp = <&scp>;
+		memory-region = <&sensorhub_ring>;
+	};
+};
+
+/*
+ * The board file still carries the vendor's inert placeholder for the SCP
+ * (`scp { compatible = "mediatek,scp"; }`), which no mainline driver claims and
+ * which has no registers: replace it with the node above.
+ */
+&{/} {
+	/delete-node/ scp;
 };
