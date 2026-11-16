@@ -48,7 +48,8 @@
 };
 
 /*
- * AMOLED panel dsi_panel_k7_38_0c_0a_fhdp_video: 1080x2400, video mode with
+ * AMOLED panel dsi_panel_k7_38_0c_0a_fhdp_video: a Samsung S6E8FC0 module,
+ * 1080x2400, video mode with
  * sync pulses, 4 lanes, RGB888, PLL 549 MHz (1098 Mbps per lane), brightness
  * over DCS 0x51. Reset is GPIO 44, active low (vendor lcm_reset() drives it
  * high -> low -> high; the live DT's pinctrl group is lcd_rst_gpio).
@@ -57,12 +58,12 @@
 	status = "okay";
 
 	panel@0 {
-		compatible = "xiaomi,k7-38-0c-0a";
+		compatible = "samsung,s6e8fc0-k7-38-0c-0a";
 		reg = <0>;
 
 		reset-gpios = <&pio 44 GPIO_ACTIVE_LOW>;
 
-		vddi-supply = <&panel_vddi_1v8>;
+		vci-supply = <&panel_vddi_1v8>;
 		vdd-supply = <&panel_avdd_3v0>;
 
 		port {

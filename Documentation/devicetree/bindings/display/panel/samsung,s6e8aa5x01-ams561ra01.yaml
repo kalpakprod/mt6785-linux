@@ -18,6 +18,7 @@ properties:
     enum:
       - samsung,s6e8aa5x01-ams561ra01
       - samsung,s6e8fc0-m1906f9
+      - samsung,s6e8fc0-k7-38-0c-0a
 
   reg:
     maxItems: 1
