@@ -207,10 +207,6 @@ void mtk_ovl_enable_vblank(struct device *dev)
 
 	writel(0x0, ovl->regs + DISP_REG_OVL_INTSTA);
 	writel_relaxed(OVL_FME_CPL_INT, ovl->regs + DISP_REG_OVL_INTEN);
-
-	dev_dbg(ovl->dev, "vblank on: INTEN 0x%08x INTSTA 0x%08x count %u\n",
-		readl(ovl->regs + DISP_REG_OVL_INTEN),
-		readl(ovl->regs + DISP_REG_OVL_INTSTA), ovl->irq_count);
 }
 
 void mtk_ovl_disable_vblank(struct device *dev)
