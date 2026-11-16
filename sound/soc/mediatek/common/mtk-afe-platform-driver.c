@@ -124,7 +124,16 @@ snd_pcm_uframes_t mtk_afe_pcm_pointer(struct snd_soc_component *component,
 	hw_base = ((unsigned long long)hw_base_upper32 << 32) | hw_base_lower32;
 
 	if (!hw_ptr || !hw_base) {
+		static bool dumped;
+
 		dev_err(dev, "hw_ptr or hw_base = 0 err\n");
+
+		/* TEMPORARY, int7 debugging: the state that produced the zero */
+		if (!dumped && afe->dump_state) {
+			dumped = true;
+			afe->dump_state(afe, "pointer-zero");
+		}
+
 		return 0;
 	}
 
