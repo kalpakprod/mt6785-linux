@@ -870,9 +870,34 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 
 static s32 mtk_dsi_switch_to_cmd_mode(struct mtk_dsi *dsi, u8 irq_flag, u32 t)
 {
-	mtk_dsi_irq_data_clear(dsi, irq_flag);
-	mtk_dsi_set_cmd_mode(dsi);
 	struct drm_device *drm = dsi->bridge.dev;
+	u32 status;
+	int ret;
+
+	mtk_dsi_irq_data_clear(dsi, irq_flag);
+	mtk_dsi_stop(dsi);
+	mtk_dsi_set_cmd_mode(dsi);
+
+	/*
+	 * The MT6785 engine never raises VM_DONE, the flag this wait uses
+	 * elsewhere, so the switch is confirmed the way the vendor confirms it:
+	 * the engine has to be idle. ddp_dsi.c's read path waits with
+	 * dsi_wait_not_busy() - a poll of DSI_INTSTA's BUSY bit - before it sends
+	 * anything (DSI_dcs_read_lcm_reg_v2(), ddp_dsi.c:4487-4560, step 1 of its
+	 * loop: "wait dsi not busy => can't read if dsi busy").
+	 */
+	if (dsi->driver_data->poll_completion) {
+		ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+					 !(status & DSI_BUSY), 100,
+					 t * 1000);
+		if (ret) {
+			drm_err(drm, "engine still busy after switching to cmd mode\n");
+			mtk_dsi_reset_engine(dsi);
+			return -ETIME;
+		}
+
+		return 0;
+	}
 
 	if (!mtk_dsi_wait_for_irq_done(dsi, irq_flag, t)) {
 		drm_err(drm, "failed to switch cmd mode\n");
@@ -1417,6 +1442,34 @@ static ssize_t mtk_dsi_vm_cmd_send(struct mtk_dsi *dsi,
 	return msg->tx_len;
 }
 
+/*
+ * Send one command-queue entry and wait for its status bit in DSI_INTSTA. The
+ * MT6785 engine signals completion only in that register (trials 10-15), so every
+ * wait here is a bounded poll of it and returns -ETIME rather than continuing.
+ */
+static int mtk_dsi_send_cmdq_word(struct mtk_dsi *dsi, u32 word, u32 flag,
+				  unsigned int timeout_us)
+{
+	u32 status;
+	int ret;
+
+	mtk_dsi_wait_for_idle(dsi);
+	mtk_dsi_mask(dsi, DSI_INTSTA, DSI_INT_STATUS_MASK, 0);
+
+	writel(word, dsi->regs + dsi->driver_data->reg_cmdq_off);
+	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
+	mtk_dsi_start(dsi);
+
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status, status & flag,
+				 10, timeout_us);
+	if (ret)
+		return ret;
+
+	mtk_dsi_mask(dsi, DSI_INTSTA, status & flag, 0);
+
+	return 0;
+}
+
 static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 				     const struct mipi_dsi_msg *msg)
 {
@@ -1444,6 +1497,27 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 		irq_flag |= LPRX_RD_RDY_INT_FLAG;
 
 	mtk_dsi_lane_ready(dsi);
+
+	/*
+	 * The MT6785 read is the loader's pair of packets, which is what worked by
+	 * hand on this phone (poco-m5s/evidence/disp-trial9/dcsread.py: send
+	 * 0x00013700, poll CMD_DONE, then the read with BTA, poll RD_RDY, read the
+	 * RX registers). 0x37 is the DCS "set maximum return packet size" and the
+	 * vendor sends it as the first of its three command-queue entries before
+	 * every read, with the size in Data0 (DSI_send_read_cmd(), ddp_dsi.c:4014,
+	 * t1 = {Data_ID 0x37, Data0 = buffer_size <= 10}). Without it the panel
+	 * answers with its default size and the read returns nothing usable.
+	 */
+	if (MTK_DSI_HOST_IS_READ(msg->type) && dsi->driver_data->poll_completion) {
+		u32 size = min_t(u32, msg->rx_len, 10);
+		u32 word = (0x37 << 8) | (size << 16);
+
+		ret = mtk_dsi_send_cmdq_word(dsi, word, CMD_DONE_INT_FLAG, 300000);
+		if (ret) {
+			drm_err(drm, "set max return size failed: %d\n", ret);
+			goto restore_dsi_mode;
+		}
+	}
 
 	ret = mtk_dsi_host_send_cmd(dsi, msg, irq_flag);
 	if (ret)
