@@ -125,12 +125,33 @@ static int btmtkbtif_cmd_complete(struct hci_dev *hdev, u16 opcode)
 static int btmtkbtif_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	struct btmtkbtif_data *btdev = hci_get_drvdata(hdev);
+	u8 pkt_type = hci_skb_pkt_type(skb);
 	int err;
 
 	if (!btdev->bt_on) {
 		err = -ENODEV;
 		goto drop;
 	}
+
+	/*
+	 * hdev->send() hands over the packet WITHOUT its H4 type byte; the
+	 * transport adds it. Both in-tree H4 transports do exactly this -
+	 * h4_enqueue() in hci_h4.c and btmtkuart_send_frame() in btmtkuart.c
+	 * each start with "memcpy(skb_push(skb, 1), &type, 1)".
+	 *
+	 * This driver sent skb->data unchanged, so the controller received a
+	 * command whose first byte was the opcode LSB instead of 0x01. Its HCI
+	 * transport parsed that as a garbage packet type and asserted
+	 * (system/transport/hcit_mtk_uart.c #449), which is why the very first
+	 * command after FUNC_CTRL(BT on) - the BD_ADDR read - timed out with
+	 * -110 and every later command and the reset timed out too.
+	 */
+	if (skb_headroom(skb) < 1) {
+		err = pskb_expand_head(skb, 1, 0, GFP_ATOMIC);
+		if (err < 0)
+			goto drop;
+	}
+	memcpy(skb_push(skb, 1), &pkt_type, 1);
 
 	mutex_lock(&btdev->tx_mutex);
 	err = mtk_wcn_stp_send_data(skb->data, skb->len, BT_TASK_INDX);

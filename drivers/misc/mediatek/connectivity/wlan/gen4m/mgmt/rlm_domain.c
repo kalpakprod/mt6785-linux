@@ -4669,8 +4669,10 @@ void txPwrCtrlCfgFileToList(struct ADAPTER *prAdapter)
 
 	pucConfigBuf = (uint8_t *)kalMemAlloc(WLAN_CFG_FILE_BUF_SIZE,
 					      VIR_MEM_TYPE);
+	if (!pucConfigBuf)
+		return;
 	kalMemZero(pucConfigBuf, WLAN_CFG_FILE_BUF_SIZE);
-	if (pucConfigBuf) {
+	{
 		if (kalRequestFirmware("txpowerctrl.cfg", pucConfigBuf,
 		    WLAN_CFG_FILE_BUF_SIZE, &u4ConfigReadLen,
 		    prAdapter->prGlueInfo->prDev) == 0) {
@@ -4686,6 +4688,13 @@ void txPwrCtrlCfgFileToList(struct ADAPTER *prAdapter)
 		}
 
 		if (pucConfigBuf[0] != '\0' && u4ConfigReadLen > 0) {
+			/*
+			 * u4ConfigReadLen can be the whole buffer when the file
+			 * fills it, and then this terminator would be written one
+			 * byte past the allocation. Bounded read, bounded write.
+			 */
+			if (u4ConfigReadLen >= WLAN_CFG_FILE_BUF_SIZE)
+				u4ConfigReadLen = WLAN_CFG_FILE_BUF_SIZE - 1;
 			pucConfigBuf[u4ConfigReadLen] = 0;
 			txPwrCtrlFileBufToList(prAdapter, pucConfigBuf);
 		} else
