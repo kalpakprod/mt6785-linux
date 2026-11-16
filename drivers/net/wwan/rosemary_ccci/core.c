@@ -467,8 +467,11 @@ static int md_boot(struct ccci_md *md)
 
 	if (md->first_boot) {
 		ret = md_first_boot_check(md);
-		if (ret)
+		if (ret) {
+			/* drop the reference before the supplies go away */
+			pm_runtime_put_sync(md->dev);
 			goto err_seq;
+		}
 		/*
 		 * The boot-ROM check is the loader's last act; the modem is let
 		 * go from here by writing MD_BOOT_VECTOR_EN below.
