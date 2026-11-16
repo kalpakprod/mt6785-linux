@@ -91,10 +91,24 @@ static void scp_init_ipi_handler(void *data, unsigned int len, void *priv)
 	struct mtk_scp *scp = priv;
 	struct scp_run *run = data;
 
-	scp->run.signaled = run->signaled;
-	strscpy(scp->run.fw_ver, run->fw_ver, SCP_FW_VER_LEN);
-	scp->run.dec_capability = run->dec_capability;
-	scp->run.enc_capability = run->enc_capability;
+	/*
+	 * The MT8183/MT8192 family answers with a full struct scp_run, whose first
+	 * word says whether the firmware really is ready. MT6785's sensor-hub
+	 * firmware answers on its own id (see ipi_init_id) with a single word: the
+	 * size of the image it booted (vendor scp_helper.c:493-497 reads exactly
+	 * that). A payload shorter than the struct is therefore not a truncated
+	 * message, it is the whole "I am up" signal, and there is nothing to copy
+	 * out of it.
+	 */
+	if (len >= sizeof(*run)) {
+		scp->run.signaled = run->signaled;
+		strscpy(scp->run.fw_ver, run->fw_ver, SCP_FW_VER_LEN);
+		scp->run.dec_capability = run->dec_capability;
+		scp->run.enc_capability = run->enc_capability;
+	} else {
+		scp->run.signaled = len > 0;
+	}
+
 	wake_up_interruptible(&scp->run.wq);
 }
 
@@ -423,6 +437,8 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_SCP_IPI_BUF_OFS		0x5c0
 #define MT6785_SCP_IPI_BUF_DATA_OFS	16
 #define MT6785_SCP_IPI_BUF_SIZE		272
+/* the firmware's "ready" IPI: IPI_SCP_A_READY, vendor scp_cm4.h:17-40 */
+#define MT6785_SCP_IPI_READY		12
 #define MT6785_SCP_DRAM_SIZE		0x400000
 
 /*
@@ -1356,9 +1372,11 @@ static struct mtk_scp *scp_rproc_init(struct platform_device *pdev,
 		mutex_init(&scp->ipi_desc[i].lock);
 
 	/* register SCP initialization IPI */
-	ret = scp_ipi_register(scp, SCP_IPI_INIT, scp_init_ipi_handler, scp);
+	ret = scp_ipi_register(scp, scp->data->ipi_init_id,
+			       scp_init_ipi_handler, scp);
 	if (ret) {
-		dev_err(dev, "Failed to register IPI_SCP_INIT\n");
+		dev_err(dev, "Failed to register the init IPI (%u)\n",
+			scp->data->ipi_init_id);
 		goto release_dev_mem;
 	}
 
@@ -1619,18 +1637,24 @@ static const struct mtk_scp_sizes_data mt6785_scp_sizes = {
 };
 
 /*
- * MT6785 asks the kernel for no SCP clock, and that is not an omission: its
- * vendor node has no clocks at all ("scp@10500000" in the vendor tree,
- * mt6785.dts:1021-1062, lists reg and interrupts only) and its driver never
- * calls clk_get - what it does with clocks is write the SCP clock block at
- * cfg + 0x4000 by hand (scp_helper.c:1474-1500, ioremapped at :1764), which is
- * what mt6785_scp_before_load() below already does. The SCP frequency mux is a
- * separate vendor feature (the "scp_dvfs" node, mt6785.dts:657-680) that this
- * port does not carry. So MT6785 takes the same "no clock" path as MT8195,
- * where scp->clk stays NULL and clk_enable() is a no-op (drivers/clk/clk.c:1463).
+ * MT6785 does need a clock, and d5b9b1de1 got this wrong: the vendor's own
+ * scp@10500000 node lists no clocks, but the SCP's clock is driven from the
+ * *scp_dvfs* block through the clock framework, and the vendor enables it
+ * immediately before releasing the core from reset - "request pll clock before
+ * turn on scp" (scp_helper.c:583), which is scp_pll_ctrl_set(PLL_ENABLE,
+ * CLK_26M) (scp_dvfs.c:597-655): clk_prepare_enable(topckgen's SCP mux) and then
+ * clk_set_parent(that mux, clk26m). Mainline has the same object as "top_scp"
+ * (CLK_TOP_SCP, drivers/clk/mediatek/clk-mt6785-top.c:473, gate bit 2, parent
+ * list starting at "clk26m"), so the port takes it as "main" and lets the clock
+ * framework parent it to the 26 MHz oscillator from the device tree. Without
+ * this the TCM loads and nothing else happens, which is what audio13 measured.
+ *
+ * The init IPI is the other half: this firmware reports "ready" on IPI 12,
+ * IPI_SCP_A_READY (vendor scp_cm4.h:17-40, registered at scp_helper.c:2015-2016),
+ * not on the MT8183 family's SCP_IPI_INIT = 0.
  */
 static const struct mtk_scp_of_data mt6785_of_data = {
-	.scp_clk_get = mt8195_scp_clk_get,
+	.scp_clk_get = mt8183_scp_clk_get,
 	.scp_before_load = mt6785_scp_before_load,
 	.scp_after_load = mt6785_scp_after_load,
 	.scp_irq_handler = mt8183_scp_irq_handler,
@@ -1642,6 +1666,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.host_to_scp_int_bit = MT8183_HOST_IPC_INT_BIT,
 	.ipi_buf_offset = MT6785_SCP_IPI_BUF_OFS,
 	.ipi_buf_data_offset = MT6785_SCP_IPI_BUF_DATA_OFS,
+	.ipi_init_id = MT6785_SCP_IPI_READY,
 	.scp_sizes = &mt6785_scp_sizes,
 };
 

@@ -118,6 +118,12 @@ struct mtk_scp_of_data {
 	size_t ipi_buf_offset;
 	/* offset of the payload inside a share object; 0 means the default 8 */
 	u32 ipi_buf_data_offset;
+	/*
+	 * IPI id the firmware uses to report that it is up and running; 0 is the
+	 * SCP_IPI_INIT of the MT8183/MT8192 firmware family, and the MT6785
+	 * sensor-hub firmware uses its own numbering (12, IPI_SCP_A_READY).
+	 */
+	u32 ipi_init_id;
 	const struct mtk_scp_sizes_data *scp_sizes;
 };
 

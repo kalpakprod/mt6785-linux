@@ -63,6 +63,22 @@
 		      <0 0x105c0000 0 0x5000>;
 		reg-names = "sram", "cfg";
 		interrupts = <GIC_SPI 201 IRQ_TYPE_LEVEL_HIGH>;
+
+		/*
+		 * The SCP's clock: the top clock controller's SCP mux and gate
+		 * (CLK_TOP_SCP, "top_scp"), which has to sit on the 26 MHz
+		 * oscillator. The vendor does both steps through the clock framework
+		 * immediately before releasing the core from reset -
+		 * "request pll clock before turn on scp" (scp_helper.c:583) calling
+		 * clk_prepare_enable() and then clk_set_parent(..., clk26m)
+		 * (scp_dvfs.c:597-655) - and without them the TCM is loaded and the
+		 * core never executes.
+		 */
+		clocks = <&topckgen CLK_TOP_SCP>;
+		clock-names = "main";
+		assigned-clocks = <&topckgen CLK_TOP_SCP>;
+		assigned-clock-parents = <&clk26m>;
+
 		memory-region = <&scp_mem_reserved>;
 		firmware-name = "mediatek/mt6785/scp.img";
 	};
