@@ -1237,7 +1237,6 @@ static void properties_load(const char *root)
 	struct stat st;
 	int i, fd;
 	ssize_t n;
-	char *p;
 
 	paths[0] = py_join(root, "properties");
 	paths[1] = (char *)properties_file;
@@ -1249,12 +1248,16 @@ static void properties_load(const char *root)
 			properties_text = malloc(st.st_size + 1);
 			if (properties_text) {
 				n = read(fd, properties_text, st.st_size);
-				if (n > 0) {
+				/*
+				 * Keep the bytes as they are. A "#" line is skipped by the
+				 * lookup below, so nothing has to be stripped here -- and an
+				 * earlier version of this loop cut the file at the first
+				 * comment, leaving 72 bytes of a 10 KB file and silently
+				 * answering every property as empty, which is exactly the
+				 * bug this file exists to fix.
+				 */
+				if (n > 0)
 					properties_text[n] = 0;
-					for (p = properties_text; *p; p++)
-						if (*p == '\n' && p[1] == '#')
-							*p = 0;
-				}
 			}
 		}
 		close(fd);
@@ -1263,32 +1266,60 @@ static void properties_load(const char *root)
 	free(paths[0]);
 }
 
-/* the value of one key, or NULL: the file's format is key=value, one per line */
-static const char *properties_get(const char *key)
+/*
+ * The value of one key, or NULL. The file's format is key=value, one per line, and
+ * "#" starts a comment.
+ *
+ * The scan does NOT modify the buffer: an earlier version wrote a NUL over each
+ * newline as it walked, so the first lookup destroyed the line boundaries and every
+ * later lookup found only the first line and answered empty -- the same failure this
+ * file exists to prevent, reintroduced by the lookup itself. Boundaries are found,
+ * not made, and the value is returned as a length so no copy is needed either.
+ */
+static const char *properties_get_n(const char *key, size_t *len)
 {
 	size_t klen = strlen(key);
-	char *line, *next, *eq, *end;
+	const char *line, *end;
 
 	if (!properties_text)
 		return NULL;
-	for (line = properties_text; line && *line; line = next) {
-		next = strchr(line, '\n');
-		if (next)
-			*next++ = 0;
-		while (*line == ' ' || *line == '\t')
+	for (line = properties_text; line && *line; line = end) {
+		const char *nl = strchr(line, '\n');
+		const char *eq;
+
+		end = nl ? nl + 1 : line + strlen(line);
+		while (line < end && (*line == ' ' || *line == '\t'))
 			line++;
-		if (*line == '#')
+		if (line < end && *line == '#')
 			continue;
-		eq = strchr(line, '=');
+		eq = memchr(line, '=', end - line);
 		if (!eq)
 			continue;
 		if ((size_t)(eq - line) != klen || memcmp(line, key, klen))
 			continue;
-		/* the last assignment wins, as a property set twice would */
-		end = eq + 1;
-		return end;
+		*len = end - (eq + 1);
+		if (*len && eq[1 + *len - 1] == '\n')
+			(*len)--;
+		if (*len && eq[1 + *len - 1] == '\r')
+			(*len)--;
+		return eq + 1;
 	}
 	return NULL;
+}
+
+static const char *properties_get(const char *key)
+{
+	static char value[512];
+	size_t len = 0;
+	const char *p = properties_get_n(key, &len);
+
+	if (!p)
+		return NULL;
+	if (len >= sizeof(value))
+		len = sizeof(value) - 1;
+	memcpy(value, p, len);
+	value[len] = 0;
+	return value;
 }
 
 /* report a key the file does not carry, once per run */
