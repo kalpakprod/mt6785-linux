@@ -88,7 +88,9 @@ struct mt6360_priv {
 	struct regmap *regmap;
 	struct mutex lock;
 	unsigned int fled_strobe_used;
+	unsigned int fled_timeout_latched;
 	unsigned int fled_torch_used;
+	bool strobe_timeout_irq;
 	unsigned int leds_active;
 	unsigned int leds_count;
 	struct mt6360_led leds[] __counted_by(leds_count);
@@ -231,6 +233,29 @@ static int _mt6360_flash_brightness_set(struct led_classdev_flash *fl_cdev,
 				  MT6360_ISTROBE_MASK, val);
 }
 
+/*
+ * The chip ends a strobe by itself when the timeout programmed into STRBTO
+ * expires; this event is how the driver learns about it. Clearing the software
+ * flag here is what makes the "flash_strobe" attribute read 0 again by itself,
+ * and the latch is what lets mt6360_fault_get() report the timeout exactly once.
+ */
+static irqreturn_t mt6360_strobe_timeout_irq(int irq, void *data)
+{
+	struct mt6360_led *led = data;
+	struct mt6360_priv *priv = led->priv;
+	u32 bit = BIT(led->led_no);
+
+	mutex_lock(&priv->lock);
+	priv->fled_strobe_used &= ~bit;
+	priv->fled_timeout_latched |= bit;
+	mutex_unlock(&priv->lock);
+
+	dev_dbg(led->flash.led_cdev.dev, "strobe of LED %d ended by timeout\n",
+		led->led_no);
+
+	return IRQ_HANDLED;
+}
+
 static int mt6360_strobe_set(struct led_classdev_flash *fl_cdev, bool state)
 {
 	struct mt6360_led *led =
@@ -368,8 +393,18 @@ static int mt6360_fault_get(struct led_classdev_flash *fl_cdev, u32 *fault)
 	if (chg_stat & MT6360_FLEDCHGVINOVP_MASK)
 		rfault |= LED_FAULT_INPUT_VOLTAGE;
 
-	if (fled_stat & strobe_timeout_mask)
+	/*
+	 * The chip latches its strobe-timeout status and this driver has no
+	 * documented way to clear it, so once the timeout interrupt is wired the
+	 * event is what reports the timeout: one bitmap entry per timeout, read
+	 * and cleared here. Without the interrupt, fall back to the status bit.
+	 */
+	if (priv->fled_timeout_latched & BIT(led->led_no)) {
 		rfault |= LED_FAULT_TIMEOUT;
+		priv->fled_timeout_latched &= ~BIT(led->led_no);
+	} else if (!priv->strobe_timeout_irq && (fled_stat & strobe_timeout_mask)) {
+		rfault |= LED_FAULT_TIMEOUT;
+	}
 
 	if (fled_stat & fled_short_mask)
 		rfault |= LED_FAULT_SHORT_CIRCUIT;
@@ -781,6 +816,47 @@ static void mt6360_v4l2_flash_release(struct mt6360_priv *priv)
 	}
 }
 
+/*
+ * The MT6360 MFD cell gives the LED block the two strobe-timeout events as
+ * named interrupt resources (drivers/mfd/mt6360-core.c:305-311), so wiring them
+ * needs no DT or binding change. A board whose chip does not deliver them keeps
+ * working without, only with the stale-flag behaviour this driver had before.
+ */
+static void mt6360_request_strobe_timeout_irqs(struct platform_device *pdev)
+{
+	struct mt6360_priv *priv = platform_get_drvdata(pdev);
+	int i;
+
+	for (i = 0; i < priv->leds_count; i++) {
+		struct mt6360_led *led = priv->leds + i;
+		const char *name;
+		int irq, ret;
+
+		if (led->led_no == MT6360_LED_FLASH1)
+			name = "fled1_strb_to_evt";
+		else if (led->led_no == MT6360_LED_FLASH2)
+			name = "fled2_strb_to_evt";
+		else
+			continue;
+
+		irq = platform_get_irq_byname_optional(pdev, name);
+		if (irq <= 0)
+			continue;
+
+		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
+						mt6360_strobe_timeout_irq,
+						IRQF_ONESHOT, name, led);
+		if (ret) {
+			dev_warn(&pdev->dev,
+				 "no %s event for LED %d: %d\n", name,
+				 led->led_no, ret);
+			continue;
+		}
+
+		priv->strobe_timeout_irq = true;
+	}
+}
+
 static int mt6360_led_probe(struct platform_device *pdev)
 {
 	struct mt6360_priv *priv;
@@ -858,6 +934,8 @@ static int mt6360_led_probe(struct platform_device *pdev)
 
 		i++;
 	}
+
+	mt6360_request_strobe_timeout_irqs(pdev);
 
 	platform_set_drvdata(pdev, priv);
 	return 0;
