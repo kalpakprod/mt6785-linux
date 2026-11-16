@@ -98,6 +98,32 @@ else
 	pass "a boot without /proc/vmcore writes no dump"
 fi
 
+# --- 6. the capture kernel's own log is written after the mount
+root=$work/kmsg
+mkdir -p "$root/dev"
+printf 'kernel: Booting Linux on physical CPU 0x0\nkernel: crashkernel reserved\n' > "$root/dev/kmsg"
+run_case kmsg
+if grep -q "capture kernel log, after mounting" "$root"/var/lib/poco/crash/*.kmsg 2>/dev/null &&
+   grep -q "Booting Linux on physical CPU" "$root"/var/lib/poco/crash/*.kmsg 2>/dev/null; then
+	pass "the capture kernel's own log is saved after the mount"
+else
+	fail "the capture kernel's own log is saved after the mount"
+fi
+
+# --- 7. planted fault: a self-test boot (no vmcore) must still leave its log and
+#        must not pretend a crashed kernel was read
+root=$work/selftest
+mkdir -p "$root/dev"
+printf 'kernel: selftest boot line\n' > "$root/dev/kmsg"
+run_case selftest novmcore
+if ls "$root"/var/lib/poco/crash/*-selftest.kmsg >/dev/null 2>&1 &&
+   grep -q "selftest boot line" "$root"/var/lib/poco/crash/*-selftest.kmsg &&
+   ! ls "$root"/var/lib/poco/crash/*.txt >/dev/null 2>&1; then
+	pass "a self-test boot leaves its own log and no fake dump"
+else
+	fail "a self-test boot leaves its own log and no fake dump"
+fi
+
 echo
 echo "$fails case(s) failed"
 exit "$fails"

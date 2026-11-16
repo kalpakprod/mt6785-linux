@@ -99,6 +99,47 @@ static void read_cmdline(void)
 	}
 }
 
+/*
+ * Save this kernel's own log. The capture kernel has no console on this phone
+ * (no serial header, no display driver worth the risk), so if it dies after the
+ * filesystem is mounted and before it writes the dump, the only way to know why
+ * is to have written its own log first. Called twice: right after the mount and
+ * again just before the reboot, appending the second time.
+ */
+static void dump_kmsg(const char *path, const char *tag)
+{
+	char kmsg[512], buf[4096];
+	FILE *in, *out;
+	ssize_t n;
+	int fd;
+
+	fd = open(root_path("/dev/kmsg", kmsg, sizeof(kmsg)), O_RDONLY | O_NONBLOCK);
+	if (fd < 0) {
+		logmsg("crash-init: no /dev/kmsg (%s)", strerror(errno));
+		return;
+	}
+	out = fopen(path, "a");
+	if (!out) {
+		close(fd);
+		logmsg("crash-init: cannot write %s: %s", path, strerror(errno));
+		return;
+	}
+	fprintf(out, "===== capture kernel log, %s =====\n", tag);
+	in = fdopen(fd, "r");
+	if (in) {
+		/* /dev/kmsg is read as records, one per line; non-blocking, so this
+		 * stops at EAGAIN once everything printed so far has been read. */
+		while ((n = read(fd, buf, sizeof(buf) - 1)) > 0) {
+			buf[n] = '\0';
+			fputs(buf, out);
+		}
+		fclose(in);
+	} else {
+		close(fd);
+	}
+	fclose(out);
+}
+
 static int mkdir_p(const char *path)
 {
 	char tmp[512];
@@ -262,7 +303,7 @@ int main(int argc, char **argv)
 	const char *used = "notes";
 	time_t now = time(NULL);
 	struct tm tm;
-	int i, done = 0;
+	int i, done = 0, selftest = 0;
 	long total;
 	FILE *f;
 
@@ -283,8 +324,8 @@ int main(int argc, char **argv)
 
 		if (!file_exists(root_path("/proc/vmcore", vmcore,
 					   sizeof(vmcore)))) {
-			logmsg("crash-init: /proc/vmcore is not there - not a crash kernel?");
-			goto out;
+			selftest = 1;
+			logmsg("crash-init: no /proc/vmcore - self-test boot");
 		}
 	}
 
@@ -332,6 +373,26 @@ int main(int argc, char **argv)
 	gmtime_r(&now, &tm);
 	strftime(stamp, sizeof(stamp), "%Y%m%dT%H%M%SZ", &tm);
 	snprintf(marker, sizeof(marker), "%s/%s.txt", outdir, stamp);
+
+	/*
+	 * First thing after the mount: save our own log. Whatever happens next -
+	 * the dumpers, a driver that resets shared hardware, a reboot that hangs -
+	 * this file is the only account of it.
+	 */
+	{
+		char kmsgfile[sizeof(marker) + 8];
+
+		snprintf(kmsgfile, sizeof(kmsgfile), "%s/%s%s.kmsg", outdir, stamp,
+			 selftest ? "-selftest" : "");
+		dump_kmsg(kmsgfile, "after mounting the phone filesystem");
+		if (selftest)
+			logmsg("crash-init: self-test, log in %s", kmsgfile);
+	}
+
+	/* A self-test boot has no crashed kernel to read: the log above is the
+	 * whole point, so go straight to the reboot. */
+	if (selftest)
+		goto out;
 
 	/* Try each dumper; the first that produces a non-empty file wins. */
 	for (i = 0; i < (int)(sizeof(dumpers) / sizeof(dumpers[0])); i++) {
@@ -387,6 +448,22 @@ int main(int argc, char **argv)
 	logmsg("crash-init: %s (%ld bytes)", done ? marker : "no dump", total);
 
 out:
+	/* The second half of the log, if the filesystem is mounted at all. */
+	if (*crashdir) {
+		char kmsgfile[sizeof(marker) + 8];
+
+		if (!stamp[0])
+			snprintf(stamp, sizeof(stamp), "boot");
+#ifdef CRASH_TEST
+		snprintf(kmsgfile, sizeof(kmsgfile), "%s%s/%s%s.kmsg", MOUNT_DIR,
+			 crashdir, stamp, selftest ? "-selftest" : "");
+#else
+		snprintf(kmsgfile, sizeof(kmsgfile), "/mnt%s/%s%s.kmsg", crashdir,
+			 stamp, selftest ? "-selftest" : "");
+#endif
+		dump_kmsg(kmsgfile, "before reboot");
+	}
+
 	/*
 	 * Leave the filesystem clean: sync, unmount, sync again. The capture kernel
 	 * reboots without a shutdown, and an unclean userdata would be the second
