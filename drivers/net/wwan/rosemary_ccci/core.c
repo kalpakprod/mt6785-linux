@@ -420,61 +420,6 @@ static int clear_smem(struct ccci_md *md)
 
 /* ---- the boot state machine ------------------------------------------- */
 
-/*
- * The 100 ms power sample, for the window between probe and the boot.
- *
- * It exists because the trial measured this: PWR_CON(0x318) stays 0xd (reset
- * released, power on, second power bit) while PWR_STATUS and PWR_STATUS_2ND both
- * lose bit 0 between 5.6 s and 11.7 s, and nothing on the Linux side runs a
- * power-off -- genpd keeps the domain with stay_on=1 and never reaches scpsys.
- * So the domain lost power with its control register unchanged, and the cause is
- * below the MTCMOS switch: a supply, or a hardware state machine.
- *
- * Every 100 ms this reads the registers and the two supplies the device tree
- * gives the modem, and prints one line ONLY when something changed, so the moment
- * of a drop is known to 100 ms and can be lined up against the rest of dmesg.
- * Nothing is written and nothing is decided here.
- */
-static void md_sample_power(struct work_struct *work)
-{
-	struct ccci_md *md = container_of(to_delayed_work(work), struct ccci_md, sampler);
-	unsigned int sta, sta2, con, iso, src, r13, clk;
-	int ven = -1, vsen = -1, vuv = 0, vsuv = 0;
-	char line[256];
-	static char last[256];
-	u64 ms = ktime_to_ms(ktime_get());
-
-	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
-	regmap_read(md->spm_map, SPM_PWR_STATUS_2ND, &sta2);
-	regmap_read(md->spm_map, SPM_MD1_PWR_CON, &con);
-	regmap_read(md->spm_map, SPM_MD_EXT_BUCK_ISO_CON, &iso);
-	regmap_read(md->spm_map, SPM_PCM_REG13_DATA, &r13);
-	clk = md->spm ? readl(md->spm + SPM_CLK_CON) : 0;
-	src = md->infra ? readl(md->infra + INFRA_MD_SRCCLKENA) : 0;
-
-	if (md->vmodem) {
-		ven = regulator_is_enabled(md->vmodem);
-		vuv = regulator_get_voltage(md->vmodem);
-	}
-	if (md->vsram_md) {
-		vsen = regulator_is_enabled(md->vsram_md);
-		vsuv = regulator_get_voltage(md->vsram_md);
-	}
-
-	scnprintf(line, sizeof(line),
-		  "%llums md_bit=%u STA=%#x STA2=%#x CON=%#x ISO=%#x SRCCLKENA=%#x R13=%#x(clk_ena=%u apsrc=%u) CLK_B21=%u vmodem=%d/%duV vsram=%d/%duV",
-		  ms, (u32)(sta & BIT(0)), sta, sta2, con, iso, src & 0xff, r13,
-		  !!(r13 & SPM_R13_MD_SRCCLKENA_0), !!(r13 & SPM_R13_MD_APSRC_REQ_0),
-		  !!(clk & BIT(21)), ven, vuv, vsen, vsuv);
-
-	if (strcmp(line + strcspn(line, " ") + 1, last)) {
-		/* the timestamp is not part of the comparison: only the values are */
-		snprintf(last, sizeof(last), "%s", line + strcspn(line, " ") + 1);
-		dev_info(md->dev, "sample %s\n", line);
-	}
-	schedule_delayed_work(&md->sampler, msecs_to_jiffies(100));
-}
-
 /**
  * md_domain_on() - power the modem's MTCMOS domain and prove it is on
  * @md: the modem
@@ -507,8 +452,8 @@ static void md_domain_trace(struct ccci_md *md, const char *when)
 	/* the infra window is mapped after the probe's first check, so it may be absent */
 	if (md->infra)
 		prot = readl(md->infra + INFRA_TOPAXI_PROTECTEN);
-	dev_info(md->dev,
-		 "domain %-16s: PWR_STATUS=%#x PWR_STATUS_2ND=%#x md_bit=%u PWR_CON(%#x)=%#x PROTECTEN=%#x runtime_status=%d usage=%d\n",
+	dev_dbg(md->dev,
+		"domain %-16s: PWR_STATUS=%#x PWR_STATUS_2ND=%#x md_bit=%u PWR_CON(%#x)=%#x PROTECTEN=%#x runtime_status=%d usage=%d\n",
 		 when, sta, sta2, (u32)(sta & BIT(0)), SPM_MD1_PWR_CON, con, prot,
 		 md->dev->power.runtime_status,
 		 atomic_read(&md->dev->power.usage_count));
@@ -526,11 +471,12 @@ static bool md_domain_is_on(struct ccci_md *md)
 /*
  * One line per step of the boot prefix.
  *
- * The trial needs to see WHERE power goes when the boot starts early, so every
- * step of md_boot()'s prefix reports the same three numbers the sampler reports:
- * the md bit, PWR_STATUS and the domain's control register. The lines are cheap
- * (twelve per boot) and they turn "it went off somewhere in the prefix" into the
- * name of the step it went off in.
+ * The trial needed to see WHERE power went when the boot started early, and this
+ * is what showed it: twelve lines per boot, each with the md bit, PWR_STATUS and
+ * the domain's control register. They did their job, so they are debug-level now:
+ * enable them for a trial with
+ *
+ *   echo 'file core.c +p' > /sys/kernel/debug/dynamic_debug/control
  */
 static void md_step(struct ccci_md *md, const char *step)
 {
@@ -538,8 +484,8 @@ static void md_step(struct ccci_md *md, const char *step)
 
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
 	regmap_read(md->spm_map, SPM_MD1_PWR_CON, &con);
-	dev_info(md->dev, "step %-22s: md_bit=%u STA=%#x CON=%#x\n",
-		 step, (u32)(sta & BIT(0)), sta, con);
+	dev_dbg(md->dev, "step %-22s: md_bit=%u STA=%#x CON=%#x\n",
+		step, (u32)(sta & BIT(0)), sta, con);
 }
 
 static int md_domain_on(struct ccci_md *md)
@@ -599,6 +545,7 @@ static int md_boot(struct ccci_md *md)
 	int limit = stage_limit();
 	unsigned long deadline;
 	u32 before = 0, after = 0;
+	u32 gate_off_bit = 0;
 	int ret;
 
 	if (md->no_boot_info) {
@@ -612,8 +559,6 @@ static int md_boot(struct ccci_md *md)
 	}
 
 	ccci_set_state(md, MD_STATE_BOOTING);
-	/* the sample has done its job: the window it watches ends here */
-	cancel_delayed_work_sync(&md->sampler);
 	reinit_completion(&md->hs1);
 	reinit_completion(&md->hs2);
 	md->pending = 0;
@@ -655,14 +600,41 @@ static int md_boot(struct ccci_md *md)
 	if (ccci_dpmaif_start(md))
 		dev_warn(md->dev, "no packet data path\n");
 	md_step(md, "dpmaif_start");
-	ret = md_power_seq_prepare(md);
-	md_step(md, "power_seq_prepare");
-	if (ret)
-		goto err_clk;
-	ret = md_domain_on(md);
-	if (ret) {
-		dev_err(md->dev, "cannot power the md domain: %d\n", ret);
-		goto err_seq;
+	/*
+	 * The order here is the vendor's, and it matters.
+	 *
+	 * On a first boot the loader has already powered the modem and run its boot
+	 * ROM, so the domain is ON and the rails are the loader's. The vendor does
+	 * not touch the PMIC in that state: md_start_platform() verifies the boot
+	 * ROM and then powers the modem off -- gate first, then srcclkena, then the
+	 * PMIC (mt6785/md_sys1_platform.c:591-653, md_cd_power_off() :794-828) --
+	 * and md_cd_start() powers it on again in the opposite order (PMIC, then
+	 * srcclkena, then the gate, :705-770).
+	 *
+	 * Trial 15 run 2 measured why that matters: with the rails re-applied
+	 * while the domain was on, `power_seq_prepare` read back md_bit=0
+	 * (STA 0x27dffc, only bit 0 dropped) at 35.951 s -- the rail was disturbed
+	 * under a live domain. The same signature appears in the -modem13 trace,
+	 * where the first `before get` after power_seq_prepare read bit 0 clear.
+	 * Which sub-step inside power_seq_prepare does it is not measured; what is
+	 * measured is that the vendor never performs that step with the gate on,
+	 * and this driver now does not either.
+	 */
+	if (md->first_boot) {
+		ret = md_domain_on(md);
+		if (ret) {
+			dev_err(md->dev, "cannot power the md domain: %d\n", ret);
+			goto err_clk;
+		}
+	} else {
+		ret = md_power_seq_prepare(md);
+		if (ret)
+			goto err_clk;
+		ret = md_domain_on(md);
+		if (ret) {
+			dev_err(md->dev, "cannot power the md domain: %d\n", ret);
+			goto err_seq;
+		}
 	}
 
 	if (md->first_boot) {
@@ -700,16 +672,25 @@ static int md_boot(struct ccci_md *md)
 		 * raw write to 0x318.
 		 */
 		pm_runtime_put_sync(md->dev);
-		md_step(md, "cycle: gate off");
+		gate_off_bit = md_domain_is_on(md) ? 1 : 0;
+		md_step(md, "restart: gate off");
 		md_power_seq_release(md);
-		md_step(md, "cycle: supplies off");
+		md_step(md, "restart: supplies off");
 		ret = md_power_seq_prepare(md);
 		if (ret)
 			goto err_clk;
 		ret = pm_runtime_resume_and_get(md->dev);
-		md_step(md, "cycle: gate on");
+		md_step(md, "restart: gate on");
 		if (ret)
 			goto err_seq;
+		/*
+		 * One line, because this is the one thing a trial has to see at a
+		 * glance: the vendor restarts the modem by taking the domain down and
+		 * bringing it back, and genpd can refuse to move it. `gate off 0` and
+		 * `gate on 1` means the restart was real.
+		 */
+		dev_info(md->dev, "restart before the release: gate off md_bit=%u, gate on md_bit=%u\n",
+			 gate_off_bit, (u32)md_domain_is_on(md));
 		if (!md_domain_is_on(md))
 			dev_warn(md->dev,
 				 "the md domain did not come back on; the vendor's restart could not run here\n");
@@ -938,7 +919,6 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 		spin_lock_init(&md->tx_lock[i]);
 	INIT_WORK(&md->rx_work, ccci_rx_work);
 	INIT_WORK(&md->boot_work, boot_work);
-	INIT_DELAYED_WORK(&md->sampler, md_sample_power);
 	platform_set_drvdata(pdev, md);
 
 	/* M0: the domain must be powerable and PWR_STATUS must read 1 */
@@ -1028,8 +1008,6 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(dev, "no packet data path: %d\n", ret);
 
-	/* start the 100 ms power sample; md_boot() stops it */
-	schedule_delayed_work(&md->sampler, msecs_to_jiffies(100));
 	dev_info(dev, "probed: stop_after %s, the modem stays %s until userspace boots it\n",
 		 stop_after ?: "?", state_names[md->state]);
 	return 0;

@@ -385,7 +385,6 @@ struct ccci_md {
 
 	/* boot */
 	struct work_struct boot_work;
-	struct delayed_work sampler;	/* 100 ms power sample, see md_sample_power() */
 	struct mutex lock;
 	enum ccci_state state;
 	bool first_boot;

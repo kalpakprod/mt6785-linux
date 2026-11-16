@@ -1117,13 +1117,13 @@ static int fs_open_path(const struct arg *wpath, uint32_t flags)
 		int err = err_conv(errno);
 
 		/*
-		 * In -v mode the path and the flags of every failed open are the
-		 * one fact an assert cannot show by itself: the modem asserts with
-		 * a file and a line of its own, and this line is what ties it to
-		 * the request behind it.
+		 * Always, not only in -v mode: a file the modem asked for and did not
+		 * get is the one fact its own exception record cannot show, and the
+		 * next assert has to be tieable to a name. A successful open stays
+		 * verbose.
 		 */
-		if (verbose)
-			log_msg("fs open flags 0x%x -> %d: %s", flags, err, p);
+		log_msg("fs open FAILED flags 0x%x -> %d (%s): %s", flags, err,
+			strerror(errno), p);
 		free(p);
 		return err;
 	}
@@ -1658,6 +1658,14 @@ static void fs_op(uint32_t opc, struct arg *args, int argc, struct res *r)
 			res_u32(r, 0);
 			res_bytes(r, NULL, 0);
 		} else {
+			/*
+			 * A read that returns less than asked is always named. The modem
+			 * reads NVRAM containers with an expected length, and a short
+			 * answer is indistinguishable from an empty one in its own record.
+			 */
+			if (got < n)
+				log_msg("fs short read %zd of %d: %s", got, n,
+					f->path ?: "(no path)");
 			res_u32(r, 0);
 			res_u32(r, got);
 			res_bytes(r, data, got);
@@ -2065,6 +2073,9 @@ static void fs_op(uint32_t opc, struct arg *args, int argc, struct res *r)
 				fs_close_handle(h);
 				goto cr_out;
 			}
+			if (got < pr[8])
+				log_msg("fs short read (compound) %zd of %u: %s", got,
+					pr[8], files[h].path ?: "(no path)");
 			count = got;
 			step |= 8;
 		}
@@ -2467,8 +2478,14 @@ static int at_start(struct at *a)
 	if (!a->opened) {
 		const char *base = strrchr(port, '/') + 1;
 
+		/*
+		 * The device directory, not the file: the loop below appends
+		 * "/uevent" for both the AT port and the net links. Storing the file
+		 * path here produced "/uevent/uevent" and the [Errno 20] the trial
+		 * logged.
+		 */
 		snprintf(at_port_uevent, sizeof(at_port_uevent),
-			 "/sys/class/wwan/%s/uevent", base);
+			 "/sys/class/wwan/%s", base);
 		log_msg("AT port %s", port);
 	}
 	a->fd = open(port, O_RDWR | O_NONBLOCK | O_CLOEXEC);

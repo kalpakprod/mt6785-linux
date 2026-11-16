@@ -218,6 +218,21 @@ static void ee_print(struct ccci_md *md)
 			a->filepath, a->line_number, a->para1, a->para2,
 			a->para3, a->lr);
 	}
+
+	/*
+	 * The rest of the record, the way the vendor's dumper keeps it: the
+	 * overview is only the head of the buffer. struct ex_overview_t ends with
+	 * core_offset[], one offset per core, and past it the per-core detail
+	 * lives. The layout of that per-core part is not reproduced here -- a
+	 * wrong guess would be worse than none -- so the bytes after the overview
+	 * are printed raw, for the next trial to read with the same struct at hand.
+	 */
+	dev_err(md->dev, "exception record: core_offset[] %#x %#x %#x %#x %#x %#x %#x %#x (record %zu bytes)\n",
+		o->core_offset[0], o->core_offset[1], o->core_offset[2],
+		o->core_offset[3], o->core_offset[4], o->core_offset[5],
+		o->core_offset[6], o->core_offset[7], sizeof(*o));
+	dev_err(md->dev, "exception record: after the overview %*phN\n", 128,
+		(const u8 *)o + sizeof(*o));
 }
 
 /**
