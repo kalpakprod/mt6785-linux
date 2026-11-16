@@ -23,11 +23,15 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <sound/jack.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 
 #include "../common/mtk-soundcard-driver.h"
+#include "mt6785-afe-clk.h"
+#include "mt6785-afe-common.h"
+#include "mt6785-afe-gpio.h"
 #include "../../codecs/mt6359-accdet.h"
 #include "../../codecs/mt6359.h"
 
@@ -140,6 +144,130 @@ static const struct snd_soc_dapm_route mt6785_mt6359_routes[] = {
 	{ "AIN2", NULL, "Second Mic" },
 };
 
+static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_component *cmpnt_afe = snd_soc_rtd_to_cpu(rtd, 0)->component;
+	struct snd_soc_component *cmpnt_codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt_afe);
+	struct mt6785_afe_private *afe_priv = afe->platform_priv;
+	int phase;
+	unsigned int monitor;
+	int test_done_1, test_done_2, test_done_3;
+	int cycle_1, cycle_2, cycle_3;
+	int prev_cycle_1, prev_cycle_2, prev_cycle_3;
+	int counter;
+	bool mtkaif_calib_ok = true;
+
+	pm_runtime_get_sync(afe->dev);
+	mt6785_afe_gpio_request(afe->dev, true, MT6785_DAI_ADDA, 1);
+	mt6785_afe_gpio_request(afe->dev, true, MT6785_DAI_ADDA, 0);
+	mt6785_afe_gpio_request(afe->dev, true, MT6785_DAI_ADDA_CH34, 1);
+	mt6785_afe_gpio_request(afe->dev, true, MT6785_DAI_ADDA_CH34, 0);
+
+	mt6359_mtkaif_calibration_enable(cmpnt_codec);
+
+	/* set clock protocol 2 */
+	regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP, 0xff, 0x38);
+	regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP, 0xff, 0x39);
+
+	/* set test type to synchronizer pulse */
+	regmap_update_bits(afe_priv->topckgen, CKSYS_AUD_TOP_CFG, 0xffff, 0x4);
+
+	afe_priv->mtkaif_calibration_num_phase = 42;	/* mt6359: 0 ~ 42 */
+	afe_priv->mtkaif_chosen_phase[0] = -1;
+	afe_priv->mtkaif_chosen_phase[1] = -1;
+	afe_priv->mtkaif_chosen_phase[2] = -1;
+
+	for (phase = 0;
+	     phase <= afe_priv->mtkaif_calibration_num_phase && mtkaif_calib_ok;
+	     phase++) {
+		mt6359_set_mtkaif_calibration_phase(cmpnt_codec, phase, phase, phase);
+
+		regmap_update_bits(afe_priv->topckgen, CKSYS_AUD_TOP_CFG, 0x1, 0x1);
+
+		test_done_1 = 0;
+		test_done_2 = 0;
+		test_done_3 = 0;
+		cycle_1 = -1;
+		cycle_2 = -1;
+		cycle_3 = -1;
+		counter = 0;
+		while (test_done_1 == 0 || test_done_2 == 0 || test_done_3 == 0) {
+			regmap_read(afe_priv->topckgen, CKSYS_AUD_TOP_MON, &monitor);
+
+			test_done_1 = (monitor >> 28) & 0x1;
+			test_done_2 = (monitor >> 29) & 0x1;
+			test_done_3 = (monitor >> 30) & 0x1;
+			if (test_done_1 == 1)
+				cycle_1 = monitor & 0xf;
+			if (test_done_2 == 1)
+				cycle_2 = (monitor >> 4) & 0xf;
+			if (test_done_3 == 1)
+				cycle_3 = (monitor >> 8) & 0xf;
+
+			/* handle if never test done */
+			if (++counter > 10000) {
+				dev_err(afe->dev,
+					"%s(), test fail, cycle_1 %d, cycle_2 %d, cycle_3 %d, monitor 0x%x\n",
+					__func__, cycle_1, cycle_2, cycle_3, monitor);
+				mtkaif_calib_ok = false;
+				break;
+			}
+		}
+
+		if (phase == 0) {
+			prev_cycle_1 = cycle_1;
+			prev_cycle_2 = cycle_2;
+			prev_cycle_3 = cycle_3;
+		}
+
+		if (cycle_1 != prev_cycle_1 && afe_priv->mtkaif_chosen_phase[0] < 0) {
+			afe_priv->mtkaif_chosen_phase[0] = phase - 1;
+			afe_priv->mtkaif_phase_cycle[0] = prev_cycle_1;
+		}
+		if (cycle_2 != prev_cycle_2 && afe_priv->mtkaif_chosen_phase[1] < 0) {
+			afe_priv->mtkaif_chosen_phase[1] = phase - 1;
+			afe_priv->mtkaif_phase_cycle[1] = prev_cycle_2;
+		}
+		if (cycle_3 != prev_cycle_3 && afe_priv->mtkaif_chosen_phase[2] < 0) {
+			afe_priv->mtkaif_chosen_phase[2] = phase - 1;
+			afe_priv->mtkaif_phase_cycle[2] = prev_cycle_3;
+		}
+
+		regmap_update_bits(afe_priv->topckgen, CKSYS_AUD_TOP_CFG, 0x1, 0x0);
+
+		if (afe_priv->mtkaif_chosen_phase[0] >= 0 &&
+		    afe_priv->mtkaif_chosen_phase[1] >= 0 &&
+		    afe_priv->mtkaif_chosen_phase[2] >= 0)
+			break;
+	}
+
+	/* a phase that never toggled keeps the default 0, as upstream does */
+	mt6359_set_mtkaif_calibration_phase(cmpnt_codec,
+					    max(afe_priv->mtkaif_chosen_phase[0], 0),
+					    max(afe_priv->mtkaif_chosen_phase[1], 0),
+					    max(afe_priv->mtkaif_chosen_phase[2], 0));
+
+	/* disable rx fifo */
+	regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP, 0xff, 0x38);
+
+	mt6359_mtkaif_calibration_disable(cmpnt_codec);
+
+	mt6785_afe_gpio_request(afe->dev, false, MT6785_DAI_ADDA, 1);
+	mt6785_afe_gpio_request(afe->dev, false, MT6785_DAI_ADDA, 0);
+	mt6785_afe_gpio_request(afe->dev, false, MT6785_DAI_ADDA_CH34, 1);
+	mt6785_afe_gpio_request(afe->dev, false, MT6785_DAI_ADDA_CH34, 0);
+	pm_runtime_put(afe->dev);
+
+	dev_info(afe->dev, "%s(), mtkaif_chosen_phase[0/1/2]:%d/%d/%d\n",
+		 __func__,
+		 afe_priv->mtkaif_chosen_phase[0],
+		 afe_priv->mtkaif_chosen_phase[1],
+		 afe_priv->mtkaif_chosen_phase[2]);
+
+	return 0;
+}
+
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_component *cmpnt_codec =
@@ -148,6 +276,16 @@ static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 
 	/* The AFE and the PMIC codec talk over MTKAIF protocol 2, clock phase 2 */
 	mt6359_set_mtkaif_protocol(cmpnt_codec, MT6359_MTKAIF_PROTOCOL_2_CLK_P2);
+
+	/*
+	 * Then sweep the MTKAIF receive phase and keep the one that samples the
+	 * codec's synchronisation pulse in the middle of its window: without it
+	 * the AFE's receive side samples at phase 0 whatever the board's clock
+	 * skew is, and a capture then records zeros while every widget on the
+	 * path reads On. Both the vendor's board driver and mt8192's do this
+	 * right after setting the protocol.
+	 */
+	mt6785_mt6359_mtkaif_calibration(rtd);
 
 	/*
 	 * The headset jack belongs to the codec's accessory detection block: the
