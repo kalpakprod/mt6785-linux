@@ -1929,26 +1929,16 @@
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1402XXXX 0x1000 0x1000>;
 
-			ports {
-				#address-cells = <1>;
-				#size-cells = <0>;
-
-				port@0 {
-					reg = <0>;
-
-					postmask0_in: endpoint {
-						remote-endpoint = <&gamma0_out>;
-					};
-				};
-
-				port@1 {
-					reg = <1>;
-
-					postmask0_out: endpoint {
-						remote-endpoint = <&dither0_in>;
-					};
-				};
-			};
+			/*
+			 * Not in the path this tree builds either: the DRM master's own
+			 * component list (dmesg "Adding component match for ...") names ovl0,
+			 * ovl_2l0, rdma, color, ccorr, aal, gamma and dsi, and postmask0 is not
+			 * among them, so like dither0 it is never bound -- and a described
+			 * device with a power-domains property is a consumer whether it binds
+			 * or not. Left enabled it keeps sync_state pending on its own, so the
+			 * same fix has to cover both.
+			 */
+			status = "disabled";
 		};
 
 		imgsys: clock-controller@15020000 {
