@@ -616,6 +616,7 @@
 #include "mt6785-xiaomi-rosemary-audio.dtsi"
 #include "mt6785-xiaomi-rosemary-sensors.dtsi"
 #include "mt6785-xiaomi-rosemary-irtx.dtsi"
+#include "mt6785-xiaomi-rosemary-nfc.dtsi"
 #include "mt6785-xiaomi-rosemary-modem.dtsi"
 #include "mt6785-xiaomi-rosemary-camera.dtsi"
 #include "mt6785-xiaomi-rosemary-fingerprint.dtsi"
