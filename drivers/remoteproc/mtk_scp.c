@@ -1618,7 +1618,19 @@ static const struct mtk_scp_sizes_data mt6785_scp_sizes = {
 	.ipi_share_buffer_size = MT6785_SCP_IPI_BUF_SIZE,
 };
 
+/*
+ * MT6785 asks the kernel for no SCP clock, and that is not an omission: its
+ * vendor node has no clocks at all ("scp@10500000" in the vendor tree,
+ * mt6785.dts:1021-1062, lists reg and interrupts only) and its driver never
+ * calls clk_get - what it does with clocks is write the SCP clock block at
+ * cfg + 0x4000 by hand (scp_helper.c:1474-1500, ioremapped at :1764), which is
+ * what mt6785_scp_before_load() below already does. The SCP frequency mux is a
+ * separate vendor feature (the "scp_dvfs" node, mt6785.dts:657-680) that this
+ * port does not carry. So MT6785 takes the same "no clock" path as MT8195,
+ * where scp->clk stays NULL and clk_enable() is a no-op (drivers/clk/clk.c:1463).
+ */
 static const struct mtk_scp_of_data mt6785_of_data = {
+	.scp_clk_get = mt8195_scp_clk_get,
 	.scp_before_load = mt6785_scp_before_load,
 	.scp_after_load = mt6785_scp_after_load,
 	.scp_irq_handler = mt8183_scp_irq_handler,
