@@ -503,6 +503,30 @@ static bool md_domain_is_on(struct ccci_md *md)
 	return sta & BIT(0);
 }
 
+/**
+ * md_boot_stage() - the two words the modem's boot code leaves behind
+ * @md: the modem
+ * @stage0: first word, select 0
+ * @stage1: second word, select 1
+ *
+ * MD1_BOOT_STATS_SELECT (0x1020e700) picks the word, MD1_CFG_BOOT_STATS
+ * (0x1020e300) carries it, read three times with the vendor's own delay note
+ * (mt6785/md_sys1_platform.c:361-383: "dump 3 times, and buy-in the 3rd dump
+ * value"). Both are AP-side registers, so they answer whether the loader has
+ * already run the modem even when nothing else about it is reachable.
+ */
+static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1)
+{
+	writel(0, md->pll + MD1_BOOT_STATS_SELECT);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	*stage0 = readl(md->pll + MD1_CFG_BOOT_STATS);
+	writel(1, md->pll + MD1_BOOT_STATS_SELECT);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	readl(md->pll + MD1_CFG_BOOT_STATS);
+	*stage1 = readl(md->pll + MD1_CFG_BOOT_STATS);
+}
+
 /*
  * One line per step of the boot prefix.
  *
@@ -523,6 +547,54 @@ static void md_step(struct ccci_md *md, const char *step)
 		step, (u32)(sta & BIT(0)), sta, con);
 }
 
+
+/**
+ * md_power_cycle() - the vendor's restart, for a modem the loader already released
+ * @md: the modem
+ *
+ * The vendor's power-off is the gate first, then the 26 MHz request, then the
+ * PMIC (mt6785/md_sys1_platform.c:809-828); its power-on is the same three steps
+ * the other way round (:713-745). This performs that, through the two layers that
+ * own each step: runtime PM for the gate, this driver for the request and the rails.
+ *
+ * The gate is the part that can refuse. genpd keeps a domain with stay_on set until
+ * its provider's sync_state runs (of_genpd_sync_state(), drivers/pmdomain/core.c:
+ * 3684-3702), and while it does, pm_runtime_put_sync() leaves the hardware on. That
+ * case is reported and NOT papered over: writing the release into a modem that was
+ * never power-cycled is exactly the failure trial 18 measured, so the caller must
+ * not continue. Raw MTCMOS writes are not the answer either -- the domain is genpd's.
+ *
+ * Returns 0 when the modem has really been through the cycle, -EAGAIN when the gate
+ * could not be moved, or another negative error.
+ */
+static int md_power_cycle(struct ccci_md *md)
+{
+	int ret;
+
+	pm_runtime_put_sync(md->dev);
+	if (md_domain_is_on(md)) {
+		dev_err(md->dev,
+			"the md domain stayed on after the gate was released: genpd keeps it while the power controller is unsynced, so the vendor's power cycle cannot run and the release would go to a modem that is not waiting for it\n");
+		return -EAGAIN;
+	}
+	md_step(md, "cycle: gate off");
+	md_power_seq_release(md);
+	md_step(md, "cycle: supplies off");
+
+	ret = md_power_seq_prepare(md);
+	if (ret)
+		return ret;
+	ret = pm_runtime_resume_and_get(md->dev);
+	if (ret)
+		return ret;
+	md_step(md, "cycle: gate on");
+	if (!md_domain_is_on(md)) {
+		dev_err(md->dev, "the md domain did not come back on after the cycle\n");
+		return -EIO;
+	}
+	dev_info(md->dev, "power cycle done: the modem is freshly powered and waiting for the release\n");
+	return 0;
+}
 
 static int md_boot(struct ccci_md *md)
 {
@@ -647,10 +719,52 @@ static int md_boot(struct ccci_md *md)
 	 * power-domain provider being synced: nothing here needs the domain switched.
 	 */
 	if (md->first_boot) {
+		u32 stage0, stage1;
+
 		ret = md_first_boot_check(md);
 		md_step(md, "brom_check");
 		if (ret)
 			goto err_seq;
+		md_boot_stage(md, &stage0, &stage1);
+		/*
+		 * What the two words say about the state the loader left behind, and
+		 * why the driver has to act on it:
+		 *
+		 * The loader runs the modem's boot ROM once to verify the image. If
+		 * it released the modem afterwards, the boot-vector enable it wrote
+		 * has already been consumed -- the modem is past the point where the
+		 * ROM waits for it, and a second write of the same bit is ignored.
+		 * That is what trial 18 measured: stats 0x2c04010a (non-zero, so the
+		 * modem had run), then
+		 * `MD_BOOT_VECTOR_EN at 0x20000024: before 0x0, after 0x0`, an HS1
+		 * timeout with CCIF idle (busy 0, rchnum 0) and no exception.
+		 *
+		 * Trials 10 and 15 read `0x0 / 0x0` at the same point and their write
+		 * did stick: those boots the loader had left the ROM waiting, and the
+		 * enable was still ours to give.
+		 *
+		 * The vendor only ever writes that bit on a modem it has just powered
+		 * on: md_start_platform() powers the modem off after the boot-ROM check
+		 * (mt6785/md_sys1_platform.c:591-653) and md_cd_start() powers it on
+		 * again before md_cd_let_md_go() writes the bit (:777-791). It has no
+		 * path that releases a modem the loader already released -- because
+		 * from that state the write does nothing.
+		 *
+		 * Which of the vendor's stage codes these are is decoded only for a few
+		 * values, and only where it dumps an exception: 0 means "MD poweron
+		 * failed, offender DVFS", 0x5443000C and 0x53310000-0x533100FF mean an
+		 * HS1 failure (fsm/mdee_dumper_v3.c:783-808). Anything else, including
+		 * this one, the vendor logs raw. What matters here is only zero versus
+		 * not: zero is a modem that has not run.
+		 */
+		if (stage0 || stage1) {
+			dev_info(md->dev,
+				 "the loader already released the modem (boot stage %#x/%#x): its boot-vector enable is spent, so this boot needs the vendor's power cycle\n",
+				 stage0, stage1);
+			ret = md_power_cycle(md);
+			if (ret)
+				goto err_seq;
+		}
 	} else {
 		/*
 		 * Not the loader's boot: nothing has powered this modem, so the rails
@@ -682,8 +796,16 @@ static int md_boot(struct ccci_md *md)
 	 * write simply did not stick, which looked like a handshake failure 30 s
 	 * later.
 	 */
-	if (!md_domain_is_on(md))
-		dev_warn(md->dev, "the md domain is not powered: the release cannot take\n");
+	if (!md_domain_is_on(md)) {
+		/*
+		 * With the domain off there is nothing to release into: say so and stop
+		 * before writing, because a write into an unpowered modem is silently
+		 * lost and then looks like a handshake failure 30 s later (trial 14).
+		 */
+		dev_err(md->dev, "the md domain is not powered: not writing the release\n");
+		ret = -EAGAIN;
+		goto err_seq;
+	}
 	before = readl(md->boot_vector);
 	writel(1, md->boot_vector);
 	after = readl(md->boot_vector);
