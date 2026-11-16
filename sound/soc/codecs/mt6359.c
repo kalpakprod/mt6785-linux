@@ -2256,12 +2256,18 @@ static const struct snd_soc_dapm_widget mt6359_dapm_widgets[] = {
 	 * "AIF Out Mux". The enum's "Sgen" value exists for both muxes - the
 	 * vendor's own route table wires it for "DAC In Mux" only and leaves
 	 * "AIF Out Mux" with "Normal Path" alone - so without this node selecting
-	 * Sgen powers nothing, DAPM never reaches MISO0_MUX and UL_SRC, and a
-	 * capture through it returns silence while the codec's uplink source stays
-	 * off (audio12 measured 0x238e = 0x0000 during exactly that test). The
+	 * Sgen powers nothing and a capture through it returns silence while the
+	 * codec's uplink source stays off (audio12 measured 0x238e = 0x0000).
+	 *
+	 * It has to be an INPUT and not a SUPPLY like the DL generator's "SGEN
+	 * DL": a supply widget cannot be the source of a conditional (muxed) path
+	 * (sound/soc/soc-dapm.c:635-637) and the card then refuses to initialise
+	 * with "Conditional paths are not supported for supply widgets". Being the
+	 * upstream input of a mux is exactly what "SGEN DL" does for "DAC In Mux"
+	 * ({ "DAC In Mux", "Sgen", "SGEN DL" }), so the uplink mirrors it. The
 	 * generator's registers are driven by the switch below, not here.
 	 */
-	SND_SOC_DAPM_SUPPLY("SGEN UL", SND_SOC_NOPM, 0, 0, NULL, 0),
+	SND_SOC_DAPM_INPUT("SGEN UL"),
 
 	/* Uplinks */
 	SND_SOC_DAPM_AIF_OUT("AIF1TX", "AIF1 Capture", 0,
