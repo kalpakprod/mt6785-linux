@@ -234,6 +234,18 @@ struct ap_query_md_feature_v2_1 {
 
 #define SPM_POWERON_CONFIG_EN	0x000	/* write 0xb16 << 16 | 1 first */
 #define SPM_CLK_CON		0x008	/* BIT(21): srclken_o1 */
+/*
+ * PCM_REG13_DATA, the SPM register that carries the MD-side sleep handshake
+ * (base/power/spm/mt6785/mtk_spm_reg.h:88, bits from pcm_def.h:148-151):
+ * R13_MD_SRCCLKENA_0 BIT(2) and R13_MD_APSRC_REQ_0 BIT(3) for MD1. The vendor
+ * reads them to decide whether MD1 is asleep (spm_is_md1_sleep(),
+ * mtk_spm_utils.c:46-50), so they are the modem's own view of the same request.
+ */
+#define SPM_PCM_REG13_DATA	0x110
+#define SPM_R13_MD_SRCCLKENA_0	BIT(2)
+#define SPM_R13_MD_APSRC_REQ_0	BIT(3)
+/* the buck isolation the vendor's MD1 sequence clears before power-on */
+#define SPM_MD_EXT_BUCK_ISO_CON	0x3b0
 #define SPM_PWR_STATUS		0x160	/* BIT(0): the md domain is on */
 #define SPM_PWR_STATUS_2ND	0x164	/* the same, one SPM stage later */
 /* the domain's control register: PWR_RST_B BIT(0), PWR_ON BIT(2) */
@@ -373,6 +385,7 @@ struct ccci_md {
 
 	/* boot */
 	struct work_struct boot_work;
+	struct delayed_work sampler;	/* 100 ms power sample, see md_sample_power() */
 	struct mutex lock;
 	enum ccci_state state;
 	bool first_boot;

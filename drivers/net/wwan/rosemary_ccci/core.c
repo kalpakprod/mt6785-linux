@@ -420,6 +420,61 @@ static int clear_smem(struct ccci_md *md)
 
 /* ---- the boot state machine ------------------------------------------- */
 
+/*
+ * The 100 ms power sample, for the window between probe and the boot.
+ *
+ * It exists because the trial measured this: PWR_CON(0x318) stays 0xd (reset
+ * released, power on, second power bit) while PWR_STATUS and PWR_STATUS_2ND both
+ * lose bit 0 between 5.6 s and 11.7 s, and nothing on the Linux side runs a
+ * power-off -- genpd keeps the domain with stay_on=1 and never reaches scpsys.
+ * So the domain lost power with its control register unchanged, and the cause is
+ * below the MTCMOS switch: a supply, or a hardware state machine.
+ *
+ * Every 100 ms this reads the registers and the two supplies the device tree
+ * gives the modem, and prints one line ONLY when something changed, so the moment
+ * of a drop is known to 100 ms and can be lined up against the rest of dmesg.
+ * Nothing is written and nothing is decided here.
+ */
+static void md_sample_power(struct work_struct *work)
+{
+	struct ccci_md *md = container_of(to_delayed_work(work), struct ccci_md, sampler);
+	unsigned int sta, sta2, con, iso, src, r13, clk;
+	int ven = -1, vsen = -1, vuv = 0, vsuv = 0;
+	char line[256];
+	static char last[256];
+	u64 ms = ktime_to_ms(ktime_get());
+
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+	regmap_read(md->spm_map, SPM_PWR_STATUS_2ND, &sta2);
+	regmap_read(md->spm_map, SPM_MD1_PWR_CON, &con);
+	regmap_read(md->spm_map, SPM_MD_EXT_BUCK_ISO_CON, &iso);
+	regmap_read(md->spm_map, SPM_PCM_REG13_DATA, &r13);
+	clk = md->spm ? readl(md->spm + SPM_CLK_CON) : 0;
+	src = md->infra ? readl(md->infra + INFRA_MD_SRCCLKENA) : 0;
+
+	if (md->vmodem) {
+		ven = regulator_is_enabled(md->vmodem);
+		vuv = regulator_get_voltage(md->vmodem);
+	}
+	if (md->vsram_md) {
+		vsen = regulator_is_enabled(md->vsram_md);
+		vsuv = regulator_get_voltage(md->vsram_md);
+	}
+
+	scnprintf(line, sizeof(line),
+		  "%llums md_bit=%u STA=%#x STA2=%#x CON=%#x ISO=%#x SRCCLKENA=%#x R13=%#x(clk_ena=%u apsrc=%u) CLK_B21=%u vmodem=%d/%duV vsram=%d/%duV",
+		  ms, (u32)(sta & BIT(0)), sta, sta2, con, iso, src & 0xff, r13,
+		  !!(r13 & SPM_R13_MD_SRCCLKENA_0), !!(r13 & SPM_R13_MD_APSRC_REQ_0),
+		  !!(clk & BIT(21)), ven, vuv, vsen, vsuv);
+
+	if (strcmp(line + strcspn(line, " ") + 1, last)) {
+		/* the timestamp is not part of the comparison: only the values are */
+		snprintf(last, sizeof(last), "%s", line + strcspn(line, " ") + 1);
+		dev_info(md->dev, "sample %s\n", line);
+	}
+	schedule_delayed_work(&md->sampler, msecs_to_jiffies(100));
+}
+
 /**
  * md_domain_on() - power the modem's MTCMOS domain and prove it is on
  * @md: the modem
@@ -528,6 +583,8 @@ static int md_boot(struct ccci_md *md)
 	}
 
 	ccci_set_state(md, MD_STATE_BOOTING);
+	/* the sample has done its job: the window it watches ends here */
+	cancel_delayed_work_sync(&md->sampler);
 	reinit_completion(&md->hs1);
 	reinit_completion(&md->hs2);
 	md->pending = 0;
@@ -814,6 +871,7 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 		spin_lock_init(&md->tx_lock[i]);
 	INIT_WORK(&md->rx_work, ccci_rx_work);
 	INIT_WORK(&md->boot_work, boot_work);
+	INIT_DELAYED_WORK(&md->sampler, md_sample_power);
 	platform_set_drvdata(pdev, md);
 
 	/* M0: the domain must be powerable and PWR_STATUS must read 1 */
@@ -903,6 +961,8 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(dev, "no packet data path: %d\n", ret);
 
+	/* start the 100 ms power sample; md_boot() stops it */
+	schedule_delayed_work(&md->sampler, msecs_to_jiffies(100));
 	dev_info(dev, "probed: stop_after %s, the modem stays %s until userspace boots it\n",
 		 stop_after ?: "?", state_names[md->state]);
 	return 0;
