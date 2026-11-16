@@ -138,18 +138,30 @@ static int btmtkbtif_cmd_complete(struct hci_dev *hdev, u16 opcode)
 {
 	struct hci_ev_cmd_complete *ev;
 	struct sk_buff *skb;
-	u8 *sent_opcode;
+	u8 *p;
 
-	skb = bt_skb_alloc(sizeof(*ev) + sizeof(opcode), GFP_KERNEL);
+	/*
+	 * An HCI event packet is three things in a row: the H4 packet type byte
+	 * (HCI_EVENT_PKT, 0x04), the event code (HCI_EV_CMD_COMPLETE, 0x0e) and
+	 * the parameter length. This used to set the *event code* as the H4
+	 * packet type, and hci_recv_frame() classifies by that type: it hit its
+	 * default branch, freed the skb and returned -EINVAL
+	 * (net/bluetooth/hci_core.c, the "default:" arm of the switch on
+	 * hci_skb_pkt_type()). That -EINVAL then travelled back out of ->send()
+	 * as "sending frame failed (-22)" and aborted HCI init at 0x0c77.
+	 */
+	skb = bt_skb_alloc(sizeof(*ev) + 2, GFP_KERNEL);
 	if (!skb)
 		return -ENOMEM;
 
-	hci_skb_pkt_type(skb) = HCI_EV_CMD_COMPLETE;
+	hci_skb_pkt_type(skb) = HCI_EVENT_PKT;
+	p = skb_put(skb, 1);
+	*p = HCI_EV_CMD_COMPLETE;
+	p = skb_put(skb, 1);
+	*p = sizeof(*ev);
 	ev = skb_put(skb, sizeof(*ev));
 	ev->ncmd = 1;
 	ev->opcode = cpu_to_le16(opcode);
-	sent_opcode = skb_put(skb, sizeof(opcode));
-	put_unaligned_le16(opcode, sent_opcode);
 
 	/* hci_recv_frame() takes ownership of the skb. */
 	return hci_recv_frame(hdev, skb);
@@ -205,8 +217,15 @@ static int btmtkbtif_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 
 drop:
 	hdev->stat.err_tx++;
-	kfree_skb(skb);
-
+	/*
+	 * Do NOT free here. hci_send_frame() frees the skb itself when ->send()
+	 * returns an error (net/bluetooth/hci_core.c:3051-3056), so freeing it
+	 * on this path as well is a double free: the slab is handed back, then
+	 * reused by the network stack, and the second free is the "refcount_t:
+	 * underflow; use-after-free" that arrived in the USB gadget's TX
+	 * completion 1.5 s later. On success the driver owns the skb and frees
+	 * it exactly once, which is what the branch above does.
+	 */
 	return err;
 }
 
@@ -459,8 +478,22 @@ static int btmtkbtif_send(struct hci_dev *hdev, struct sk_buff *skb)
 
 	/* Workaround 3: the firmware rejects this one with status 0x01. */
 	if (opcode == BTMTKBTIF_SYNC_TRAIN_OPCODE && btmtkbtif_sync_train_fake) {
+		int ret = btmtkbtif_cmd_complete(hdev, opcode);
+
+		if (ret) {
+			/* Nothing was delivered, so the command must fail - and
+			 * on a failure the skb belongs to hci_send_frame(), which
+			 * frees it. Freeing it here as well was the second way
+			 * this path could double free.
+			 */
+			return ret;
+		}
+		/* The command was answered without touching the wire, so the
+		 * core treats it as sent: it will not free the skb, and this is
+		 * the one place that owns it.
+		 */
 		kfree_skb(skb);
-		return btmtkbtif_cmd_complete(hdev, opcode);
+		return 0;
 	}
 
 	/* Workaround 1: widen the LE event mask the core computed. */
