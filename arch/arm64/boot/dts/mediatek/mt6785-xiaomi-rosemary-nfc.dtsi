@@ -38,7 +38,16 @@
 
 		reset-gpios = <&pio 32 GPIO_ACTIVE_HIGH>;
 
-		clocks = <&clkbuf MT6359_CLKBUF_XO_NFC>;
+		/*
+		 * No clocks = <&clkbuf MT6359_CLKBUF_XO_NFC> yet: the clock buffer
+		 * provider exists (drivers/clk/mediatek/clk-mt6359-clkbuf.c) and drives
+		 * the NFC buffer the way the vendor does, but the buffer is already on
+		 * as the loader left it (measured), and the one thing still unproven is
+		 * whether setting EXTBUF3_EN_M alone brings up the 26 MHz at the pin -
+		 * the vendor also plays with the pwrap DCXO_ENABLE bit and the mode
+		 * field at boot. Until that is measured on the phone, the controller
+		 * uses the loader-left clock and the provider stays out of this DT.
+		 */
 
 		status = "okay";
 	};
