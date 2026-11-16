@@ -1411,8 +1411,6 @@ int mt6785_dai_i2s_register(struct mtk_base_afe *afe)
 	struct mtk_base_afe_dai *dai;
 	int ret;
 
-	dev_dbg(afe->dev, "%s()\n", __func__);
-
 	dai = devm_kzalloc(afe->dev, sizeof(*dai), GFP_KERNEL);
 	if (!dai)
 		return -ENOMEM;

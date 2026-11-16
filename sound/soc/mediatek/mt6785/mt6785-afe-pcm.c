@@ -2237,4 +2237,4 @@ module_platform_driver(mt6785_afe_pcm_driver);
 
 MODULE_DESCRIPTION("Mediatek ALSA SoC AFE platform driver for 8192");
 MODULE_AUTHOR("Shane Chien <shane.chien@mediatek.com>");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
