@@ -17,6 +17,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/etherdevice.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -176,12 +177,58 @@ static int btmtkbtif_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)
 	return 0;
 }
 
+/*
+ * Send the address to the controller, but never a zero one.
+ *
+ * Trial 4 showed what a zero address does: the TX stream carried
+ * 1a fc 06 00 00 00 00 00 00 00, and the firmware asserted
+ * (hcit_mtk_uart.c #449), after which HCI_Reset timed out and hci0 went down.
+ * A zero address is what hdev->bdaddr holds when the factory nvdata copy is
+ * absent and the core has not yet read the controller's own address, so in
+ * that case the right move is to learn it from the controller instead of
+ * writing it.
+ */
 static int btmtkbtif_apply_bdaddr(struct hci_dev *hdev)
 {
-	int err = btmtkbtif_set_bdaddr(hdev, &hdev->bdaddr);
+	static const u8 any[ETH_ALEN];
+	bdaddr_t ctrl_addr;
+	struct sk_buff *skb;
+	u8 *p;
+	int err = 0;
 
+	if (ether_addr_equal((const u8 *)&hdev->bdaddr, any)) {
+		/* Read BD_ADDR (0x1009) and adopt what the controller reports. */
+		skb = __hci_cmd_sync(hdev, HCI_OP_READ_BD_ADDR, 0, NULL,
+				     HCI_INIT_TIMEOUT);
+		if (IS_ERR(skb)) {
+			bt_dev_warn(hdev, "cannot read BD_ADDR (%ld), not writing one",
+				    PTR_ERR(skb));
+			return 0;
+		}
+
+		p = skb->data + sizeof(struct hci_ev_cmd_complete);
+		if (skb->len >= sizeof(struct hci_ev_cmd_complete) +
+				sizeof(struct hci_rp_read_bd_addr) &&
+		    p[0] == 0x00) {
+			memcpy(&ctrl_addr,
+			       &((struct hci_rp_read_bd_addr *)p)->bdaddr,
+			       sizeof(ctrl_addr));
+			if (!ether_addr_equal((u8 *)&ctrl_addr, any))
+				bacpy(&hdev->bdaddr, &ctrl_addr);
+		}
+		kfree_skb(skb);
+
+		if (ether_addr_equal((u8 *)&hdev->bdaddr, any)) {
+			bt_dev_info(hdev, "controller reports no address either, leaving it alone");
+			return 0;
+		}
+	}
+
+	err = btmtkbtif_set_bdaddr(hdev, &hdev->bdaddr);
 	if (!err)
-		bt_dev_info(hdev, "BD_ADDR re-applied after FUNC_CTRL(BT on)");
+		bt_dev_info(hdev, "BD_ADDR %pM applied", &hdev->bdaddr);
+	else
+		bt_dev_warn(hdev, "BD_ADDR write failed (%d)", err);
 
 	return err;
 }
