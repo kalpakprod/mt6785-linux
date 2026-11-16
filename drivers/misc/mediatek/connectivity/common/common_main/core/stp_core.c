@@ -1669,7 +1669,18 @@ INT32 mtk_wcn_stp_psm_enable(INT32 idle_time_to_sleep)
 		|| mtk_wcn_stp_is_sdio_mode() || mtk_wcn_stp_is_btif_fullset_mode()))
 		return stp_psm_enable(STP_PSM_CORE(stp_core_ctx), idle_time_to_sleep);
 
-	STP_WARN_FUNC("STP Not Ready, Dont do Sleep/Wakeup\n");
+	/*
+	 * Lead note 8: stock runs the PSM thread and enters deep idle many
+	 * times (b1-dmesg.txt:4140, :4196, ...) while our port reports this
+	 * warning after every FUNC_CTRL. The condition has three parts and the
+	 * old message named none of them, so - as on stock - say which one
+	 * failed instead of leaving it to guesswork.
+	 */
+	STP_WARN_FUNC("STP Not Ready, Dont do Sleep/Wakeup (ready=%d enable=%d mode=0x%x btif_full=%d btif_mand=%d)\n",
+		      mtk_wcn_stp_is_ready(), mtk_wcn_stp_is_enable(),
+		      STP_SUPPORT_PROTOCOL(stp_core_ctx),
+		      mtk_wcn_stp_is_btif_fullset_mode(),
+		      mtk_wcn_stp_is_btif_mand_mode());
 	return -1;
 }
 
