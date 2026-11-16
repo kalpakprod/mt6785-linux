@@ -23,6 +23,7 @@
 #include <linux/poll.h>
 #include <linux/ratelimit.h>
 #include <linux/dma-mapping.h>
+#include <linux/irq.h>
 #include <uapi/linux/sched/types.h>
 
 /*#include <mach/eint.h>*/
@@ -1407,10 +1408,24 @@ int _btif_rx_dma_setup(struct _mtk_btif_ *p_btif)
 
 /*DMA Rx IRQ register*/
 		_btif_irq_reg(p_btif_irq, btif_rx_dma_irq_handler, p_btif);
-#if 0
-/*Enable DMA Rx IRQ*/
+		/*
+		 * Enable the Rx DMA interrupt. The vendor left this disabled with
+		 * `#if 0`, so an RX only becomes visible when something else wakes
+		 * the module - in practice the next transmit. That is exactly the
+		 * trial-9 symptom: an HCI Command Complete reaches the host only
+		 * 0.5 s late, when the driver happens to touch BTIF again, and the
+		 * reply to the following command is never seen at all.
+		 *
+		 * The vFIFO already has a coherent ring bound and the interrupt was
+		 * requested on the line above, so arming it here is the difference
+		 * between "the chip's data waits in the ring" and "the host is
+		 * told".
+		 */
 		_btif_irq_ctrl(p_btif_irq, true);
-#endif
+		BTIF_INFO_FUNC("Rx DMA irq %d armed, hwirq %lu\n",
+			       p_btif_irq->irq_id,
+			       irq_get_irq_data(p_btif_irq->irq_id) ?
+				irq_get_irq_data(p_btif_irq->irq_id)->hwirq : 0UL);
 		BTIF_DBG_FUNC("succeed\n");
 	}
 	return i_ret;
