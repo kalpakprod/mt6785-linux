@@ -8,6 +8,7 @@
 
 #include <linux/module.h>
 #include <linux/i2c.h>
+#include <linux/clk.h>
 #include <linux/gpio/consumer.h>
 #include <linux/acpi.h>
 #include <linux/interrupt.h>
@@ -36,6 +37,15 @@ struct st_nci_i2c_phy {
 	bool irq_active;
 
 	struct gpio_desc *gpiod_reset;
+
+	/*
+	 * Reference clock, optional. The ST21NFCD family takes its 13.56 MHz from a
+	 * board-supplied 26 MHz source (on the pocophone that is the MT6359's XO_NFC
+	 * buffer); the older st21nfcb/st21nfcc parts in the compatible list run from
+	 * a crystal and have no such input, so the clock is optional and the driver
+	 * behaves exactly as before when the DT has none.
+	 */
+	struct clk *clk;
 
 	struct st_nci_se_status se_status;
 };
@@ -219,6 +229,17 @@ static int st_nci_i2c_probe(struct i2c_client *client)
 		dev_dbg(dev, "Unable to add GPIO mapping table\n");
 
 	/* Get RESET GPIO */
+	/*
+	 * The clock is taken as "optional enabled", the way s3fwrn5 does it
+	 * (drivers/nfc/s3fwrn5/i2c.c:177): devm-clocked, on for the life of the
+	 * device, and a missing clock is not an error. ST21NFCD needs it, its
+	 * older siblings in this list do not.
+	 */
+	phy->clk = devm_clk_get_optional_enabled(dev, NULL);
+	if (IS_ERR(phy->clk))
+		return dev_err_probe(dev, PTR_ERR(phy->clk),
+				     "failed to get the reference clock\n");
+
 	phy->gpiod_reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(phy->gpiod_reset)) {
 		nfc_err(dev, "Unable to get RESET GPIO\n");
@@ -273,6 +294,14 @@ static const struct of_device_id of_st_nci_i2c_match[] = {
 	{ .compatible = "st,st21nfcb-i2c" },
 	{ .compatible = "st,st21nfcb_i2c" },
 	{ .compatible = "st,st21nfcc-i2c" },
+	/*
+	 * ST21NFCD: same NCI/NDLC protocol as the two above - its ROM answers in
+	 * NCI and announces loader or router mode with CORE_RESET_NTF (the vendor
+	 * HAL's own strings on this phone) - but it additionally needs the
+	 * reference clock, handled above. See tools/nfc-stnfc/README.md in this
+	 * tree for the evidence.
+	 */
+	{ .compatible = "st,st21nfcd-i2c" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, of_st_nci_i2c_match);

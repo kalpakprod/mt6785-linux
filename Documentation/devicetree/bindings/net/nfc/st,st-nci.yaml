@@ -15,9 +15,21 @@ properties:
       - st,st21nfcb-i2c
       - st,st21nfcb-spi
       - st,st21nfcc-i2c
+      - st,st21nfcd-i2c
 
   reset-gpios:
     description: Output GPIO pin used for resetting the controller
+
+  clocks:
+    maxItems: 1
+    description:
+      Reference clock. The st21nfcd family has no crystal and takes its
+      13.56 MHz from a board-supplied 26 MHz source; st21nfcb/st21nfcc run
+      from an internal oscillator and do not need one.
+
+  clock-names:
+    items:
+      - const: ref
 
   ese-present:
     type: boolean
@@ -49,6 +61,7 @@ if:
         enum:
           - st,st21nfcb-i2c
           - st,st21nfcc-i2c
+          - st,st21nfcd-i2c
 then:
   properties:
     spi-max-frequency: false
