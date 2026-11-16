@@ -222,17 +222,26 @@
  * and white:flash-2].
  *
  * Currents and the strobe timeout are the ones the chip is programmed with on
- * the stock phone [L: device-tree.dts:4266-4275, mt6360_pmu_dts/fled, which
- * agrees with the vendor values in V: v1/mt6360.dtsi]:
- *   torch  37500 uA  on both channels	(device-tree.dts:4272,4274
- *					 fled1_tor_cur = fled2_tor_cur = 0x927c)
- *   strobe 750000 uA on FLASH1		(device-tree.dts:4273
- *					 fled1_strb_cur = 0xb71b0)
- *   strobe 800000 uA on FLASH2		(vendor v1/mt6360.dtsi: the live cell
- *					 at device-tree.dts:4275 is garbled,
- *					 every other channel agrees)
- *   strobe timeout 1248 ms = 1248000 us	(device-tree.dts:4271
- *					 fled_strb_tout = 0x4e0)
+ * the stock phone, taken from the vendor kernel's own MT6360 description, which
+ * is in this repository at scratch/native/4-modem/src/los-mt6785/arch/arm64/
+ * boot/dts/mediatek/mt6360.dtsi:81-99 and agrees with the live tree
+ * [L: device-tree.dts:4266-4275, mt6360_pmu_dts/fled]:
+ *   torch  37500 uA  on both channels	fled1_tor_cur = fled2_tor_cur = 37500
+ *					(vendor: 25000..400000 uA, 12500/step;
+ *					 live tree: 0x927c)
+ *   strobe 750000 uA on FLASH1		fled1_strb_cur = 750000, with the
+ *					vendor's own commented-out 800000 beside
+ *					it (live tree: 0xb71b0)
+ *   strobe 800000 uA on FLASH2		fled2_strb_cur = 800000 (the live cell at
+ *					device-tree.dts:4275 is garbled; the
+ *					vendor source states it plainly)
+ *   strobe timeout 1248 ms = 1248000 us	fled_strb_tout = 1248
+ *					(vendor: 64..2432 ms, 32 ms/step;
+ *					 live tree: 0x4e0)
+ * A draft in poco-m5s/research/native/5-cameras/rosemary-camera.dtsi must not be
+ * copied here: it names the nodes flash@4/flash@5, which this binding does not
+ * allow (^led@[0-5]$), and gives them led-max-microamp = 200000, more than five
+ * times the vendor's torch current — the one number that must never be raised.
  * They are written under mainline's names: leds-mt6360 takes led-max-microamp
  * as the torch ceiling, flash-max-microamp as the strobe ceiling and
  * flash-max-timeout-us as the timer, and clamps all three to the chip's own
@@ -320,10 +329,14 @@
  * drivers/regulator/mt6358-regulator.c:255-262 and :540], which only that
  * framework path switches. The AW8622 node in the phone's tree names no supply
  * at all — `hwen-gpio`, `pwm_ch`, `center_freq`, `default_pwm_freq` and the two
- * pinctrl states are its whole description [L: device-tree.dts:7715-7724] — so
- * there is no rail for this board to describe and no voltage to set: the motor
- * runs from a fixed rail and the chip is gated by GPIO202. The framework node is
- * switched off here so it cannot claim the same job.
+ * pinctrl states are its whole description [L: device-tree.dts:7715-7724, and
+ * the vendor kernel's own copy at scratch/native/4-modem/src/los-mt6785/
+ * arch/arm64/boot/dts/mediatek/mt6785.dts:6328-6340] — so there is no rail for
+ * this board to describe and no voltage to set: the motor runs from a fixed
+ * rail and the chip is gated by GPIO202. The vendor driver the node pairs with
+ * includes <linux/regulator/consumer.h> but never calls regulator_get(), which
+ * is the same statement from the other side. The framework node is switched off
+ * here so it cannot claim the same job.
  */
 &{/vibrator} {
 	status = "disabled";
