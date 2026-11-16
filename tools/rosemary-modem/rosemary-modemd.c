@@ -2364,10 +2364,17 @@ static void wait_driver(int timeout)
 	}
 }
 
-static void usage(void)
+static void usage(int code)
 {
-	fputs("usage: rosemary-modemd [-h] [--root ROOT] [--no-boot] [--run RUN] [-v]\n", stderr);
-	exit(2);
+	FILE *out = code ? stderr : stdout;
+
+	fputs("usage: rosemary-modemd [-h] [--root ROOT] [--no-boot] [--run RUN] [-v]\n"
+	      "  -h, --help        this text\n"
+	      "  -r, --root ROOT   the modem image tree (default /var/lib/rosemary-modem)\n"
+	      "  -n, --no-boot     answer requests, do not boot the modem\n"
+	      "  -R, --run SECS    run this long, then exit\n"
+	      "  -v                verbose\n", out);
+	exit(code);
 }
 
 static size_t utf8_decode_len(const unsigned char *p, size_t n)
@@ -2383,6 +2390,7 @@ static size_t utf8_decode_len(const unsigned char *p, size_t n)
 int main(int argc, char **argv)
 {
 	static const struct option opts[] = {
+		{ "help", no_argument, NULL, 'h' },
 		{ "root", required_argument, NULL, 'r' },
 		{ "no-boot", no_argument, NULL, 'n' },
 		{ "run", required_argument, NULL, 'R' },
@@ -2398,7 +2406,14 @@ int main(int argc, char **argv)
 	unsigned char *pkt = malloc(65536);
 
 	root = "/var/lib/rosemary-modem";
-	while ((c = getopt_long(argc, argv, "v", opts, NULL)) != -1) {
+	/*
+	 * The long options are the interface (the unit and the lead's trials use
+	 * --run), and the short letters are the same three arguments: -r for
+	 * --root, -n for --no-boot, -R for --run. The optstring used to hold "v"
+	 * alone, so -r/-n/-R were documented shapes that getopt answered with
+	 * "invalid option" and a usage exit.
+	 */
+	while ((c = getopt_long(argc, argv, "hr:nR:v", opts, NULL)) != -1) {
 		switch (c) {
 		case 'r':
 			root = optarg;
@@ -2412,12 +2427,15 @@ int main(int argc, char **argv)
 		case 'v':
 			verbose = 1;
 			break;
+		case 'h':
+			usage(0);
+			break;
 		default:
-			usage();
+			usage(2);
 		}
 	}
 	if (optind < argc)
-		usage();
+		usage(2);
 	z = py_join(root, drive('Z'));
 	if (!is_dir(z)) {
 		fprintf(stderr, "no NVRAM in %s (run rosemary-modem-nvram-import)\n", root);
