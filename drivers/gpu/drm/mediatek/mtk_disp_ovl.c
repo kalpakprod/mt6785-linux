@@ -11,8 +11,6 @@
 #include <linux/component.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
@@ -162,37 +160,20 @@ struct mtk_disp_ovl_data {
  */
 struct mtk_disp_ovl {
 	struct drm_crtc			*crtc;
-	struct device			*dev;
 	struct clk			*clk;
 	void __iomem			*regs;
 	struct cmdq_client_reg		cmdq_reg;
 	const struct mtk_disp_ovl_data	*data;
 	void				(*vblank_cb)(void *data);
 	void				*vblank_cb_data;
-	unsigned int			irq_count;
-	bool				irq_reported;
 };
 
 static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 {
 	struct mtk_disp_ovl *priv = dev_id;
 
-	priv->irq_count++;
-
 	/* Clear frame completion interrupt */
 	writel(0x0, priv->regs + DISP_REG_OVL_INTSTA);
-
-	/*
-	 * One line on the first frame completion, so a trial shows whether this
-	 * interrupt arrives at all next to the DSI's counter.
-	 */
-	if (!priv->irq_reported) {
-		priv->irq_reported = true;
-		dev_info(priv->dev, "ovl irq: INTSTA 0x%08x INTEN 0x%08x count %u\n",
-			 readl(priv->regs + DISP_REG_OVL_INTSTA),
-			 readl(priv->regs + DISP_REG_OVL_INTEN),
-			 priv->irq_count);
-	}
 
 	if (!priv->vblank_cb)
 		return IRQ_NONE;
@@ -631,56 +612,6 @@ static const struct component_ops mtk_disp_ovl_component_ops = {
 	.unbind = mtk_disp_ovl_unbind,
 };
 
-/*
- * One-shot look at the OVL's interrupt path, the same shape as the DSI's
- * diagnostic: the sysirq polarity bit the mt6577-sysirq chip holds for SPI 249,
- * the GIC's trigger field for it, and the virq the driver was given. A read
- * failure is silent - this must never fail a probe.
- */
-#define MTK_SYSIRQ_SPI_PER_WORD	32
-#define GIC_ICFGR_SPI_PER_WORD	16
-#define OVL0_SPI		249
-
-static void mtk_ovl_report_irq_setup(struct device *dev, int irq)
-{
-	struct device_node *np = dev->of_node;
-	struct device_node *sysirq, *gic;
-	void __iomem *base;
-	u32 word, bit, val;
-
-	if (!np)
-		return;
-
-	sysirq = of_irq_find_parent(np);
-	if (sysirq && of_device_is_compatible(sysirq, "mediatek,mt6577-sysirq")) {
-		base = of_iomap(sysirq, 0);
-		if (base) {
-			word = OVL0_SPI / MTK_SYSIRQ_SPI_PER_WORD;
-			bit = OVL0_SPI % MTK_SYSIRQ_SPI_PER_WORD;
-			val = readl_relaxed(base + word * 4);
-			dev_info(dev, "sysirq: SPI %d polarity word %u = 0x%08x, bit %u = %u\n",
-				 OVL0_SPI, word, val, bit, !!(val & BIT(bit)));
-			iounmap(base);
-		}
-
-		gic = of_irq_find_parent(sysirq);
-		if (gic) {
-			base = of_iomap(gic, 0);
-			if (base) {
-				word = 0xc00 + (OVL0_SPI / GIC_ICFGR_SPI_PER_WORD) * 4;
-				bit = ((OVL0_SPI % GIC_ICFGR_SPI_PER_WORD) / 2) * 2;
-				val = readl_relaxed(base + word);
-				dev_info(dev, "gic: SPI %d ICFGR 0x%03x = 0x%08x, field bits %u:%u = 0x%x\n",
-					 OVL0_SPI, word, val, bit + 1, bit,
-					 (val >> bit) & 0x3);
-				iounmap(base);
-			}
-		}
-	}
-
-	dev_info(dev, "irq %d: requested\n", irq);
-}
-
 static int mtk_disp_ovl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -691,8 +622,6 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
-
-	priv->dev = dev;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
