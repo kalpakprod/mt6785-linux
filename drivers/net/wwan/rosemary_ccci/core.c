@@ -445,10 +445,19 @@ static int md_boot(struct ccci_md *md)
 	ret = ccci_ccif_init(md);
 	if (ret)
 		goto err_off;
-	ccci_ccif_reset(md);
+	/*
+	 * The CCIF clocks come on before anything reads or writes the CCIF
+	 * registers. The vendor's ccif_start() does exactly this:
+	 * ccif_set_clk_on() at drivers/misc/mediatek/eccci/hif/ccci_hif_ccif.c:2075,
+	 * and only then ccci_reset_ccif_hw() at :2087. With the gate shut the
+	 * reset never lands and the SRAM is cleared into a dead block: the
+	 * trailer the modem reads is missing and the handshake it rings never
+	 * arrives.
+	 */
 	ret = clk_bulk_prepare_enable(md->num_clks, md->clks);
 	if (ret)
 		goto err_off;
+	ccci_ccif_reset(md);
 	/*
 	 * The data path starts before the modem (the vendor is in
 	 * BOOT_WAITING_FOR_HS1 here), and a modem without one never reaches its
