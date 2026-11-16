@@ -193,6 +193,19 @@ extern void mtk_wcn_stp_set_bluez(MTK_WCN_BOOL sdio_flag);
 
 /*****************************************************************************
 * FUNCTION
+*  mtk_wcn_stp_dpidle_ctrl
+* DESCRIPTION
+*  Keep the STP transport (BTIF) out of deep idle while a user needs it
+*  awake, or let it go back in.
+* PARAMETERS
+*  en_flag  [IN] 1 = allow deep idle, 0 = hold it awake
+* RETURNS
+*  always 0
+*****************************************************************************/
+extern INT32 mtk_wcn_stp_dpidle_ctrl(UINT32 en_flag);
+
+/*****************************************************************************
+* FUNCTION
 *  mtk_wcn_stp_register_tx_event_cb
 * DESCRIPTION
 *  regiter Tx event callback function

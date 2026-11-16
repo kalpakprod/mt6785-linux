@@ -373,6 +373,30 @@ static int btmtkbtif_open(struct hci_dev *hdev)
 	btdev->rx_skb = NULL;
 
 	/*
+	 * Keep BTIF clocked for as long as Bluetooth is up.
+	 *
+	 * The BTIF driver gates its clocks in _btif_enter_dpidle_from_on() as
+	 * soon as btif_enter_dpidle() is called, and nothing calls it in this
+	 * port: the STP power-saving path that would is dead, because
+	 * mtk_wcn_stp_psm_enable() requires mtk_wcn_stp_is_btif_fullset_mode()
+	 * and this SoC runs STP in mandatory mode (mtk6785 keeps its patch in
+	 * EMI, pda_dl_patch_flag = 1, so the full-mode switch is skipped).
+	 *
+	 * Trial 7 shows what that costs: the answer to the first HCI command
+	 * arrives while BTIF is still clocked and gets through, then the
+	 * controller's next event lands while BTIF is in DPIDLE and is never
+	 * seen - no rx interrupt, no read, just the HCI timeout (-110).
+	 *
+	 * Stock does not have that gap because its deep-idle entry is the tail
+	 * of the STP sleep handshake, with the host wake-up line armed first
+	 * (wmt_lib.c:947 wmt_plat_eirq_ctrl(PIN_BGF_EINT, PIN_STA_EINT_EN)
+	 * right after the SLEEP command). This port never arms it, so the
+	 * only correct behaviour left is to keep BTIF awake while the link
+	 * is up and let it sleep when Bluetooth goes down.
+	 */
+	mtk_wcn_stp_dpidle_ctrl(0);
+
+	/*
 	 * The address is back at the firmware default; restore the one the
 	 * factory nvdata copy holds, or the core's if there is no copy.
 	 */
@@ -411,6 +435,10 @@ static int btmtkbtif_close(struct hci_dev *hdev)
 	}
 
 	btdev->bt_on = false;
+
+	/* Let BTIF enter deep idle again, now that nothing needs it. */
+	mtk_wcn_stp_dpidle_ctrl(1);
+
 	mtk_wcn_wmt_func_off(WMTDRV_TYPE_BT);
 	bt_dev_info(hdev, "Bluetooth off");
 
