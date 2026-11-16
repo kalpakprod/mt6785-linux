@@ -24,6 +24,11 @@ set -eu
 REGION=0x4d010000
 SIZE=0xe0000
 MPU=0x10226000
+# The loader's own device tree gives the EMI MPU block 0x1000 bytes, while the
+# same block is declared 0x2000 on mt6795 upstream and 0x1000 on mt6739 in the
+# trees in this repo. Dump the larger size: it costs one page read and it cannot
+# hide a region behind the end of the smaller window.
+MPU_SIZE=0x2000
 OUT=/var/log/pstore-probe
 
 while [ $# -gt 0 ]; do
@@ -31,6 +36,7 @@ while [ $# -gt 0 ]; do
 	--region) REGION=$2; shift 2 ;;
 	--size) SIZE=$2; shift 2 ;;
 	--mpu) MPU=$2; shift 2 ;;
+	--mpu-size) MPU_SIZE=$2; shift 2 ;;
 	-h|--help) sed -n '2,25p' "$0"; exit 0 ;;
 	*) echo "probe: unknown option $1" >&2; exit 2 ;;
 	esac
@@ -43,7 +49,7 @@ mkdir -p "$OUT"
 scratch=$((REGION + SIZE - 16))
 echo "region   $REGION .. $((REGION + SIZE - 1))"
 echo "scratch  $scratch (one byte, above everything pstore uses)"
-echo "mpu      $MPU"
+echo "mpu      $MPU .. $((MPU + MPU_SIZE - 1))"
 
 # One byte, written twice with a different value, read back after each write.
 # Two values are needed: a single read could match by luck on stale data.
@@ -64,8 +70,8 @@ else
 fi
 
 echo
-echo "dumping the EMI MPU block to $OUT/mpu.bin (4 KiB)"
-dd if=/dev/mem of="$OUT/mpu.bin" bs=1024 skip=$((MPU / 1024)) count=4 2>/dev/null || true
+echo "dumping the EMI MPU block to $OUT/mpu.bin ($((MPU_SIZE / 1024)) KiB)"
+dd if=/dev/mem of="$OUT/mpu.bin" bs=1024 skip=$((MPU / 1024)) count=$((MPU_SIZE / 1024)) 2>/dev/null || true
 ls -l "$OUT/mpu.bin" 2>/dev/null || echo "probe: could not read $MPU"
 
 python3 - "$OUT/mpu.bin" "$REGION" <<'PY' 2>/dev/null || echo "probe: no python3, decode by eye from mpu.bin"
