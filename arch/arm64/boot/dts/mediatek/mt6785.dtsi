@@ -1817,12 +1817,22 @@
 					reg = <1>;
 
 					gamma0_out: endpoint {
-						remote-endpoint = <&postmask0_in>;
+						remote-endpoint = <&dsi0_in>;
 					};
 				};
 			};
 		};
 
+		/*
+		 * Not in the path this tree builds: mt6785's gamma0 drives dsi0 directly,
+		 * and the DRM master never adds dither@14012000 to its components (see the
+		 * "Adding component match" list in dmesg). A device described here but never
+		 * bound is still a consumer of this power controller, and genpd then keeps
+		 * sync_state pending and every domain on - which is what blocked the modem's
+		 * power cycle. Status disabled means the node is not instantiated at all, so
+		 * it stops being a consumer; the hardware is untouched because nothing ever
+		 * programmed it.
+		 */
 		dither0: dither@14012000 {
 			compatible = "mediatek,mt6785-disp-dither",
 				     "mediatek,mt8183-disp-dither";
@@ -1831,25 +1841,7 @@
 			interrupts = <GIC_SPI 259 IRQ_TYPE_LEVEL_LOW>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1401XXXX 0x2000 0x1000>;
-
-			ports {
-				#address-cells = <1>;
-				#size-cells = <0>;
-
-				port@0 {
-					reg = <0>;
-
-					dither0_in: endpoint {
-						remote-endpoint = <&postmask0_out>;
-					};
-				};
-
-				port@1 {
-					reg = <1>;
-
-					dither0_out: endpoint { };
-				};
-			};
+			status = "disabled";
 		};
 
 		dsi0: dsi@14014000 {
@@ -1875,7 +1867,9 @@
 				port@0 {
 					reg = <0>;
 
-					dsi0_in: endpoint { };
+					dsi0_in: endpoint {
+						remote-endpoint = <&gamma0_out>;
+					};
 				};
 
 				port@1 {
