@@ -420,6 +420,59 @@ static int clear_smem(struct ccci_md *md)
 
 /* ---- the boot state machine ------------------------------------------- */
 
+/**
+ * md_domain_on() - power the modem's MTCMOS domain and prove it is on
+ * @md: the modem
+ *
+ * Taking the runtime-PM reference is not the same as having a powered domain.
+ * Trial 8a booted the modem at 11 s, early in the boot, and the domain read
+ * OFF with runtime PM reporting "active": genpd's cached status said on, its
+ * power_on() returned early on that belief ("if (genpd_status_on(genpd))
+ * return 0", drivers/pmdomain/core.c:1043), and the hardware was never asked.
+ * A reference alone therefore proves nothing, so this asks twice: take the
+ * reference, then read PWR_STATUS bit 0 -- the md domain's own bit -- and if it
+ * is clear, force the domain down and up again through genpd itself, and read
+ * again. If it still reads clear the boot says so with the value instead of
+ * failing 30 s later at the handshake.
+ */
+static int md_domain_on(struct ccci_md *md)
+{
+	unsigned int status = 0;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(md->dev);
+	if (ret)
+		return ret;
+
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
+	if (status & BIT(0))
+		return 0;
+
+	dev_warn(md->dev,
+		 "the md domain is off while runtime PM reports it on (%#x): powering it again\n",
+		 status);
+	/*
+	 * Drop the reference so genpd really suspends the domain, then take it
+	 * again. pm_runtime_put_sync() waits for the suspend, so the second
+	 * resume cannot be answered by the same stale belief that caused this.
+	 */
+	pm_runtime_put_sync(md->dev);
+	usleep_range(1000, 2000);
+	ret = pm_runtime_resume_and_get(md->dev);
+	if (ret)
+		return ret;
+
+	status = 0;
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
+	if (!(status & BIT(0))) {
+		pm_runtime_put_sync(md->dev);
+		return dev_err_probe(md->dev, -EIO,
+				     "the md domain will not power on (PWR_STATUS %#x)\n",
+				     status);
+	}
+	return 0;
+}
+
 static int md_boot(struct ccci_md *md)
 {
 	int limit = stage_limit();
@@ -475,7 +528,7 @@ static int md_boot(struct ccci_md *md)
 	ret = md_power_seq_prepare(md);
 	if (ret)
 		goto err_clk;
-	ret = pm_runtime_resume_and_get(md->dev);
+	ret = md_domain_on(md);
 	if (ret) {
 		dev_err(md->dev, "cannot power the md domain: %d\n", ret);
 		goto err_seq;
@@ -736,7 +789,7 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "cannot power the md domain\n");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
-	pm_runtime_put(dev);
+	pm_runtime_put_sync(dev);
 	/* BIT() is unsigned long, so the expression is narrowed for the format */
 	dev_info(dev, "rosemary_ccci: M0 md power status %u\n",
 		 (u32)(status & BIT(0)));
