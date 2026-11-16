@@ -33,6 +33,7 @@ struct s6e8fc0_panel_desc {
 	int (*off)(struct s6e8fc0_ctx *ctx);
 	void (*reset)(struct s6e8fc0_ctx *ctx);
 	const struct regulator_bulk_data *supplies;
+	const unsigned int *rail_delay_us;
 	unsigned int num_supplies;
 	unsigned long mode_flags;
 	unsigned int max_brightness;
@@ -176,6 +177,14 @@ static const struct regulator_bulk_data s6e8fc0_k7_38_0c_0a_supplies[] = {
 	{ .supply = "vdd" },	/* AVDD/ELVDD 3.0 V, GPIO 127 */
 };
 
+/*
+ * Vendor lcm_init(): GPIO 14 (VDDI) high, then GPIO 127 (AVDD+ELVDD) high 1 ms
+ * later; power-off the other way round in lcm_suspend_power(). Both rails are
+ * GPIO-gated fixed regulators on this board, so the delay is all the sequencing
+ * there is.
+ */
+static const unsigned int s6e8fc0_k7_38_0c_0a_rail_delays[] = { 1000, 0 };
+
 static void s6e8fc0_k7_38_0c_0a_reset(struct s6e8fc0_ctx *ctx)
 {
 	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
@@ -285,6 +294,7 @@ static const struct s6e8fc0_panel_desc s6e8fc0_k7_38_0c_0a_desc = {
 	.off = s6e8fc0_k7_38_0c_0a_off,
 	.reset = s6e8fc0_k7_38_0c_0a_reset,
 	.supplies = s6e8fc0_k7_38_0c_0a_supplies,
+	.rail_delay_us = s6e8fc0_k7_38_0c_0a_rail_delays,
 	.num_supplies = ARRAY_SIZE(s6e8fc0_k7_38_0c_0a_supplies),
 	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
 		      MIPI_DSI_CLOCK_NON_CONTINUOUS,
@@ -302,17 +312,58 @@ static int s6e8fc0_get_modes(struct drm_panel *panel,
 	return drm_connector_helper_get_modes_fixed(connector, ctx->desc->mode);
 }
 
+/*
+ * The rails go up one at a time, in the order the description lists them, with the
+ * settle time the board needs after each - regulator_bulk_enable() switches the
+ * whole array on back to back, which cannot express "VDDI 1 ms before AVDD".
+ * Power-down walks the same list backwards, which is the order the panel datasheet
+ * and the vendor LCM use (AVDD/ELVDD first, then VDDI).
+ */
+static int s6e8fc0_power_on(struct s6e8fc0_ctx *ctx)
+{
+	const struct s6e8fc0_panel_desc *desc = ctx->desc;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < desc->num_supplies; i++) {
+		ret = regulator_enable(ctx->supplies[i].consumer);
+		if (ret < 0) {
+			dev_err(&ctx->dsi->dev, "Failed to enable %s: %d\n",
+				desc->supplies[i].supply, ret);
+			goto err_disable;
+		}
+
+		if (desc->rail_delay_us && desc->rail_delay_us[i])
+			usleep_range(desc->rail_delay_us[i],
+				     desc->rail_delay_us[i] + 1000);
+	}
+
+	return 0;
+
+err_disable:
+	while (i--)
+		regulator_disable(ctx->supplies[i].consumer);
+
+	return ret;
+}
+
+static void s6e8fc0_power_off(struct s6e8fc0_ctx *ctx)
+{
+	int i = ctx->desc->num_supplies;
+
+	while (i--)
+		regulator_disable(ctx->supplies[i].consumer);
+}
+
 static int s6e8fc0_prepare(struct drm_panel *panel)
 {
 	struct s6e8fc0_ctx *ctx = to_s6e8fc0_ctx(panel);
 	struct device *dev = &ctx->dsi->dev;
 	int ret;
 
-	ret = regulator_bulk_enable(ctx->desc->num_supplies, ctx->supplies);
-	if (ret < 0) {
-		dev_err(dev, "Failed to enable regulators: %d\n", ret);
+	ret = s6e8fc0_power_on(ctx);
+	if (ret < 0)
 		return ret;
-	}
 
 	ctx->desc->reset(ctx);
 
@@ -320,7 +371,7 @@ static int s6e8fc0_prepare(struct drm_panel *panel)
 	if (ret < 0) {
 		dev_err(dev, "Failed to initialize panel: %d\n", ret);
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-		regulator_bulk_disable(ctx->desc->num_supplies, ctx->supplies);
+		s6e8fc0_power_off(ctx);
 		return ret;
 	}
 
@@ -338,7 +389,7 @@ static int s6e8fc0_unprepare(struct drm_panel *panel)
 		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
 
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-	regulator_bulk_disable(ctx->desc->num_supplies, ctx->supplies);
+	s6e8fc0_power_off(ctx);
 
 	return 0;
 }
