@@ -59,6 +59,19 @@ struct ccci_dpmaif;
 #define CCIF_CH_CCB_WAKEUP	7
 #define CCIF_CH_EXP_BASE	15
 
+/*
+ * The exception channels, one per stage of the modem's crash handshake
+ * (hif/ccif_hif_platform.h:39-66). The first and third expect an answer from
+ * the AP on the same two numbers the modem rings; see ee.c.
+ */
+#define CCIF_CH_EX_INIT		(CCIF_CH_EXP_BASE + 1)	/* +0x10000 */
+#define CCIF_CH_EX_INIT_DONE	(CCIF_CH_EXP_BASE + 2)	/* +0x20000 */
+#define CCIF_CH_EX_CLEARQ_DONE	(CCIF_CH_EXP_BASE + 3)	/* +0x40000 */
+#define CCIF_CH_EX_ALLQ_RESET	(CCIF_CH_EXP_BASE + 4)	/* +0x80000 */
+#define CCIF_CH_EX_PEER_WAKEUP	(CCIF_CH_EXP_BASE + 5)
+#define CCIF_CH_EX_SEQ_ERROR	(CCIF_CH_EXP_BASE + 6)
+#define CCIF_CH_MAX		24	/* CCIF_CH_NUM: bits above this are not ours */
+
 /* CCCI logical channels (eccci/inc/ccci_core.h:314-420) */
 #define CCCI_CONTROL_RX		0
 #define CCCI_CONTROL_TX		1
@@ -362,6 +375,7 @@ struct ccci_md {
 	struct completion hs1, hs2;
 	unsigned long last_fs;
 	unsigned long ex_channels;
+	bool ee_printed;		/* the exception record was reported */
 
 	struct ccci_port *ports;
 	int num_ports;
@@ -440,6 +454,7 @@ void ccci_dpmaif_stop(struct ccci_md *md);
 /* core.c */
 void ccci_recv_control(struct ccci_md *md, const struct ccci_header *h,
 		       const void *pkt, size_t len);
+void ccci_ee_on_channel(struct ccci_md *md, unsigned int ch);
 void ccci_set_state(struct ccci_md *md, enum ccci_state state);
 
 #endif /* __ROSEMARY_CCCI_H */

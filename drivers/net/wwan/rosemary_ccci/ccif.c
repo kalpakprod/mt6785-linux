@@ -336,9 +336,17 @@ void ccci_rx_work(struct work_struct *work)
 	struct ccci_md *md = container_of(work, struct ccci_md, rx_work);
 	int i, n;
 
-	for (i = 0; i < CCIF_QUEUES; i++) {
+	for (i = 0; i < CCIF_CH_MAX; i++) {
 		if (!test_and_clear_bit(i, &md->pending))
 			continue;
+		/*
+		 * Above the rings are the modem's crash channels: the record it
+		 * wrote, then the handshake stages that expect an answer.
+		 */
+		if (i > CCIF_CH_SRAM) {
+			ccci_ee_on_channel(md, i);
+			continue;
+		}
 		if (i == CCIF_CH_SRAM) {
 			/*
 			 * Handshake 1 arrives through the SRAM, not a ring: the
@@ -382,11 +390,16 @@ irqreturn_t ccci_ccif_isr(int irq, void *data)
 	if (!ch)
 		return IRQ_NONE;
 	writel(ch, md->ccif_ap + APCCIF_ACK);
-	if (ch & ~GENMASK(CCIF_CH_EXP_BASE, 0)) {
+	if (ch & ~GENMASK(CCIF_CH_SRAM, 0)) {
 		dev_warn(md->dev, "exception channels %#x\n", ch);
 		md->ex_channels |= ch;
 	}
-	ch &= GENMASK(CCIF_CH_EXP_BASE, 0);
+	/*
+	 * The exception channels above the rings are carried to the work item as
+	 * well, or the record the modem left would never be read. The mask keeps
+	 * the bitmap inside the bits this driver defines.
+	 */
+	ch &= GENMASK(CCIF_CH_MAX - 1, 0);
 	while (ch) {
 		set_bit(__ffs(ch), &md->pending);
 		ch &= ch - 1;
