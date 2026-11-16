@@ -1957,8 +1957,6 @@ static int mt6785_afe_runtime_resume(struct device *dev)
 	}
 
 	/* enable audio sys DCM for power saving */
-	regmap_update_bits(afe_priv->infracfg,
-			   PERI_BUS_DCM_CTRL, 0x1 << 29, 0x1 << 29);
 	regmap_update_bits(afe->regmap, AUDIO_TOP_CON0, 0x1 << 29, 0x1 << 29);
 
 	/* force cpu use 8_24 format when writing 32bit data */
