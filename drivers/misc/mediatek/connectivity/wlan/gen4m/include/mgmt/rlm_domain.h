@@ -731,7 +731,17 @@ struct TX_PWR_CTRL_ELEMENT {
 	uint8_t index; /* scenario index */
 	enum ENUM_TX_POWER_CTRL_TYPE eCtrlType;
 	uint8_t settingCount;
-	struct TX_PWR_CTRL_CHANNEL_SETTING rChlSettingList[];
+	/*
+	 * One trailing element, not a C99 flexible array: every size calculation
+	 * in rlm_domain.c is written as
+	 *     sizeof(struct TX_PWR_CTRL_ELEMENT) + (count - 1) * sizeof(setting)
+	 * which is only correct when the struct already carries one setting.
+	 * With [] the allocation came out one whole element (148 bytes) short
+	 * of what the parser writes, and the overflow corrupted the heap - the
+	 * oops in txPwrCtrlDeleteElement and the later list_lru corruption.
+	 * Keeping [1] is also what the vendor 4.19 tree does.
+	 */
+	struct TX_PWR_CTRL_CHANNEL_SETTING rChlSettingList[1];
 };
 
 struct PARAM_TX_PWR_CTRL_IOCTL {
