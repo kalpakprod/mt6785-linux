@@ -71,7 +71,14 @@
 #define AT_READY	"/run/rosemary-modem/at-ready"
 #define AT_TIMEOUT	10
 #define MORE		0x80000000u	/* data[0]: more fragments follow */
-#define CHUNK		0xd80
+/*
+ * The largest reply packet the kernel will accept on the file-service port:
+ * CCCI_MTU + 16 header + 4 (the operation word the FS header carries), i.e. the
+ * vendor's port_proxy.c:492-499 limit. A stream is split into chunks of CHUNK
+ * payload bytes so that CHUNK + 20 stays inside it.
+ */
+#define FS_PKT_MAX	(3456 + 16 + 4)
+#define CHUNK		(FS_PKT_MAX - 20)
 /* firmware directory: delta row "mdota (drive T:)" -- rosemary's own
  * /vendor/etc/mdota, copied verbatim from the vendor image */
 #define FW		"/usr/lib/firmware/mediatek/rosemary/"
@@ -2573,9 +2580,18 @@ int main(int argc, char **argv)
 						get_u32(pkt + 12), hex);
 				}
 				for (j = 0; j < nout; j++) {
-					if (write(port[k], out[j].p, out[j].len) < 0) {
-						fprintf(stderr, "%s write: %s\n", names[k], strerror(errno));
-						return 1;
+					ssize_t w = write(port[k], out[j].p, out[j].len);
+
+					if (w < 0) {
+						/*
+						 * One refused reply must not take the service
+						 * down: the modem is waiting for an answer to
+						 * every request it sent, and exiting leaves it
+						 * stuck on the rest of them. Say what was lost
+						 * and keep serving.
+						 */
+						log_msg("%s write failed (%zu bytes): %s",
+							names[k], out[j].len, strerror(errno));
 					}
 					free(out[j].p);
 				}
