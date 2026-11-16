@@ -55,12 +55,25 @@
 /*
  * The interrupt set the vendor enables on MT6785, from _dsi_basic_irq_enable()
  * in ddp_dsi.c: CMD_DONE, TE_READY, VM_DONE, BUFFER_UNDERRUN and INP_UNFINISH,
- * plus RD_RDY which it arms around reads and which we keep on for DCS reads.
- * Field names from ddp_reg_dsi.h's FLD_*_INT_EN.
+ * plus RD_RDY which it arms around reads. Kept here for the probe diagnostic
+ * only: trial 10 showed that enabling BUFFER_UNDERRUN and INP_UNFINISH on this
+ * pipeline is a storm, because the engine re-asserts both continuously and
+ * nothing in the driver acknowledges them - see MT6785_DSI_INTEN_ENABLED below.
  */
-#define MT6785_DSI_INTEN	(LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | \
+#define MT6785_DSI_INTEN_VENDOR	(LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | \
 				 TE_RDY_INT_FLAG | VM_DONE_INT_FLAG | \
 				 BUFFER_UNDERRUN_INT_FLAG | INP_UNFINISH_INT_FLAG)
+
+/*
+ * What we actually enable: only the events a transfer waits for. CMD_DONE and
+ * VM_DONE drive the wait queue, RD_RDY the DCS reads, and TE_RDY is harmless
+ * because the engine raises it once per frame. Bits 12 and 14 stay off until the
+ * underrun itself is fixed, because a level line that is re-asserted the moment
+ * it is cleared pins the CPU in the handler: trial 10 logged 50 dispatches in
+ * 20 ms and the phone never came up on the network.
+ */
+#define MT6785_DSI_INTEN_ENABLED	(LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | \
+					 VM_DONE_INT_FLAG)
 
 #define DSI_CON_CTRL		0x10
 #define DSI_RESET			BIT(0)
@@ -696,7 +709,7 @@ static void mtk_dsi_set_interrupt_enable(struct mtk_dsi *dsi)
 	u32 inten = LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | VM_DONE_INT_FLAG;
 
 	if (dsi->driver_data->vendor_inten)
-		inten = MT6785_DSI_INTEN;
+		inten = MT6785_DSI_INTEN_ENABLED;
 
 	writel(inten, dsi->regs + DSI_INTEN);
 }
@@ -1535,8 +1548,8 @@ static void mtk_dsi_report_irq_setup(struct mtk_dsi *dsi)
 
 	dev_info(dsi->host.dev,
 		 "irq %d: INTEN 0x%08x (vendor mask 0x%08x), count %u at probe\n",
-		 irq, readl(dsi->regs + DSI_INTEN), (u32)MT6785_DSI_INTEN,
-		 dsi->irq_count);
+		 irq, readl(dsi->regs + DSI_INTEN),
+		 (u32)MT6785_DSI_INTEN_VENDOR, dsi->irq_count);
 }
 
 static int mtk_dsi_probe(struct platform_device *pdev)
