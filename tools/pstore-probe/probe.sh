@@ -31,8 +31,12 @@ MPU=0x10226000
 MPU_SIZE=0x2000
 OUT=/var/log/pstore-probe
 
+MODE=all
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--retention-write) MODE=retention-write; shift ;;
+	--retention-check) MODE=retention-check; shift ;;
+	--expdb) MODE=expdb; shift ;;
 	--region) REGION=$2; shift 2 ;;
 	--size) SIZE=$2; shift 2 ;;
 	--mpu) MPU=$2; shift 2 ;;
@@ -50,6 +54,50 @@ scratch=$((REGION + SIZE - 16))
 echo "region   $REGION .. $((REGION + SIZE - 1))"
 echo "scratch  $scratch (one byte, above everything pstore uses)"
 echo "mpu      $MPU .. $((MPU + MPU_SIZE - 1))"
+
+# Retention modes: write a marker before a reset and look for it after. The
+# question they answer is whether this phone keeps DRAM across a reset at all -
+# the measured answer so far is no, and then ramoops cannot work however it is
+# configured, and the crash log has to live in flash (see REPORT.md).
+if [ "$MODE" = retention-write ]; then
+	off1=$((REGION + SIZE - 16))
+	off2=$((REGION + SIZE - 32))
+	printf '\x9e\xfe\xe7\xff' | dd of=/dev/mem bs=1 seek=$off1 count=4 conv=notrunc 2>/dev/null
+	printf '\x5a\x5a\xa5\xa5' | dd of=/dev/mem bs=1 seek=$off2 count=4 conv=notrunc 2>/dev/null
+	echo "markers written at $off1 (0x9efee7ff) and $off2 (0x5a5aa5a5)"
+	echo "now reboot (clean or watchdog) and run: sh probe.sh --retention-check"
+	exit 0
+fi
+
+if [ "$MODE" = retention-check ]; then
+	off1=$((REGION + SIZE - 16))
+	off2=$((REGION + SIZE - 32))
+	v1=$(dd if=/dev/mem bs=4 skip=$((off1 / 4)) count=1 2>/dev/null | od -An -tx4 | tr -d ' \n')
+	v2=$(dd if=/dev/mem bs=4 skip=$((off2 / 4)) count=1 2>/dev/null | od -An -tx4 | tr -d ' \n')
+	echo "at $off1: $v1 (want 9efee7ff)"
+	echo "at $off2: $v2 (want 5a5aa5a5)"
+	if [ "$v1" = 9efee7ff ] || [ "$v2" = 5a5aa5a5 ]; then
+		echo "VERDICT DRAM was retained across the reset: ramoops can work."
+		echo "        If /sys/fs/pstore is still stale, the fault is the restore order"
+		echo "        (something rewriting the region at boot), not the reset."
+	else
+		echo "VERDICT DRAM was lost across the reset: ramoops cannot survive it,"
+		echo "        whatever its mapping or its DT says. The log has to be in flash"
+		echo "        before the reset, or the reset has to stop clearing DRAM."
+	fi
+	exit 0
+fi
+
+if [ "$MODE" = expdb ]; then
+	part=/dev/disk/by-partlabel/expdb
+	[ -e "$part" ] || { echo "probe: no $part" >&2; exit 1; }
+	dd if="$part" of="$OUT/expdb-head.bin" bs=64k count=4 2>/dev/null || true
+	echo "expdb head written to $OUT/expdb-head.bin"
+	grep -abo "SYS_PSTORE_RAW" "$OUT/expdb-head.bin" 2>/dev/null | head -3 || \
+		echo "no SYS_PSTORE_RAW in the first 256 KiB (the loader may keep it deeper)"
+	echo "the section ids the loader uses are in poco-m5s/evidence/try-force1/expdb.strings"
+	exit 0
+fi
 
 # One byte, written twice with a different value, read back after each write.
 # Two values are needed: a single read could match by luck on stale data.
