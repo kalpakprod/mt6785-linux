@@ -212,7 +212,25 @@ static int g_max_pding_data_size = BTIF_RX_BUFFER_SIZE * 3 / 4;
 #if BTIF_DBG_SUPPORT
 int g_enable_btif_rxd_test;
 #endif
-static int mtk_btif_dbg_lvl = BTIF_LOG_LOUD;
+static int mtk_btif_dbg_lvl = BTIF_LOG_INFO;
+/*
+ * Lead note 12, step 1: the [D] prints the vendor default (BTIF_LOG_LOUD)
+ * produces cost about 250 ms per packet over netconsole, which is the same
+ * order as the latency being measured. INFO keeps WARN/ERR and the INFO
+ * lines that matter and drops DBG/LOUD, so the timestamps describe the
+ * driver rather than the console. The parameter lets a later trial restore
+ * the vendor verbosity without a rebuild.
+ */
+module_param_named(dbg_level, mtk_btif_dbg_lvl, int, 0644);
+MODULE_PARM_DESC(dbg_level, "BTIF log level: 0=ERR 1=WARN 2=INFO 3=DBG 4=LOUD");
+
+/*
+ * One short INFO line per RX stage, so a single trial shows where the bytes
+ * spend their time: DMA interrupt -> vFIFO ring -> bbs -> STP parser -> STP
+ * task ring -> HCI. Kernel log timestamps carry the microseconds.
+ */
+#define BTIF_RX_TRACE(stage, fmt, arg...) \
+	BTIF_INFO_FUNC("RXTRACE " stage ": " fmt, ##arg)
 #if BTIF_RXD_BE_BLOCKED_DETECT
 static struct timeval btif_rxd_time_stamp[MAX_BTIF_RXD_TIME_REC];
 #endif
@@ -1132,6 +1150,7 @@ irqreturn_t btif_rx_dma_irq_handler(int irq, void *data)
 	struct _MTK_DMA_INFO_STR_ *p_rx_dma_info = p_rx_dma->p_dma_info;
 
 	BTIF_DBG_FUNC("++, p_btif(0x%p)\n", data);
+	BTIF_RX_TRACE("irq", "enter irq %d\n", irq);
 
 	_btif_irq_ctrl(p_rx_dma_info->p_irq, false);
 
@@ -1177,6 +1196,7 @@ unsigned int btif_dma_rx_data_receiver(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 #endif
 
 	btif_bbs_write(&(p_btif->btif_buf), p_buf, buf_len);
+	BTIF_RX_TRACE("dma", "%u bytes vFIFO -> bbs\n", buf_len);
 /*save DMA Rx packet here*/
 	if (buf_len > 0)
 		btif_log_buf_dmp_in(&p_btif->rx_log, p_buf, buf_len);
@@ -2232,6 +2252,8 @@ static int btif_rx_data_consummer(struct _mtk_btif_ *p_btif)
 /*make sure length of rx buffer data > 0*/
 	do {
 		if (length > 0) {
+			BTIF_RX_TRACE("consummer", "%u bytes bbs -> stp parser\n",
+				      length);
 			/*
 			 * check if rx_cb empty or not, if registered ,
 			 * call user's rx callback to handle these data
@@ -2666,6 +2688,7 @@ static int _btif_rx_btm_sched(struct _mtk_btif_ *p_btif)
 	}
 
 	if (p_btif->btm_type == BTIF_THREAD_CTX) {
+		BTIF_RX_TRACE("btm", "wake btif_rx_thread\n");
 		complete(&p_btif->rx_comp);
 		BTIF_DBG_FUNC("schedule btif_rx_thread\n");
 	} else if (p_btif->btm_type == BTIF_WQ_CTX) {

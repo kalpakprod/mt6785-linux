@@ -296,8 +296,11 @@ static void btmtkbtif_rx_cb(void)
 {
 	struct btmtkbtif_data *btdev = READ_ONCE(btmtkbtif_active);
 
-	if (btdev)
+	if (btdev) {
+		/* RXTRACE: STP just told us the BT task ring is non-empty. */
+		bt_dev_info(btdev->hdev, "RXTRACE cb: stp event -> wake kthread");
 		wake_up_interruptible(&btdev->rx_wait);
+	}
 }
 
 /*
@@ -323,11 +326,18 @@ static int btmtkbtif_rx_kthread(void *data)
 		while (!mtk_wcn_stp_is_rxqueue_empty(BT_TASK_INDX)) {
 			int cnt;
 
+			/*
+			 * Lead note 12, step 2: the STP task ring is emptied here and the
+			 * bytes go straight into the H4 assembler, so this line and the
+			 * "BT rx" trace below bracket hci_recv_frame().
+			 */
+			bt_dev_info(hdev, "RXTRACE kthread: stp task has data");
 			cnt = mtk_wcn_stp_receive_data(btdev->rx_buf,
 						       BTMTKBTIF_RX_SIZE,
 						       BT_TASK_INDX);
 			if (cnt <= 0)
 				break;
+			bt_dev_info(hdev, "RXTRACE kthread: got %d bytes", cnt);
 
 			hdev->stat.byte_rx += cnt;
 
