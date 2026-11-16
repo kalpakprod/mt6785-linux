@@ -49,6 +49,12 @@ properties:
   clocks: true
   clock-names: true
 
+  pinctrl-names: true
+
+patternProperties:
+  # the MTKAIF pin states the driver looks up by name (mt6785-afe-gpio.c)
+  '^pinctrl-[0-9]+$': true
+
 required:
   - compatible
   - interrupts
@@ -66,7 +72,11 @@ examples:
   - |
     #include <dt-bindings/interrupt-controller/arm-gic.h>
 
-    audsys {
+    audsys: syscon@11210000 {
+        compatible = "mediatek,mt6785-audsys", "syscon";
+        reg = <0x11210000 0x1000>;
+        #clock-cells = <1>;
+
         audio-controller {
             compatible = "mediatek,mt6785-audio";
             interrupts = <GIC_SPI 184 IRQ_TYPE_LEVEL_LOW>;
@@ -78,6 +88,31 @@ examples:
             power-domains = <&spm 0>;
             #sound-dai-cells = <0>;
         };
+    };
+
+    watchdog: watchdog@10007000 {
+        reg = <0x10007000 0x100>;
+        #reset-cells = <1>;
+    };
+
+    apmixedsys: clock-controller@1000c000 {
+        reg = <0x1000c000 0x1000>;
+        #clock-cells = <1>;
+    };
+
+    infracfg: clock-controller@10001000 {
+        reg = <0x10001000 0x1000>;
+        #clock-cells = <1>;
+    };
+
+    topckgen: clock-controller@10000000 {
+        reg = <0x10000000 0x1000>;
+        #clock-cells = <1>;
+    };
+
+    spm: power-controller@10006000 {
+        reg = <0x10006000 0x1000>;
+        #power-domain-cells = <1>;
     };
 
 ...

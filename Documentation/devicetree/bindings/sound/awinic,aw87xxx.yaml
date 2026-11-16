@@ -55,6 +55,11 @@ examples:
   - |
     #include <dt-bindings/gpio/gpio.h>
 
+    pio: pinctrl {
+        gpio-controller;
+        #gpio-cells = <2>;
+    };
+
     i2c {
         #address-cells = <1>;
         #size-cells = <0>;

@@ -101,6 +101,9 @@ properties:
     maxItems: 4
     description: The three-button CDD thresholds.
 
+required:
+  - compatible
+
 additionalProperties: false
 
 examples:

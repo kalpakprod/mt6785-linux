@@ -55,12 +55,44 @@ additionalProperties: true
 
 examples:
   - |
+    afe: audio-controller {
+        compatible = "mediatek,mt6785-audio";
+        #sound-dai-cells = <0>;
+    };
+
+    pmic: pmic {
+        compatible = "mediatek,mt6359";
+
+        accdet {
+            compatible = "mediatek,mt6359-accdet";
+        };
+    };
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        speaker_amp: speaker@58 {
+            compatible = "awinic,aw87xxx";
+            reg = <0x58>;
+            awinic,pa-channel = <0>;
+            sound-name-prefix = "Spk";
+        };
+
+        receiver_amp: receiver@5b {
+            compatible = "awinic,aw87xxx";
+            reg = <0x5b>;
+            awinic,pa-channel = <1>;
+            sound-name-prefix = "Rcv";
+        };
+    };
+
     sound {
         compatible = "mediatek,mt6785-mt6359-sound";
         model = "Xiaomi POCO M5s";
         mediatek,platform = <&afe>;
         mediatek,accdet = <&pmic>;
-        aux-devs = <&spk_amp>, <&rcv_amp>;
+        aux-devs = <&speaker_amp>, <&receiver_amp>;
 
         audio-routing = "Spk Amp", "LINEOUT L",
                         "Rcv Amp", "Receiver";

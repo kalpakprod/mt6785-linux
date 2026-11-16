@@ -50,4 +50,13 @@ examples:
         awinic,vibration-frequency-hz = <208>;
     };
 
+    pio: pinctrl {
+        gpio-controller;
+        #gpio-cells = <2>;
+    };
+
+    pwm0: pwm {
+        #pwm-cells = <2>;
+    };
+
 ...
