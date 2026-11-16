@@ -263,31 +263,6 @@ struct mtk_dsi {
 	struct device *dev;
 	struct mipi_dsi_host host;
 
-	/* DIAG (not for upstream): every DSI access around one panel read */
-	struct mtk_dsi_trace {
-		struct mtk_dsi_trace_entry {
-			bool wr;
-			u32 off;
-			u32 val;
-			s64 ns;
-			s64 first_ns;
-			void *caller;
-			unsigned int rep;
-			bool irq;
-		} e[512];
-		unsigned int n;
-		bool on;
-		struct {
-			u8 type;
-			u8 tx_len;
-			u8 rx_len;
-			u16 flags;
-			u32 mode;
-			s64 ns;
-		} m[8];
-		unsigned int mn;
-		bool printed;
-	} trace;
 	struct drm_encoder encoder;
 	struct drm_bridge bridge;
 	struct drm_bridge *next_bridge;
@@ -326,148 +301,11 @@ static inline struct mtk_dsi *host_to_dsi(struct mipi_dsi_host *h)
 	return container_of(h, struct mtk_dsi, host);
 }
 
-/*
- * DIAG (not for upstream): every access the driver makes to the DSI block while a
- * panel read is in flight goes through these three wrappers and is recorded with its
- * offset, value and time, so the read can be compared with the hand sequence that
- * works on this phone (poco-m5s/evidence/disp-trial9/dcsread.py). Everything else in
- * the driver is unchanged: the wrappers only take the same arguments and add the
- * record.
- */
-static void mtk_dsi_trace_add(struct mtk_dsi *dsi, bool wr, u32 off, u32 val)
-{
-	s64 now = ktime_get_ns();
-	struct mtk_dsi_trace_entry *last;
-
-	if (!dsi->trace.on)
-		return;
-
-	/*
-	 * Collapse runs of identical accesses (a poll of a register that never
-	 * changes fills the ring and evicts everything else): one entry keeps the
-	 * first and the last time plus the count.
-	 */
-	if (dsi->trace.n) {
-		last = &dsi->trace.e[dsi->trace.n - 1];
-		if (last->wr == wr && last->off == off && last->val == val) {
-			last->rep++;
-			last->ns = now;
-			return;
-		}
-	}
-
-	if (dsi->trace.n >= ARRAY_SIZE(dsi->trace.e))
-		return;
-
-	last = &dsi->trace.e[dsi->trace.n];
-	last->wr = wr;
-	last->off = off;
-	last->val = val;
-	last->ns = now;
-	last->first_ns = now;
-	last->rep = 1;
-	last->irq = in_hardirq();
-	/* who touched the register: the handler and the read path must be told apart */
-	last->caller = __builtin_return_address(0);
-	dsi->trace.n++;
-}
-
-static void mtk_dsi_writel(struct mtk_dsi *dsi, u32 val, u32 off)
-{
-	writel(val, dsi->regs + off);
-	mtk_dsi_trace_add(dsi, true, off, val);
-}
-
-static u32 mtk_dsi_readl(struct mtk_dsi *dsi, u32 off)
-{
-	u32 val = readl(dsi->regs + off);
-
-	mtk_dsi_trace_add(dsi, false, off, val);
-
-	return val;
-}
-
-static u8 mtk_dsi_readb(struct mtk_dsi *dsi, u32 off)
-{
-	u8 val = readb(dsi->regs + off);
-
-	mtk_dsi_trace_add(dsi, false, off, val);
-
-	return val;
-}
-
-/* the same bounded poll as readl_poll_timeout(), with every read recorded */
-static int mtk_dsi_poll_traced(struct mtk_dsi *dsi, u32 off, u32 mask, bool set,
-			       u32 step_us, u32 timeout_us, u32 *out)
-{
-	s64 deadline = ktime_get_ns() + (s64)timeout_us * 1000;
-	u32 val = mtk_dsi_readl(dsi, off);
-
-	while (set ? !(val & mask) : (val & mask)) {
-		if (ktime_get_ns() > deadline) {
-			if (out)
-				*out = val;
-			return -ETIME;
-		}
-		udelay(step_us);
-		val = mtk_dsi_readl(dsi, off);
-	}
-
-	if (out)
-		*out = val;
-
-	return 0;
-}
-
-/*
- * DIAG (not for upstream): print, once per boot, the transfers the DSI core issued
- * around the read (a "set maximum return packet size" arrives as its own transfer, and
- * in video mode that one takes the VM command path) and every access this driver made
- * to the block from the moment the read was entered until it failed. Printed next to
- * the hand sequence in poco-m5s/evidence/disp-trial9/dcsread.py, the first line that
- * differs from it is the answer.
- */
-static void mtk_dsi_trace_dump(struct mtk_dsi *dsi)
-{
-	unsigned int i;
-
-	if (dsi->trace.printed)
-		return;
-
-	dsi->trace.printed = true;
-
-	for (i = 0; i < dsi->trace.mn; i++)
-		dev_info(dsi->host.dev,
-			 "diag: xfer %u: type 0x%02x tx_len %u rx_len %u flags 0x%x mode_ctrl 0x%08x at %lld us\n",
-			 i, dsi->trace.m[i].type, dsi->trace.m[i].tx_len,
-			 dsi->trace.m[i].rx_len, dsi->trace.m[i].flags,
-			 dsi->trace.m[i].mode, div_s64(dsi->trace.m[i].ns, 1000));
-
-	dev_info(dsi->host.dev, "diag: %u accesses in the failed read\n",
-		 dsi->trace.n);
-
-	for (i = 0; i < dsi->trace.n; i++) {
-		struct mtk_dsi_trace_entry *e = &dsi->trace.e[i];
-
-		if (e->rep > 1)
-			dev_info(dsi->host.dev,
-				 "diag: [%03u] %lld..%lld us %s%s 0x%03x = 0x%08x x%u %pS\n",
-				 i, div_s64(e->first_ns, 1000), div_s64(e->ns, 1000),
-				 e->wr ? "W" : "R", e->irq ? "!" : " ", e->off, e->val,
-				 e->rep, e->caller);
-		else
-			dev_info(dsi->host.dev,
-				 "diag: [%03u] %lld us %s%s 0x%03x = 0x%08x %pS\n",
-				 i, div_s64(e->ns, 1000), e->wr ? "W" : "R",
-				 e->irq ? "!" : " ", e->off, e->val, e->caller);
-	}
-}
-
 static void mtk_dsi_mask(struct mtk_dsi *dsi, u32 offset, u32 mask, u32 data)
 {
-	u32 temp = mtk_dsi_readl(dsi, offset);
+	u32 temp = readl(dsi->regs + offset);
 
-	mtk_dsi_writel(dsi, (temp & ~mask) | (data & mask), offset);
+	writel((temp & ~mask) | (data & mask), dsi->regs + offset);
 }
 
 static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
@@ -511,10 +349,10 @@ static void mtk_dsi_phy_timconfig(struct mtk_dsi *dsi)
 		  FIELD_PREP(CLK_HS_POST, timing->clk_hs_post) |
 		  FIELD_PREP(CLK_HS_EXIT, timing->clk_hs_exit);
 
-	mtk_dsi_writel(dsi, timcon0, DSI_PHY_TIMECON0);
-	mtk_dsi_writel(dsi, timcon1, DSI_PHY_TIMECON1);
-	mtk_dsi_writel(dsi, timcon2, DSI_PHY_TIMECON2);
-	mtk_dsi_writel(dsi, timcon3, DSI_PHY_TIMECON3);
+	writel(timcon0, dsi->regs + DSI_PHY_TIMECON0);
+	writel(timcon1, dsi->regs + DSI_PHY_TIMECON1);
+	writel(timcon2, dsi->regs + DSI_PHY_TIMECON2);
+	writel(timcon3, dsi->regs + DSI_PHY_TIMECON3);
 }
 
 static void mtk_dsi_enable(struct mtk_dsi *dsi)
@@ -567,7 +405,7 @@ static void mtk_dsi_lane0_ulp_mode_leave(struct mtk_dsi *dsi)
 
 static bool mtk_dsi_clk_hs_state(struct mtk_dsi *dsi)
 {
-	return mtk_dsi_readl(dsi, DSI_PHY_LCCON) & LC_HS_TX_EN;
+	return readl(dsi->regs + DSI_PHY_LCCON) & LC_HS_TX_EN;
 }
 
 static void mtk_dsi_clk_hs_mode(struct mtk_dsi *dsi, bool enter)
@@ -593,7 +431,7 @@ static void mtk_dsi_set_mode(struct mtk_dsi *dsi)
 			vid_mode = SYNC_EVENT_MODE;
 	}
 
-	mtk_dsi_writel(dsi, vid_mode, DSI_MODE_CTRL);
+	writel(vid_mode, dsi->regs + DSI_MODE_CTRL);
 
 	/*
 	 * The VM command bits belong to video mode: they let the engine inject a
@@ -632,10 +470,10 @@ static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
 	if (dsi->mode_flags & MIPI_DSI_MODE_NO_EOT_PACKET)
 		regval |= DIS_EOT;
 
-	mtk_dsi_writel(dsi, regval, DSI_TXRX_CTRL);
+	writel(regval, dsi->regs + DSI_TXRX_CTRL);
 
 	if (dsi->driver_data->needs_mem_conti)
-		mtk_dsi_writel(dsi, RWMEM_CONTI, DSI_MEM_CONTI);
+		writel(RWMEM_CONTI, dsi->regs + DSI_MEM_CONTI);
 }
 
 static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
@@ -671,11 +509,11 @@ static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
 
 	if (config_vact) {
 		vact_nl = FIELD_PREP(VACT_NL, dsi->vm.vactive);
-		mtk_dsi_writel(dsi, vact_nl, DSI_VACT_NL);
+		writel(vact_nl, dsi->regs + DSI_VACT_NL);
 		if (!dsi->driver_data->has_hstx_cklp_auto)
-			mtk_dsi_writel(dsi, ps_wc, DSI_HSTX_CKL_WC);
+			writel(ps_wc, dsi->regs + DSI_HSTX_CKL_WC);
 	}
-	mtk_dsi_writel(dsi, ps_val, DSI_PSCTRL);
+	writel(ps_val, dsi->regs + DSI_PSCTRL);
 }
 
 static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
@@ -739,11 +577,11 @@ static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
 		 * reports it in DSI_HSTX_CKL_WC_AUTO_RESULT (0x68), the way the
 		 * MT6785 loader runs it.
 		 */
-		mtk_dsi_writel(dsi, HSTX_CKL_WC_AUTO, DSI_HSTX_CKL_WC);
+		writel(HSTX_CKL_WC_AUTO, dsi->regs + DSI_HSTX_CKL_WC);
 	} else {
 		hstx_cklp_wc = FIELD_PREP(HSTX_CKL_WC,
 					  (hstx_cklp_wc_min + hstx_cklp_wc_max) / 2);
-		mtk_dsi_writel(dsi, hstx_cklp_wc, DSI_HSTX_CKL_WC);
+		writel(hstx_cklp_wc, dsi->regs + DSI_HSTX_CKL_WC);
 	}
 
 	hs_vb_ps_wc = ps_wc - (dsi->phy_timing.lpx + dsi->phy_timing.da_hs_exit +
@@ -751,9 +589,9 @@ static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
 	horizontal_frontporch_byte |= FIELD_PREP(HFP_HS_EN, 1) |
 				      FIELD_PREP(HFP_HS_VB_PS_WC, hs_vb_ps_wc);
 
-	mtk_dsi_writel(dsi, horizontal_sync_active_byte, DSI_HSA_WC);
-	mtk_dsi_writel(dsi, horizontal_backporch_byte, DSI_HBP_WC);
-	mtk_dsi_writel(dsi, horizontal_frontporch_byte, DSI_HFP_WC);
+	writel(horizontal_sync_active_byte, dsi->regs + DSI_HSA_WC);
+	writel(horizontal_backporch_byte, dsi->regs + DSI_HBP_WC);
+	writel(horizontal_frontporch_byte, dsi->regs + DSI_HFP_WC);
 }
 
 static void mtk_dsi_config_vdo_timing_per_line_lp(struct mtk_dsi *dsi)
@@ -816,23 +654,23 @@ static void mtk_dsi_config_vdo_timing_per_line_lp(struct mtk_dsi *dsi)
 			(vm->hactive * dsi_tmp_buf_bpp + 2) % dsi->lanes;
 	}
 
-	mtk_dsi_writel(dsi, horizontal_sync_active_byte, DSI_HSA_WC);
-	mtk_dsi_writel(dsi, horizontal_backporch_byte, DSI_HBP_WC);
-	mtk_dsi_writel(dsi, horizontal_frontporch_byte, DSI_HFP_WC);
+	writel(horizontal_sync_active_byte, dsi->regs + DSI_HSA_WC);
+	writel(horizontal_backporch_byte, dsi->regs + DSI_HBP_WC);
+	writel(horizontal_frontporch_byte, dsi->regs + DSI_HFP_WC);
 }
 
 static void mtk_dsi_config_vdo_timing(struct mtk_dsi *dsi)
 {
 	struct videomode *vm = &dsi->vm;
 
-	mtk_dsi_writel(dsi, vm->vsync_len, DSI_VSA_NL);
-	mtk_dsi_writel(dsi, vm->vback_porch, DSI_VBP_NL);
-	mtk_dsi_writel(dsi, vm->vfront_porch, DSI_VFP_NL);
-	mtk_dsi_writel(dsi, vm->vactive, DSI_VACT_NL);
+	writel(vm->vsync_len, dsi->regs + DSI_VSA_NL);
+	writel(vm->vback_porch, dsi->regs + DSI_VBP_NL);
+	writel(vm->vfront_porch, dsi->regs + DSI_VFP_NL);
+	writel(vm->vactive, dsi->regs + DSI_VACT_NL);
 
 	if (dsi->driver_data->has_size_ctl)
-		mtk_dsi_writel(dsi, FIELD_PREP(DSI_HEIGHT, vm->vactive) |
-			FIELD_PREP(DSI_WIDTH, vm->hactive), DSI_SIZE_CON);
+		writel(FIELD_PREP(DSI_HEIGHT, vm->vactive) |
+			FIELD_PREP(DSI_WIDTH, vm->hactive), dsi->regs + DSI_SIZE_CON);
 
 	if (dsi->driver_data->support_per_frame_lp)
 		mtk_dsi_config_vdo_timing_per_frame_lp(dsi);
@@ -844,18 +682,18 @@ static void mtk_dsi_config_vdo_timing(struct mtk_dsi *dsi)
 
 static void mtk_dsi_start(struct mtk_dsi *dsi)
 {
-	mtk_dsi_writel(dsi, 0, DSI_START);
-	mtk_dsi_writel(dsi, 1, DSI_START);
+	writel(0, dsi->regs + DSI_START);
+	writel(1, dsi->regs + DSI_START);
 }
 
 static void mtk_dsi_stop(struct mtk_dsi *dsi)
 {
-	mtk_dsi_writel(dsi, 0, DSI_START);
+	writel(0, dsi->regs + DSI_START);
 }
 
 static void mtk_dsi_set_cmd_mode(struct mtk_dsi *dsi)
 {
-	mtk_dsi_writel(dsi, CMD_MODE, DSI_MODE_CTRL);
+	writel(CMD_MODE, dsi->regs + DSI_MODE_CTRL);
 	mtk_dsi_set_vm_cmd(dsi, false);
 }
 
@@ -863,7 +701,7 @@ static void mtk_dsi_set_interrupt_enable(struct mtk_dsi *dsi)
 {
 	u32 inten = LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | VM_DONE_INT_FLAG;
 
-	mtk_dsi_writel(dsi, inten, DSI_INTEN);
+	writel(inten, dsi->regs + DSI_INTEN);
 }
 
 static void mtk_dsi_irq_data_set(struct mtk_dsi *dsi, u32 irq_bit)
@@ -910,17 +748,17 @@ static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
 
 	for (i = 0; i < ARRAY_SIZE(regs); i++)
 		dev_info(dsi->host.dev, "  %-16s 0x%08x\n", regs[i].name,
-			 mtk_dsi_readl(dsi, regs[i].off));
+			 readl(dsi->regs + regs[i].off));
 
 	/* the engine's own read-back of what it is doing */
 	for (i = 0; i < 9; i++)
 		dev_info(dsi->host.dev, "  STATE_DBG%d      0x%08x\n", i,
-			 mtk_dsi_readl(dsi, DSI_STATE_DBG0 + 4 * i));
+			 readl(dsi->regs + DSI_STATE_DBG0 + 4 * i));
 
 	/* the packet the engine was handed, as it sits in the command queue */
 	for (i = 0; i < 4; i++)
 		dev_info(dsi->host.dev, "  CMDQ[%d]          0x%08x\n", i,
-			 mtk_dsi_readl(dsi, dsi->driver_data->reg_cmdq_off + 4 * i));
+			 readl(dsi->regs + dsi->driver_data->reg_cmdq_off + 4 * i));
 }
 
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
@@ -943,8 +781,8 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 		 * (ddp_dsi.c:6575). The same register, same mask, polled from the
 		 * CPU with the command queue's one-second budget.
 		 */
-		if (!mtk_dsi_poll_traced(dsi, DSI_INTSTA, irq_flag, true, 10,
-					 1000000, &status)) {
+		if (!readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+					status & irq_flag, 10, 1000000)) {
 			mtk_dsi_mask(dsi, DSI_INTSTA, status & irq_flag, 0);
 			return 1;
 		}
@@ -974,12 +812,12 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 		 * command, and the VM command path polls 0x20). So read the register
 		 * and treat a set completion bit as done.
 		 */
-		status = mtk_dsi_readl(dsi, DSI_INTSTA);
+		status = readl(dsi->regs + DSI_INTSTA);
 		if (status & irq_flag) {
 			dev_warn_once(dsi->host.dev,
 				      "dsi completion 0x%08x seen in INTSTA without an interrupt (irq count %u, INTEN 0x%08x)\n",
 				      status & irq_flag, dsi->irq_count,
-				      mtk_dsi_readl(dsi, DSI_INTEN));
+				      readl(dsi->regs + DSI_INTEN));
 			mtk_dsi_mask(dsi, DSI_INTSTA, status & irq_flag, 0);
 			return 1;
 		}
@@ -1012,7 +850,7 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 	 * wider enable set an unhandled bit would keep a level-triggered line
 	 * asserted and the interrupt would storm. Wake on our own flags only.
 	 */
-	status = mtk_dsi_readl(dsi, DSI_INTSTA) & DSI_INT_STATUS_MASK;
+	status = readl(dsi->regs + DSI_INTSTA) & DSI_INT_STATUS_MASK;
 
 	if (status) {
 		/*
@@ -1026,7 +864,7 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 		 */
 		for (i = 0; i < 1000; i++) {
 			mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
-			tmp = mtk_dsi_readl(dsi, DSI_INTSTA);
+			tmp = readl(dsi->regs + DSI_INTSTA);
 			if (!(tmp & DSI_BUSY))
 				break;
 			udelay(4);
@@ -1067,9 +905,9 @@ static s32 mtk_dsi_switch_to_cmd_mode(struct mtk_dsi *dsi, u8 irq_flag, u32 t)
 	 * observable, nothing sleeps a fixed time. Two frames at 60 Hz is the bound.
 	 */
 	if (dsi->driver_data->poll_completion) {
-		ret = mtk_dsi_poll_traced(dsi, DSI_INTSTA,
-					  MT6785_FRAME_DRAIN | DSI_BUSY, false,
-					  100, 2 * 16700, &status);
+		ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+					 !(status & (MT6785_FRAME_DRAIN | DSI_BUSY)),
+					 100, 2 * 16700);
 		if (ret) {
 			drm_err(drm, "the video frame did not finish: INTSTA 0x%08x\n",
 				status);
@@ -1148,7 +986,7 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	mtk_dsi_enable(dsi);
 
 	if (dsi->driver_data->has_shadow_ctl)
-		mtk_dsi_writel(dsi, FORCE_COMMIT | BYPASS_SHADOW, dsi->driver_data->reg_shadow_dbg_off);
+		writel(FORCE_COMMIT | BYPASS_SHADOW, dsi->regs + dsi->driver_data->reg_shadow_dbg_off);
 
 	mtk_dsi_reset_engine(dsi);
 	mtk_dsi_phy_timconfig(dsi);
@@ -1189,7 +1027,7 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	mtk_dsi_lane0_ulp_mode_enter(dsi);
 	mtk_dsi_clk_ulp_mode_enter(dsi);
 	/* set the lane number as 0 to pull down mipi */
-	mtk_dsi_writel(dsi, 0, DSI_TXRX_CTRL);
+	writel(0, dsi->regs + DSI_TXRX_CTRL);
 
 	mtk_dsi_disable(dsi);
 
@@ -1448,8 +1286,8 @@ static void mtk_dsi_wait_for_idle(struct mtk_dsi *dsi)
 	u32 val;
 	struct drm_device *drm = dsi->bridge.dev;
 
-	ret = mtk_dsi_poll_traced(dsi, DSI_INTSTA, DSI_BUSY, false, 4,
-				  2000000, &val);
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, val, !(val & DSI_BUSY),
+				 4, 2000000);
 	if (ret) {
 		drm_warn(drm, "polling dsi wait not busy timeout!\n");
 
@@ -1595,7 +1433,7 @@ static ssize_t mtk_dsi_vm_cmd_send(struct mtk_dsi *dsi,
 			val = 0;
 			for (j = 0; j < 4 && i + j < msg->tx_len; j++)
 				val |= tx_buf[i + j] << (j * 8);
-			mtk_dsi_writel(dsi, val, mtk_dsi_vm_cmd_data[w].off + i - start);
+			writel(val, dsi->regs + mtk_dsi_vm_cmd_data[w].off + i - start);
 		}
 	} else {
 		if (msg->tx_len > 0)
@@ -1604,14 +1442,15 @@ static ssize_t mtk_dsi_vm_cmd_send(struct mtk_dsi *dsi,
 			con |= FIELD_PREP(VM_CMD_DATA_1, tx_buf[1]);
 	}
 
-	mtk_dsi_writel(dsi, con, dsi->driver_data->reg_vm_cmd_off);
+	writel(con, dsi->regs + dsi->driver_data->reg_vm_cmd_off);
 	mtk_dsi_mask(dsi, DSI_INTSTA, VM_CMD_DONE_INT_FLAG, 0);
 	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, 0);
 	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, VM_CMD_START);
 
 	/* sent in the next front porch; a frame is 16.7 ms at 60 Hz */
-	ret = mtk_dsi_poll_traced(dsi, DSI_INTSTA, VM_CMD_DONE_INT_FLAG, true,
-				  100, 100 * USEC_PER_MSEC, &val);
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, val,
+				 val & VM_CMD_DONE_INT_FLAG, 100,
+				 100 * USEC_PER_MSEC);
 
 	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, 0);
 	mtk_dsi_mask(dsi, DSI_INTSTA, VM_CMD_DONE_INT_FLAG, 0);
@@ -1657,8 +1496,8 @@ static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
 		return -EINVAL;
 
 	/* nothing may be queued while the engine still works */
-	ret = mtk_dsi_poll_traced(dsi, DSI_INTSTA, DSI_BUSY, false, 100,
-				  1000000, &status);
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 !(status & DSI_BUSY), 100, 1000000);
 	if (ret) {
 		drm_err(drm, "engine busy before the read\n");
 		return -ETIME;
@@ -1667,12 +1506,12 @@ static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
 	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
 
 	/* 1. the maximum return size: its own packet, its own start */
-	mtk_dsi_writel(dsi, (0x37 << 8) | (size << 16), reg_cmdq_off);
+	writel((0x37 << 8) | (size << 16), dsi->regs + reg_cmdq_off);
 	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
 	mtk_dsi_start(dsi);
 
-	ret = mtk_dsi_poll_traced(dsi, DSI_INTSTA, DSI_BUSY, false, 100,
-				  300000, &status);
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 !(status & DSI_BUSY), 100, 300000);
 	if (ret) {
 		drm_err(drm, "engine still busy after the size packet\n");
 		mtk_dsi_dump_state(dsi);
@@ -1682,7 +1521,7 @@ static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
 
 	/* 2. the read itself: BTA, low power, one entry, one start */
 	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
-	mtk_dsi_writel(dsi, (msg->type << 8) | (cmd << 16) | BTA, reg_cmdq_off);
+	writel((msg->type << 8) | (cmd << 16) | BTA, dsi->regs + reg_cmdq_off);
 	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
 	mtk_dsi_start(dsi);
 
@@ -1708,7 +1547,7 @@ static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
 
 	/* the handler stopped the engine and acknowledged before waking us */
 	for (i = 0; i < 16; i++)
-		read_data[i] = mtk_dsi_readb(dsi, DSI_RX_DATA0 + i);
+		read_data[i] = readb(dsi->regs + DSI_RX_DATA0 + i);
 
 	recv_cnt = mtk_dsi_recv_cnt(read_data[0], read_data);
 
@@ -1737,32 +1576,7 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 	u32 dsi_mode;
 	int ret, i;
 
-	/*
-	 * DIAG (not for upstream): the last eight transfers, whatever their type. The
-	 * DSI core sends "set maximum return packet size" as a transfer of its own before
-	 * a DCS read (drm_mipi_dsi.c: mipi_dsi_set_maximum_return_packet_size), and in
-	 * video mode that one takes the VM command path - so the read's history starts
-	 * before host_transfer() is entered for it.
-	 */
-	if (dsi->trace.mn == ARRAY_SIZE(dsi->trace.m)) {
-		memmove(&dsi->trace.m[0], &dsi->trace.m[1],
-			(ARRAY_SIZE(dsi->trace.m) - 1) * sizeof(dsi->trace.m[0]));
-		dsi->trace.mn--;
-	}
-	dsi->trace.m[dsi->trace.mn].type = msg->type;
-	dsi->trace.m[dsi->trace.mn].tx_len = msg->tx_len;
-	dsi->trace.m[dsi->trace.mn].rx_len = msg->rx_len;
-	dsi->trace.m[dsi->trace.mn].flags = msg->flags;
-	dsi->trace.m[dsi->trace.mn].ns = ktime_get_ns();
-	dsi->trace.m[dsi->trace.mn].mode = readl(dsi->regs + DSI_MODE_CTRL);
-	dsi->trace.mn++;
-
-	if (MTK_DSI_HOST_IS_READ(msg->type)) {
-		dsi->trace.n = 0;
-		dsi->trace.on = true;
-	}
-
-	dsi_mode = mtk_dsi_readl(dsi, DSI_MODE_CTRL);
+	dsi_mode = readl(dsi->regs + DSI_MODE_CTRL);
 	if ((dsi_mode & MODE) && mtk_dsi_vm_cmd_can_send(dsi, msg))
 		return mtk_dsi_vm_cmd_send(dsi, msg);
 
@@ -1806,7 +1620,7 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 	}
 
 	for (i = 0; i < 16; i++)
-		*(read_data + i) = mtk_dsi_readb(dsi, DSI_RX_DATA0 + i);
+		*(read_data + i) = readb(dsi->regs + DSI_RX_DATA0 + i);
 
 	recv_cnt = mtk_dsi_recv_cnt(read_data[0], read_data);
 
@@ -1832,11 +1646,6 @@ restore_dsi_mode:
 		mtk_dsi_set_mode(dsi);
 		mtk_dsi_start(dsi);
 	}
-
-	if (ret < 0)
-		mtk_dsi_trace_dump(dsi);
-
-	dsi->trace.on = false;
 
 	return ret < 0 ? ret : recv_cnt;
 }
@@ -1899,7 +1708,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to register DSI host\n");
 
-	mtk_dsi_writel(dsi, 0, DSI_INTSTA);
+	writel(0, dsi->regs + DSI_INTSTA);
 	ret = devm_request_irq(&pdev->dev, irq_num, mtk_dsi_irq,
 			       IRQF_TRIGGER_NONE, dev_name(&pdev->dev), dsi);
 	if (ret) {
