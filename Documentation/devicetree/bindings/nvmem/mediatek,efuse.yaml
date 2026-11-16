@@ -32,11 +32,6 @@ properties:
           - const: mediatek,mt8186-efuse
       - const: mediatek,mt8186-efuse
 
-      - const: mediatek,mt6785-efuse
-        description: The MT6785 GPU eFuse is a chip segment code rather than a
-          speed bin number, so this compatible implies its own decoding of the
-          "gpu-speedbin" cell and is not compatible with the generic one.
-
       - items:
           - enum:
               - mediatek,mt8186-efuse
@@ -49,7 +44,6 @@ properties:
 
       - items:
           - enum:
-              - mediatek,mt6785-efuse
               - mediatek,mt7622-efuse
               - mediatek,mt7623-efuse
               - mediatek,mt7981-efuse

@@ -17,8 +17,6 @@
 #include <linux/nvmem-provider.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-
-#include "mtk-efuse.h"
 #include <linux/string.h>
 
 struct mtk_devinfo {
@@ -84,13 +82,6 @@ static int mtk_devinfo_probe(struct platform_device *pdev)
 	config.size = di->size;
 	config.reg_read = mtk_devinfo_read;
 	config.priv = di;
-	/*
-	 * On this SoC the eFuse block itself reads as zeroes from the normal world, so
-	 * the cells come from the loader's copy - but they are the same cells, with the
-	 * same decoding: the post-processing that turns the GPU segment byte into a
-	 * speed bin is shared with the eFuse driver (mtk-efuse.h), not written twice.
-	 */
-	config.fixup_dt_cell_info = mtk_mt6785_efuse_fixup_dt_cell_info;
 
 	dev_info(dev, "%u eFuse words from the bootloader\n", count);
 
