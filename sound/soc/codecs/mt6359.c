@@ -121,7 +121,17 @@ static void mt6359_set_decoder_clk(struct mt6359_priv *priv, bool enable)
 			   (enable ? 1 : 0) << RG_RSTB_DECODER_VA32_SFT);
 }
 
-static void mt6359_mtkaif_tx_enable(struct mt6359_priv *priv)
+static void mt6359_mtkaif_tx_enable_priv(struct mt6359_priv *priv);
+
+void mt6359_mtkaif_tx_enable(struct snd_soc_component *cmpnt)
+{
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+
+	mt6359_mtkaif_tx_enable_priv(priv);
+}
+EXPORT_SYMBOL_GPL(mt6359_mtkaif_tx_enable);
+
+static void mt6359_mtkaif_tx_enable_priv(struct mt6359_priv *priv)
 {
 	switch (priv->mtkaif_protocol) {
 	case MT6359_MTKAIF_PROTOCOL_2_CLK_P2:
@@ -183,7 +193,7 @@ void mt6359_mtkaif_calibration_enable(struct snd_soc_component *cmpnt)
 
 	mt6359_set_playback_gpio(priv);
 	mt6359_set_capture_gpio(priv);
-	mt6359_mtkaif_tx_enable(priv);
+	mt6359_mtkaif_tx_enable_priv(priv);
 
 	mt6359_set_dcxo(priv, true);
 	mt6359_set_aud_global_bias(priv, true);
@@ -1486,7 +1496,7 @@ static int mt_mtkaif_tx_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		mt6359_mtkaif_tx_enable(priv);
+		mt6359_mtkaif_tx_enable_priv(priv);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		mt6359_mtkaif_tx_disable(priv);

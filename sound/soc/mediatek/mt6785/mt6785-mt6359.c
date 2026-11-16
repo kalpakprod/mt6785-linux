@@ -251,6 +251,20 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 
 	mt6359_mtkaif_calibration_disable(cmpnt_codec);
 
+	/*
+	 * The calibration ends by switching the codec's MTKAIF transmitter off
+	 * (mt6359_mtkaif_tx_disable() writes AFE_AUD_PAD_TOP = 0x3000). Nothing
+	 * switches it back on for the first capture: its only other writer is
+	 * the MTKAIF_TX supply's pre-power event, which runs when that widget
+	 * powers up — and if DAPM already had it powered while the calibration
+	 * disabled it behind DAPM's back, that event never runs again and the
+	 * codec transmits nothing, which reads as exact zeros in a capture
+	 * (audio10: 0x23e8 stayed 0x3000 idle and during the capture).
+	 * Restore the transmitter here, the way mt8192's card leaves it after
+	 * its calibration, and the register is 0x3900 from then on.
+	 */
+	mt6359_mtkaif_tx_enable(cmpnt_codec);
+
 	mt6785_afe_gpio_request(afe->dev, false, MT6785_DAI_ADDA, 1);
 	mt6785_afe_gpio_request(afe->dev, false, MT6785_DAI_ADDA, 0);
 	mt6785_afe_gpio_request(afe->dev, false, MT6785_DAI_ADDA_CH34, 1);

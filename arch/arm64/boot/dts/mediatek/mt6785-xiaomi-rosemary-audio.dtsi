@@ -491,6 +491,18 @@
 			bias-disable;
 		};
 	};
+
+	aud_gpio_i2s0_off: aud-gpio-i2s0-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO70__FUNC_GPIO70>;
+		};
+	};
+
+	aud_gpio_i2s0_on: aud-gpio-i2s0-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO70__FUNC_I2S0_DI>;
+		};
+	};
 };
 
 /* --------------------------------------------------- speaker amplifiers */
@@ -589,6 +601,12 @@
 		 * 0x8f/0x92]: clk/sync mosi on GPIO189/190, dat mosi on
 		 * GPIO191/192, dat miso on GPIO193/194, the ch34 pair on
 		 * GPIO143/146, and the two Vow alternates on GPIO193/194 mode 2.
+		 * I2S0 gets its one pin (GPIO70, function 1, pinmux 0x4601 in the
+		 * vendor's aud_gpio_i2s0_on). I2S1, I2S2, I2S3, I2S5 and TDM are
+		 * deliberately absent: this phone wires none of those ports and
+		 * the vendor's tree defines no groups for them, so the driver's
+		 * one "pinctrl states missing" line counts ten of those and is
+		 * expected — not a fault to chase.
 		 */
 		pinctrl-names = "aud_clk_mosi_off", "aud_clk_mosi_on",
 				"aud_dat_mosi_off", "aud_dat_mosi_on",
@@ -596,7 +614,8 @@
 				"vow_dat_miso_off", "vow_dat_miso_on",
 				"vow_clk_miso_off", "vow_clk_miso_on",
 				"aud_dat_mosi_ch34_off", "aud_dat_mosi_ch34_on",
-				"aud_dat_miso_ch34_off", "aud_dat_miso_ch34_on";
+				"aud_dat_miso_ch34_off", "aud_dat_miso_ch34_on",
+				"aud_gpio_i2s0_off", "aud_gpio_i2s0_on";
 		pinctrl-0 = <&aud_clk_mosi_off>;
 		pinctrl-1 = <&aud_clk_mosi_on>;
 		pinctrl-2 = <&aud_dat_mosi_off>;
@@ -611,6 +630,8 @@
 		pinctrl-11 = <&aud_dat_mosi_ch34_on>;
 		pinctrl-12 = <&aud_dat_miso_ch34_off>;
 		pinctrl-13 = <&aud_dat_miso_ch34_on>;
+		pinctrl-14 = <&aud_gpio_i2s0_off>;
+		pinctrl-15 = <&aud_gpio_i2s0_on>;
 
 		clocks = <&audsys CLK_AUD_AFE>,
 			 <&audsys CLK_AUD_TML>,
