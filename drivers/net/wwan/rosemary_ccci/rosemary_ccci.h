@@ -261,6 +261,7 @@ struct ap_query_md_feature_v2_1 {
 #define INFRA_RST1_AO		0x144
 /* the MD bus protection: step1 BIT(7), step2 BIT(3)|BIT(4) (vendor clk-mt6785-pg.c) */
 #define INFRA_TOPAXI_PROTECTEN	0x220
+#define INFRA_TOPAXI_PROTECT_STA1 0x228	/* which of those the target acknowledged */
 #define INFRA_RST0_PD		0x150
 #define INFRA_RST1_PD		0x154
 

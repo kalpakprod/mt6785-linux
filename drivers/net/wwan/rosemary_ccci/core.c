@@ -567,14 +567,86 @@ static void md_step(struct ccci_md *md, const char *step)
  * Returns 0 when the modem has really been through the cycle, -EAGAIN when the gate
  * could not be moved, or another negative error.
  */
+/**
+ * md_wait_sleep() - wait until the modem says it is asleep
+ * @md: the modem
+ *
+ * The vendor does exactly this before it takes a running modem's power away:
+ * debug_in_flight_mode() polls spm_is_md1_sleep() five times, a second apart, and
+ * only then proceeds (modem_sys1.c:552-590). spm_is_md1_sleep() is the modem's own
+ * 26 MHz request going away -- !(PCM_REG13_DATA & R13_MD_SRCCLKENA_0),
+ * base/power/spm/mt6785/mtk_spm_utils.c:46-50, bit from pcm_def.h:148 -- so the
+ * modem itself declares that it has parked.
+ *
+ * That bit is also what the MTCMOS clamp needs: a modem that is issuing
+ * transactions cannot acknowledge the bus protection, which is why the power-off
+ * of a *running* modem timed out in the trials (PROTECTEN bit 7 set, PROTECT_STA
+ * bit 7 clear, scpsys -ETIMEDOUT) while a halted one acknowledged at once.
+ *
+ * The vendor proceeds even when the modem never sleeps, because it can wait for the
+ * acknowledgement forever. This driver cannot -- mainline gives the bus protect one
+ * second -- so it must not enter the clamp at all in that state.
+ *
+ * Returns true when the modem declared sleep within the vendor's five seconds.
+ */
+static bool md_wait_sleep(struct ccci_md *md)
+{
+	unsigned int v;
+	int i;
+
+	for (i = 0; i < 5; i++) {
+		v = readl(md->spm + SPM_PCM_REG13_DATA);
+		if (!(v & SPM_R13_MD_SRCCLKENA_0))
+			return true;
+		msleep(1000);
+	}
+	v = readl(md->spm + SPM_PCM_REG13_DATA);
+	return !(v & SPM_R13_MD_SRCCLKENA_0);
+}
+
 static int md_power_cycle(struct ccci_md *md)
 {
 	int ret;
 
+	if (!md_wait_sleep(md)) {
+		dev_err(md->dev,
+			"the modem did not go to sleep (PCM_REG13_DATA %#x still asks for its clock): it cannot acknowledge the bus protection, so the power cycle is not attempted\n",
+			readl(md->spm + SPM_PCM_REG13_DATA));
+		return -EAGAIN;
+	}
+	md_step(md, "cycle: modem asleep");
+
 	pm_runtime_put_sync(md->dev);
 	if (md_domain_is_on(md)) {
-		dev_err(md->dev,
-			"the md domain stayed on after the gate was released: genpd keeps it while the power controller is unsynced, so the vendor's power cycle cannot run and the release would go to a modem that is not waiting for it\n");
+		unsigned int prot, sta;
+
+		/*
+		 * Two very different failures end here, and the registers tell them
+		 * apart -- guessing "the provider is unsynced" was wrong once already
+		 * (trial 19: stay_on was 0, the power-off ran, and it timed out in the
+		 * bus protect):
+		 *
+		 *  - PROTECTEN bit 7 set with PROTECT_STA bit 7 clear: the clamp was
+		 *    attempted and the modem did not acknowledge inside the driver's
+		 *    second (MTK_POLL_TIMEOUT, mtk-pm-domains.c:38).
+		 *  - PROTECTEN bit 7 clear: the clamp was never attempted, because genpd
+		 *    refused to power the domain off (stay_on still set, i.e. the power
+		 *    controller has not synced).
+		 */
+		prot = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0;
+		sta = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0;
+		if ((prot & BIT(7)) && !(sta & BIT(7)))
+			dev_err(md->dev,
+				"the power-off was attempted and the bus protect was not acknowledged within a second (PROTECTEN %#x, PROTECT_STA %#x), even though the modem had gone to sleep\n",
+				prot, sta);
+		else if (!(prot & BIT(7)))
+			dev_err(md->dev,
+				"genpd did not power the domain off: the clamp was never attempted (PROTECTEN %#x), which is the power controller still being unsynced\n",
+				prot);
+		else
+			dev_err(md->dev,
+				"the md domain stayed on after the gate was released (PROTECTEN %#x, PROTECT_STA %#x)\n",
+				prot, sta);
 		return -EAGAIN;
 	}
 	md_step(md, "cycle: gate off");
