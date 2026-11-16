@@ -42,6 +42,7 @@
 ********************************************************************************
 */
 #include <linux/delay.h>
+#include <linux/atomic.h>
 
 /* ALPS header files */
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0))
@@ -128,6 +129,24 @@ INT32 wmtPlatLogLvl = WMT_PLAT_LOG_INFO;
 static ENUM_STP_TX_IF_TYPE gCommIfType = STP_MAX_IF_TX;
 static OSAL_SLEEPABLE_LOCK gOsSLock;
 static OSAL_WAKE_LOCK wmt_wake_lock;
+
+/*
+ * The BGF line, kept here rather than in function-local statics.
+ *
+ * It used to live inside wmt_plat_eirq_ctrl() as `static UINT32
+ * bgf_irq_num = -1;`, together with a `g_bgf_irq_lock.counter` that the
+ * INIT path set to 1 and that PIN_STA_EINT_EN/PIN_STA_EINT_DIS then read
+ * as "already enabled": the INIT path requests the IRQ and immediately
+ * issues PIN_STA_EINT_DIS, which decrements the counter to 0, but any
+ * later requested PIN_STA_EINT_EN first sees counter 0 only by accident
+ * of ordering, and PIN_STA_EINT_DIS with a stale counter can decrement
+ * below the real state. Keeping the number and a plain enabled flag
+ * makes every transition mean exactly one enable_irq()/disable_irq_nosync()
+ * on a known IRQ.
+ */
+static UINT32 g_bgf_irq_num;
+static bool g_bgf_irq_requested;
+static bool g_bgf_irq_enabled;
 
 irq_cb wmt_plat_bgf_irq_cb;
 device_audio_if_cb wmt_plat_audio_if_cb;
@@ -297,6 +316,17 @@ static VOID wmt_plat_bgf_eirq_cb(VOID)
 irqreturn_t wmt_plat_bgf_irq_isr(INT32 irq, PVOID arg)
 {
 #if CFG_WMT_PS_SUPPORT
+	/*
+	 * Proof that the wake-up path works, for the next trial: the count
+	 * rises only when the controller actually raised the line, which is
+	 * exactly the event the port was losing. Lead note 9 asks for it in
+	 * /proc/interrupts as well; this line names the same fact in dmesg
+	 * even when the IRQ is shared.
+	 */
+	static atomic_t bgf_irq_hits = ATOMIC_INIT(0);
+
+	WMT_PLAT_PR_INFO("BGF wake-up #%d (irq %d): controller has data\n",
+			 atomic_inc_return(&bgf_irq_hits), irq);
 	wmt_plat_eirq_ctrl(PIN_BGF_EINT, PIN_STA_EINT_DIS);
 	wmt_plat_bgf_eirq_cb();
 #else
@@ -599,8 +629,8 @@ INT32 wmt_plat_ps_ctrl(ENUM_FUNC_STATE state)
 INT32 wmt_plat_eirq_ctrl(ENUM_PIN_ID id, ENUM_PIN_STATE state)
 {
 	INT32 iret;
-	static UINT32 bgf_irq_num = -1;
-	static UINT32 bgf_irq_flag;
+	UINT32 irq_num = 0;
+	UINT32 irq_flag = IRQF_TRIGGER_LOW;
 
 	/* TODO: [ChangeFeature][GeorgeKuo]: use another function to handle this, as done in gpio_ctrls */
 
@@ -614,73 +644,120 @@ INT32 wmt_plat_eirq_ctrl(ENUM_PIN_ID id, ENUM_PIN_STATE state)
 	switch (id) {
 	case PIN_BGF_EINT:
 		if (state == PIN_STA_INIT) {
+			if (g_bgf_irq_requested) {
+				/*
+				 * Connsys powers off and on again during normal use, so
+				 * this runs more than once. Re-requesting an IRQ we still
+				 * hold would fail with -EBUSY and leave the line unusable
+				 * for the rest of the boot; the handler and its data are
+				 * unchanged, so there is nothing to redo.
+				 */
+				WMT_DBG_FUNC("BGFInt already requested(irq %u), init is a no-op\n",
+						     g_bgf_irq_num);
+				return 0;
+			}
 			if (wmt_detect_get_chip_type() == WMT_CHIP_TYPE_SOC) {
 #ifdef CONFIG_OF
-				iret = mtk_wcn_consys_read_irq_info_from_dts(&bgf_irq_num, &bgf_irq_flag);
+				iret = mtk_wcn_consys_read_irq_info_from_dts(&irq_num, &irq_flag);
 				if (iret)
 					return iret;
 #else
-				bgf_irq_num = MT_CONN2AP_BTIF_WAKEUP_IRQ_ID;
-				bgf_irq_flag = IRQF_TRIGGER_LOW;
+				irq_num = MT_CONN2AP_BTIF_WAKEUP_IRQ_ID;
+				irq_flag = IRQF_TRIGGER_LOW;
 #endif
-				iret = request_irq(bgf_irq_num, wmt_plat_bgf_irq_isr, bgf_irq_flag,
+				iret = request_irq(irq_num, wmt_plat_bgf_irq_isr, irq_flag,
 						   "BTIF_WAKEUP_IRQ", NULL);
 				if (iret) {
 					WMT_PLAT_PR_ERR("request_irq fail,irq_no(%d),iret(%d)\n",
-							  bgf_irq_num, iret);
+							  irq_num, iret);
 					return iret;
-				} else {
-					iret = enable_irq_wake(bgf_irq_num);
-					if (iret)
-						WMT_PLAT_PR_ERR("enable irq wake fail,irq_no(%d),iret(%d)\n",
-							bgf_irq_num, iret);
-					iret = 0;
 				}
+				iret = enable_irq_wake(irq_num);
+				if (iret)
+					WMT_PLAT_PR_ERR("enable irq wake fail,irq_no(%d),iret(%d)\n",
+							irq_num, iret);
 			} else {
 				struct device_node *node;
-				INT32 ret = -EINVAL;
 
 				node = of_find_compatible_node(NULL, NULL, "mediatek,connectivity-combo");
-				if (node) {
-					/*BGF-eint name maybe wrong*/
-					bgf_irq_num = irq_of_parse_and_map(node, 1);
-					ret = request_irq(bgf_irq_num, wmt_plat_bgf_irq_isr,
-							  IRQF_TRIGGER_LOW, "BGF-eint", NULL);
-					if (ret)
-						WMT_ERR_FUNC("BGF EINT IRQ LINE NOT AVAILABLE!!\n");
-					else
-						WMT_INFO_FUNC("BGF EINT request_irq success!!\n");
-				} else
+				if (!node) {
 					WMT_ERR_FUNC("[%s] can't find BGF eint compatible node\n",
 						     __func__);
+					return -1;
+				}
+				/*BGF-eint name maybe wrong*/
+				irq_num = irq_of_parse_and_map(node, 1);
+				iret = request_irq(irq_num, wmt_plat_bgf_irq_isr,
+						   irq_flag, "BGF-eint", NULL);
+				if (iret) {
+					WMT_ERR_FUNC("BGF EINT IRQ LINE NOT AVAILABLE!!\n");
+					return iret;
+				}
+				WMT_INFO_FUNC("BGF EINT request_irq success!!\n");
 			}
-			g_bgf_irq_lock.counter = 1;
+			/* The line is armed on demand, not now: a wake-up that
+			 * arrives while nobody waits for it has nothing to wake. */
+			disable_irq_nosync(irq_num);
+
+			g_bgf_irq_num = irq_num;
+			g_bgf_irq_requested = true;
+			g_bgf_irq_enabled = false;
+			g_bgf_irq_lock.counter = 0;
+			WMT_INFO_FUNC("WMT-PLAT: BGF IRQ %u requested, disabled until PSM sleeps\n",
+				      irq_num);
 		} else if (state == PIN_STA_EINT_EN) {
+			if (!g_bgf_irq_requested) {
+				WMT_WARN_FUNC("BGFInt enable before request, ignored\n");
+				return -1;
+			}
 			spin_lock_irqsave(&g_bgf_irq_lock.lock, g_bgf_irq_lock.flags);
-			if (g_bgf_irq_lock.counter) {
-				WMT_PLAT_PR_DBG("BGF INT has been enabled,counter(%d)\n",
-						  g_bgf_irq_lock.counter);
+			if (g_bgf_irq_enabled) {
+				WMT_DBG_FUNC("BGFInt already enabled(irq %u)\n", g_bgf_irq_num);
 			} else {
-				enable_irq(bgf_irq_num);
+				enable_irq(g_bgf_irq_num);
+				g_bgf_irq_enabled = true;
 				g_bgf_irq_lock.counter++;
-				WMT_DBG_FUNC("WMT-PLAT:BGFInt (en)\n");
+				/* INFO, not DBG: this is the transition the port was
+				 * missing, so the next trial must show it without
+				 * raising the debug level. It happens once per sleep
+				 * handshake, a handful of times per boot. */
+				WMT_PLAT_PR_INFO("BGFInt armed (irq %u) for chip wake-up\n",
+						 g_bgf_irq_num);
 			}
 			spin_unlock_irqrestore(&g_bgf_irq_lock.lock, g_bgf_irq_lock.flags);
 		} else if (state == PIN_STA_EINT_DIS) {
+			if (!g_bgf_irq_requested) {
+				/* Normal during bring-up: gpio_ctrl disables right after
+				 * the request, and the very first power-on reaches here
+				 * before any PSM sleep. */
+				WMT_DBG_FUNC("BGFInt disable before request, ignored\n");
+				return 0;
+			}
 			spin_lock_irqsave(&g_bgf_irq_lock.lock, g_bgf_irq_lock.flags);
-			if (!g_bgf_irq_lock.counter) {
-				WMT_PLAT_PR_DBG("BGF INT has been disabled,counter(%d)\n",
-						  g_bgf_irq_lock.counter);
+			if (!g_bgf_irq_enabled) {
+				WMT_DBG_FUNC("BGFInt already disabled(irq %u)\n", g_bgf_irq_num);
 			} else {
-				disable_irq_nosync(bgf_irq_num);
-				g_bgf_irq_lock.counter--;
-				WMT_DBG_FUNC("WMT-PLAT:BGFInt (dis)\n");
+				disable_irq_nosync(g_bgf_irq_num);
+				g_bgf_irq_enabled = false;
+				if (g_bgf_irq_lock.counter)
+					g_bgf_irq_lock.counter--;
+				WMT_DBG_FUNC("WMT-PLAT:BGFInt (dis, irq %u)\n", g_bgf_irq_num);
 			}
 			spin_unlock_irqrestore(&g_bgf_irq_lock.lock, g_bgf_irq_lock.flags);
 		} else {
-			free_irq(bgf_irq_num, NULL);
-			WMT_DBG_FUNC("WMT-PLAT:BGFInt (free)\n");
-			/* de-init: nothing to do in ALPS, such as un-registration... */
+			if (!g_bgf_irq_requested) {
+				WMT_DBG_FUNC("BGFInt free before request, ignored\n");
+				return 0;
+			}
+			if (g_bgf_irq_enabled) {
+				disable_irq_nosync(g_bgf_irq_num);
+				g_bgf_irq_enabled = false;
+			}
+			free_irq(g_bgf_irq_num, NULL);
+			g_bgf_irq_requested = false;
+			g_bgf_irq_lock.counter = 0;
+			WMT_DBG_FUNC("WMT-PLAT:BGFInt (free, irq %u)\n", g_bgf_irq_num);
+			g_bgf_irq_num = 0;
 		}
 
 		iret = 0;
