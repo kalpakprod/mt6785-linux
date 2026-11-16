@@ -66,7 +66,20 @@ struct mtk_drm_private {
 	struct drm_atomic_commit *suspend_state;
 	unsigned int mbox_index;
 	struct mtk_drm_private **all_drm_private;
+
+	/*
+	 * The framebuffer the bootloader left on screen, identity-mapped in this
+	 * display's IOMMU domain so the pipeline keeps scanning it out until we
+	 * reprogram it ourselves; bootfb_frames counts our own frame-done events
+	 * before the mapping is dropped.
+	 */
+	struct iommu_domain *bootfb_domain;
+	phys_addr_t bootfb_pa;
+	size_t bootfb_size;
+	unsigned int bootfb_frames;
 };
+
+void mtk_drm_bootfb_unmap(struct drm_device *drm);
 
 extern struct platform_driver mtk_disp_aal_driver;
 extern struct platform_driver mtk_disp_ccorr_driver;
