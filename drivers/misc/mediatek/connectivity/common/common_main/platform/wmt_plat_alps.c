@@ -746,6 +746,27 @@ INT32 wmt_plat_eirq_ctrl(ENUM_PIN_ID id, ENUM_PIN_STATE state)
 				 * handshake, a handful of times per boot. */
 				WMT_PLAT_PR_INFO("BGFInt armed (irq %u) for chip wake-up\n",
 						 g_bgf_irq_num);
+				/*
+				 * The configuration line lives at request time too, but
+				 * request time is early in the boot and trial 9's log
+				 * started at 10.9 s - the request had already happened and
+				 * the line was gone. Repeating it on the first arming keeps
+				 * the same facts in a part of the log that survives, so a
+				 * test that asks "what is this line configured with" gets an
+				 * answer without a reboot.
+				 */
+				{
+					struct irq_data *d =
+						irq_get_irq_data(g_bgf_irq_num);
+
+					WMT_PLAT_PR_INFO("BGF irq %u: hwirq %lu, domain %s, "
+							 "effective trigger 0x%x\n",
+							 g_bgf_irq_num,
+							 d ? d->hwirq : 0UL,
+							 (d && d->domain && d->domain->name) ?
+								d->domain->name : "?",
+							 d ? irqd_get_trigger_type(d) : 0);
+				}
 			}
 			spin_unlock_irqrestore(&g_bgf_irq_lock.lock, g_bgf_irq_lock.flags);
 		} else if (state == PIN_STA_EINT_DIS) {
