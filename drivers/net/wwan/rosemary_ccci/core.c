@@ -421,56 +421,19 @@ static int clear_smem(struct ccci_md *md)
 /* ---- the boot state machine ------------------------------------------- */
 
 /**
- * md_domain_on() - power the modem's MTCMOS domain
+ * md_domain_on() - power the modem's MTCMOS domain and prove it is on
  * @md: the modem
  *
- * The domain is powered through the vendor's own sequence, in the vendor's order,
- * with mainline doing the part it owns and this driver doing the part that
- * belongs to the modem's own supply chain:
- *
- *  1. the PMIC. Vendor md_cd_power_on() step 1 calls md1_pmic_setting_on()
- *     (mt6785/md_sys1_platform.c:559-562 -> drivers/misc/mediatek/pmic/.../pmic.c
- *     vmd1_pmic_setting_on()), which sets VCORE and VMODEM to the segment's
- *     voltages. Here the regulators are the DT supplies vmodem-supply and
- *     vsram-md-supply, and md_power_seq_prepare() has already enabled them.
- *
- *  2. the modem's 26 MHz source request. Vendor step 2 writes INFRA_AO_MD_SRCCLKENA
- *     low byte 0x21 (mt6785/md_sys1_platform.c:727-733), and the AP's own clock
- *     request is the SMC in spm_ap_mdsrc_req() followed by its ack poll
- *     (base/power/spm/mt6785/mtk_spm_utils.c:64-120). Both are in
- *     md_power_seq_prepare() (this file, ap_mdsrc_req()).
- *
- *  3. the MTCMOS gate itself. Vendor step 3 is
- *     clk_prepare_enable(clk_table[0].clk_ref) with the clock named
- *     "scp-sys-md1-main" (mt6785/md_sys1_platform.c:57-60 and :744-745), and on
- *     this SoC that clock IS the domain: PGATE(SCP_SYS_MD1, pg_md1, ...)
- *     (clk-mt6785-pg.c:4872) whose enable runs enable_subsys(SYS_MD1) ->
- *     spm_mtcmos_ctrl_md1(STA_POWER_ON) (clk-mt6785-pg.c:995-1105). The vendor
- *     therefore enables it on EVERY power-on, and disables it on every
- *     power-off (mt6785/md_sys1_platform.c:809).
- *
- *     Mainline has the same sequence once, in the power-controller driver, and
- *     takes the gate clock from the domain's DT node (mtk-pm-domains.c:912-955,
- *     used at :341-390 and :629-644). This driver must not write 0x318 itself;
- *     the domain owns it. So all it does is take the runtime-PM reference, which
- *     runs that sequence.
- *
- * The trial that went wrong did something else: it took the domain's only
- * reference at probe time and kept it for the life of the module. With no
- * reference held by anyone between probe and the boot, genpd is free to power the
- * domain off -- and it does, through its own bookkeeping
- * (genpd_queue_power_off_work()/of_genpd_sync_state(), drivers/pmdomain/core.c:
- * 934-940 and 3684-3702) -- while the cached state it consults later can still
- * say "on" (genpd_power_on() returns early on that belief,
- * drivers/pmdomain/core.c:1038-1044). That is why an early boot saw PWR_STATUS
- * bit 0 clear with runtime PM reporting "active", and why a later boot saw it set:
- * it was a race between genpd's bookkeeping and the boot, not a missing step.
- *
- * The reference is therefore taken here, in the boot path, and held until the
- * modem is stopped -- so the domain has a user for exactly as long as the modem
- * uses it. With that, `before release` reads bit 0 set without any re-power, and
- * the value is checked once so a genuine failure is reported with its register
- * value instead of a handshake timeout 30 s later.
+ * Taking the runtime-PM reference is not the same as having a powered domain.
+ * Trial 8a booted the modem at 11 s, early in the boot, and the domain read
+ * OFF with runtime PM reporting "active": genpd's cached status said on, its
+ * power_on() returned early on that belief ("if (genpd_status_on(genpd))
+ * return 0", drivers/pmdomain/core.c:1043), and the hardware was never asked.
+ * A reference alone therefore proves nothing, so this asks twice: take the
+ * reference, then read PWR_STATUS bit 0 -- the md domain's own bit -- and if it
+ * is clear, force the domain down and up again through genpd itself, and read
+ * again. If it still reads clear the boot says so with the value instead of
+ * failing 30 s later at the handshake.
  */
 static int md_domain_on(struct ccci_md *md)
 {
@@ -482,10 +445,29 @@ static int md_domain_on(struct ccci_md *md)
 		return ret;
 
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
+	if (status & BIT(0))
+		return 0;
+
+	dev_warn(md->dev,
+		 "the md domain is off while runtime PM reports it on (%#x): powering it again\n",
+		 status);
+	/*
+	 * Drop the reference so genpd really suspends the domain, then take it
+	 * again. pm_runtime_put_sync() waits for the suspend, so the second
+	 * resume cannot be answered by the same stale belief that caused this.
+	 */
+	pm_runtime_put_sync(md->dev);
+	usleep_range(1000, 2000);
+	ret = pm_runtime_resume_and_get(md->dev);
+	if (ret)
+		return ret;
+
+	status = 0;
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	if (!(status & BIT(0))) {
 		pm_runtime_put_sync(md->dev);
 		return dev_err_probe(md->dev, -EIO,
-				     "the md domain did not power on (PWR_STATUS %#x)\n",
+				     "the md domain will not power on (PWR_STATUS %#x)\n",
 				     status);
 	}
 	return 0;
@@ -554,8 +536,11 @@ static int md_boot(struct ccci_md *md)
 
 	if (md->first_boot) {
 		ret = md_first_boot_check(md);
-		if (ret)
-			goto err_pm;
+		if (ret) {
+			/* drop the reference before the supplies go away */
+			pm_runtime_put_sync(md->dev);
+			goto err_seq;
+		}
 		/*
 		 * The boot-ROM check is the loader's last act; the modem is let
 		 * go from here by writing MD_BOOT_VECTOR_EN below.
@@ -623,16 +608,6 @@ static int md_boot(struct ccci_md *md)
 	}
 	return 0;
 
-err_pm:
-	/*
-	 * The boot path took the domain's reference as soon as it had the
-	 * supplies up (md_domain_on()), so every way out of a failed boot must put
-	 * it back before the supplies go away -- otherwise the domain stays
-	 * powered with nothing using it and the next boot starts against genpd's
-	 * stale belief. The successful path keeps it for the life of the modem and
-	 * ccci_md_stop() drops it.
-	 */
-	pm_runtime_put_sync(md->dev);
 err_seq:
 	md_power_seq_release(md);
 err_clk:
@@ -641,29 +616,6 @@ err_clk:
 err_off:
 	ccci_set_state(md, MD_STATE_OFF);
 	return ret;
-}
-
-/**
- * ccci_md_stop() - give the modem's domain and supplies back
- * @md: the modem
- *
- * The mirror of the boot path: the domain reference taken in md_domain_on() is
- * put back, then the supplies and the modem's 26 MHz request are released, in the
- * vendor's own power-off order -- clk_disable_unprepare() of "scp-sys-md1-main"
- * and then the srcclkena write, mt6785/md_sys1_platform.c:809-832, which here is
- * pm_runtime_put_sync() and then md_power_seq_release(). Nothing in this driver
- * holds the domain otherwise: the boot takes it and the stop gives it back, so
- * the domain has a user for exactly as long as the modem does.
- */
-void ccci_md_stop(struct ccci_md *md)
-{
-	if (md->state == MD_STATE_OFF)
-		return;
-	pm_runtime_put_sync(md->dev);
-	md_power_seq_release(md);
-	ccci_dpmaif_stop(md);
-	clk_bulk_disable_unprepare(md->num_clks, md->clks);
-	ccci_set_state(md, MD_STATE_OFF);
 }
 
 static void boot_work(struct work_struct *work)
@@ -826,28 +778,20 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	INIT_WORK(&md->boot_work, boot_work);
 	platform_set_drvdata(pdev, md);
 
-	/*
-	 * M0: the domain must be powerable.
-	 *
-	 * The power-on itself is NOT done here. Taking the domain's only reference
-	 * at probe and dropping it again left the domain with no user for the whole
-	 * time between probe and the boot, which is exactly the window in which
-	 * genpd is free to power it off (see md_domain_on()). The boot path takes
-	 * the reference and holds it, so the vendor's power-on sequence runs once,
-	 * at the moment the modem is started.
-	 *
-	 * What is checked here is only that the domain is bound and its register
-	 * block is reachable, which is what a probe failure should mean.
-	 */
+	/* M0: the domain must be powerable and PWR_STATUS must read 1 */
 	ret = devm_pm_runtime_enable(dev);
 	if (ret)
 		return ret;
 	ret = md_get_spm(md);
 	if (ret)
 		return ret;
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "cannot power the md domain\n");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
+	pm_runtime_put_sync(dev);
 	/* BIT() is unsigned long, so the expression is narrowed for the format */
-	dev_info(dev, "rosemary_ccci: M0 md power status %u at probe (the boot powers it on and holds it)\n",
+	dev_info(dev, "rosemary_ccci: M0 md power status %u\n",
 		 (u32)(status & BIT(0)));
 
 	if (stage_limit() < 1)
@@ -929,17 +873,8 @@ static const struct of_device_id rosemary_ccci_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, rosemary_ccci_of_match);
 
-static void rosemary_ccci_remove(struct platform_device *pdev)
-{
-	struct ccci_md *md = platform_get_drvdata(pdev);
-
-	if (md)
-		ccci_md_stop(md);
-}
-
 static struct platform_driver rosemary_ccci_driver = {
 	.probe = rosemary_ccci_probe,
-	.remove = rosemary_ccci_remove,
 	.driver = {
 		.name = "rosemary-ccci",
 		.dev_groups = ccci_groups,
