@@ -2019,6 +2019,13 @@ static const dai_register_cb dai_register_cbs[] = {
 	mt6785_dai_i2s_register,
 	mt6785_dai_pcm_register,
 	mt6785_dai_tdm_register,
+	mt6785_dai_hostless_register,
+	/*
+	 * The memory interfaces come last: the sub DAIs are combined head first,
+	 * and DL1 has DAI id 0, which ASoC replaces by the DAI's index in the
+	 * component. Behind another DAI, DL1 would no longer be id 0 and would
+	 * drive DL12's registers instead of its own.
+	 */
 	mt6785_dai_memif_register,
 };
 

@@ -61,6 +61,33 @@ SND_SOC_DAILINK_DEFS(capture,
 						   "mt6359-snd-codec-aif1")),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+/*
+ * Voice calls. The modem's voice port is the AFE's second PCM interface (MD1 on
+ * PCM 2: "AFE_TO_MD1" is fed by "PCM 2 Playback" and "PCM 2 Capture" feeds
+ * "MD1_TO_AFE"), and the AFE connects it straight to the codec: no data goes
+ * through these buffers, opening them is what powers the path inside the AFE.
+ * The speech daemon holds both open while a call is up.
+ *
+ * "PCM 2" is the modem interface itself; the hostless word is the AFE's graph
+ * around it (routes in mt6785-dai-hostless.c), and the loopback is the same
+ * mechanism with the codec's own output as the source, which is how a call
+ * path can be checked without a modem.
+ */
+SND_SOC_DAILINK_DEFS(modem_pcm2,
+		     DAILINK_COMP_ARRAY(COMP_CPU("PCM 2")),
+		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
+		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+SND_SOC_DAILINK_DEFS(hostless_speech,
+		     DAILINK_COMP_ARRAY(COMP_CPU("Hostless Speech DAI")),
+		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
+		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+SND_SOC_DAILINK_DEFS(hostless_lpbk,
+		     DAILINK_COMP_ARRAY(COMP_CPU("Hostless LPBK DAI")),
+		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
+		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
 /* The headset jack the codec's accessory detection reports into */
 static struct snd_soc_jack mt6785_mt6359_jack;
 
@@ -165,6 +192,41 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.num_codecs = ARRAY_SIZE(capture_codecs),
 		.platforms = capture_platforms,
 		.num_platforms = ARRAY_SIZE(capture_platforms),
+	},
+	/*
+	 * Voice calls, in the order they are opened: the modem's PCM interface,
+	 * then the AFE's graph for it and the loopback that stands in for the
+	 * modem during tests.
+	 */
+	{
+		.name = "MT6785_PCM2",
+		.stream_name = "Modem PCM 2",
+		.cpus = modem_pcm2_cpus,
+		.num_cpus = ARRAY_SIZE(modem_pcm2_cpus),
+		.codecs = modem_pcm2_codecs,
+		.num_codecs = ARRAY_SIZE(modem_pcm2_codecs),
+		.platforms = modem_pcm2_platforms,
+		.num_platforms = ARRAY_SIZE(modem_pcm2_platforms),
+	},
+	{
+		.name = "Hostless_Speech",
+		.stream_name = "Hostless_Speech",
+		.cpus = hostless_speech_cpus,
+		.num_cpus = ARRAY_SIZE(hostless_speech_cpus),
+		.codecs = hostless_speech_codecs,
+		.num_codecs = ARRAY_SIZE(hostless_speech_codecs),
+		.platforms = hostless_speech_platforms,
+		.num_platforms = ARRAY_SIZE(hostless_speech_platforms),
+	},
+	{
+		.name = "Hostless_LPBK",
+		.stream_name = "Hostless_LPBK",
+		.cpus = hostless_lpbk_cpus,
+		.num_cpus = ARRAY_SIZE(hostless_lpbk_cpus),
+		.codecs = hostless_lpbk_codecs,
+		.num_codecs = ARRAY_SIZE(hostless_lpbk_codecs),
+		.platforms = hostless_lpbk_platforms,
+		.num_platforms = ARRAY_SIZE(hostless_lpbk_platforms),
 	},
 };
 

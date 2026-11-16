@@ -57,6 +57,8 @@ enum {
 	MT6785_DAI_PCM_1,
 	MT6785_DAI_PCM_2,
 	MT6785_DAI_TDM,
+	MT6785_DAI_HOSTLESS_LPBK,
+	MT6785_DAI_HOSTLESS_SPEECH,
 	MT6785_DAI_NUM,
 };
 
@@ -149,6 +151,7 @@ int mt6785_dai_hw_gain_register(struct mtk_base_afe *afe);
 int mt6785_dai_src_register(struct mtk_base_afe *afe);
 int mt6785_dai_pcm_register(struct mtk_base_afe *afe);
 int mt6785_dai_tdm_register(struct mtk_base_afe *afe);
+int mt6785_dai_hostless_register(struct mtk_base_afe *afe);
 
 int mt6785_dai_i2s_set_share(struct mtk_base_afe *afe, const char *main_i2s_name,
 			     const char *secondary_i2s_name);
