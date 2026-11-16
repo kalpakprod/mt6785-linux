@@ -2076,6 +2076,18 @@ static int mt6785_afe_pcm_dev_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/*
+	 * The MTKAIF pins. The states are on this node, and this driver is what
+	 * switches them around a stream, so it is this device that owns them:
+	 * mt8192's board driver calls the same function from the card instead,
+	 * because there the states hang off the card node.
+	 */
+	ret = mt6785_afe_gpio_init(dev);
+	if (ret) {
+		dev_err(dev, "init gpio error\n");
+		return ret;
+	}
+
 	/* reset controller to reset audio regs before regmap cache */
 	rstc = devm_reset_control_get_exclusive(dev, "audiosys");
 	if (IS_ERR(rstc))

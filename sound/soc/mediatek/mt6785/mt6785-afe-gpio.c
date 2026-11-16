@@ -103,10 +103,9 @@ static int mt6785_afe_gpio_select(struct device *dev,
 
 	ret = pinctrl_select_state(aud_pinctrl,
 				   aud_gpios[type].gpioctrl);
-	if (ret) {
-		dev_dbg(dev, "%s(), error, can not set gpio type %d\n",
-			__func__, type);
-	}
+	if (ret)
+		dev_err(dev, "%s(), error, can not set gpio type %d, ret %d\n",
+			__func__, type, ret);
 
 	return ret;
 }
@@ -114,6 +113,8 @@ static int mt6785_afe_gpio_select(struct device *dev,
 int mt6785_afe_gpio_init(struct device *dev)
 {
 	int i, ret;
+	int missing = 0;
+	int first_err = 0;
 
 	aud_pinctrl = devm_pinctrl_get(dev);
 	if (IS_ERR(aud_pinctrl)) {
@@ -128,12 +129,18 @@ int mt6785_afe_gpio_init(struct device *dev)
 							     aud_gpios[i].name);
 		if (IS_ERR(aud_gpios[i].gpioctrl)) {
 			ret = PTR_ERR(aud_gpios[i].gpioctrl);
-			dev_dbg(dev, "%s(), pinctrl_lookup_state %s fail, ret %d\n",
-				__func__, aud_gpios[i].name, ret);
+			if (!missing)
+				first_err = ret;
+			missing++;
 		} else {
 			aud_gpios[i].gpio_prepare = true;
 		}
 	}
+
+	/* One line, not a hidden dev_dbg: a missing state is a DT mistake. */
+	if (missing)
+		dev_err(dev, "%s(), %d of %zu pinctrl states missing, first error %d\n",
+			__func__, missing, ARRAY_SIZE(aud_gpios), first_err);
 
 	mt6785_afe_gpio_select(dev, MT6785_AFE_GPIO_CLK_MOSI_ON);
 
