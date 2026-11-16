@@ -16,12 +16,18 @@
 		};
 
 		/*
-		 * The MT6359 clock buffer provider (clk-mt6359-clkbuf.c) is not
-		 * instantiated yet: it drives the NFC buffer the way the vendor does,
-		 * but that path is unproven on the phone and the buffer is already on as
-		 * the loader left it. Adding the node and a clocks property on the NFC
-		 * controller is the one-line change once it is measured.
+		 * The PMIC's 26 MHz clock buffer outputs: SOC, WCN, NFC, CEL and EXT.
+		 * Only the NFC one is writable (through the DCXO CW00 set/clear pair,
+		 * the way the vendor's mtk_clkbuf_hw.c does it); the other four are
+		 * read-only so the modem, Wi-Fi/BT and UFS keep whatever the loader gave
+		 * them. See drivers/clk/mediatek/clk-mt6359-clkbuf.c.
 		 */
+		clkbuf: clock-buffer {
+			compatible = "mediatek,mt6359-clkbuf";
+			#clock-cells = <1>;
+			clock-frequency = <26000000>;
+		};
+
 
 		mt6359codec: audio-codec {
 			compatible = "mediatek,mt6359-codec";
