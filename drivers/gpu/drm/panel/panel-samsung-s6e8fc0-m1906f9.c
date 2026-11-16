@@ -264,7 +264,7 @@ static int s6e8fc0_k7_38_0c_0a_off(struct s6e8fc0_ctx *ctx)
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
-	mipi_dsi_msleep(&dsi_ctx, 10);
+	mipi_dsi_usleep_range(&dsi_ctx, 10000, 20000);
 	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 150);
 
