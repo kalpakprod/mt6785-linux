@@ -226,6 +226,10 @@ void mtk_ovl_enable_vblank(struct device *dev)
 
 	writel(0x0, ovl->regs + DISP_REG_OVL_INTSTA);
 	writel_relaxed(OVL_FME_CPL_INT, ovl->regs + DISP_REG_OVL_INTEN);
+
+	dev_dbg(ovl->dev, "vblank on: INTEN 0x%08x INTSTA 0x%08x count %u\n",
+		readl(ovl->regs + DISP_REG_OVL_INTEN),
+		readl(ovl->regs + DISP_REG_OVL_INTSTA), ovl->irq_count);
 }
 
 void mtk_ovl_disable_vblank(struct device *dev)
@@ -694,8 +698,6 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	if (irq < 0)
 		return irq;
 
-	mtk_ovl_report_irq_setup(dev, irq);
-
 	priv->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(priv->clk))
 		return dev_err_probe(dev, PTR_ERR(priv->clk),
@@ -718,6 +720,9 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 			       IRQF_TRIGGER_NONE, dev_name(dev), priv);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to request irq %d\n", irq);
+
+	/* after the request, so the polarity this irq set is the one read */
+	mtk_ovl_report_irq_setup(dev, irq);
 
 	pm_runtime_enable(dev);
 

@@ -108,6 +108,15 @@
 &rdma0 {
 	status = "okay";
 	mediatek,larb = <&larb0>;
+	/*
+	 * The driver's MT6785 data asks for 1536 bytes, but the property wins over
+	 * it (mtk_disp_rdma.c:355-362), and mt6785.dtsi carries 5120 - the value
+	 * for another panel. The vendor's golden setting for a video-mode pipe is
+	 * 1536 (common/rdma20/ddp_rdma_ex.c: `if (is_wrot_sram == 0)
+	 * GS_RDMA_FIFO_SIZE = 1536`), which is what the loader's FIFO_CON
+	 * 0x86000000 holds, so the board names it here.
+	 */
+	mediatek,rdma-fifo-size = <1536>;
 };
 
 &color0 { status = "okay"; };
