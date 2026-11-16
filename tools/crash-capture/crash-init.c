@@ -173,7 +173,10 @@ static void kmsg_line(const char *fmt, ...)
 	if (n <= 0)
 		return;
 
-	fd = open(root_path("/dev/kmsg", path, sizeof(path)), O_WRONLY | O_NONBLOCK);
+	/* O_APPEND: each write to /dev/kmsg is a record anyway, and it keeps the
+	 * test build from overwriting a planted log line. */
+	fd = open(root_path("/dev/kmsg", path, sizeof(path)),
+		  O_WRONLY | O_APPEND | O_NONBLOCK);
 	if (fd < 0)
 		return;
 	write(fd, buf, (size_t)n);
@@ -282,6 +285,86 @@ static int resolve_dev(const char *arg, char *outpath, size_t len)
 	}
 	kmsg_line("crash-init: %s never appeared - is the driver built in?\n", arg);
 	return ret;
+}
+
+/*
+ * Mount the phone's filesystem.
+ *
+ * ext4 is tried WITHOUT noload. That looks unsafe and is not: a filesystem whose
+ * journal needs recovery cannot be mounted read-write with noload at all - ext4
+ * refuses with -EINVAL ("required journal recovery suppressed and not mounted
+ * read-only", fs/ext4/super.c:5552-5558) - and replaying the journal is exactly
+ * what every ordinary boot does after a crash. Refusing it was why the capture
+ * kernel mounted nothing: after a kexec whose shutdown could not remount root
+ * read-only, userdata always needs recovery.
+ *
+ * The read-only pass afterwards is the safety net the lead asked for: if nothing
+ * mounts read-write, the dump cannot be written, but the attempt is still logged
+ * so the next run says which filesystem refused and why.
+ */
+static int try_mount(const char *type, unsigned long flags, const char *data)
+{
+#ifndef CRASH_TEST
+	if (!mount(crashdev, mountpoint, type, flags, data)) {
+		kmsg_line("crash-init: mounted %s as %s%s%s\n", crashdev, type,
+			  (flags & MS_RDONLY) ? " read-only" : "",
+			  data ? " with options" : "");
+		return 0;
+	}
+	kmsg_line("crash-init: mount %s as %s%s failed: %s\n", crashdev, type,
+		  (flags & MS_RDONLY) ? " read-only" : "", strerror(errno));
+	return -1;
+#else
+	(void)data;
+	/* The tests simulate the mounts: an attempt succeeds when the test planted
+	 * <root>/mount-ok.<type>.<rw|ro>. Every attempt is appended to a log the
+	 * test asserts on, because the order of the attempts is the point. */
+	{
+		char ok[256], log[64], path[1024];
+		FILE *f;
+		int found = 0;
+
+		snprintf(ok, sizeof(ok), "/mount-ok.%s.%s", type,
+			 (flags & MS_RDONLY) ? "ro" : "rw");
+		snprintf(log, sizeof(log), "/mount-attempts.txt");
+		snprintf(path, sizeof(path), "%s%s", MOUNT_DIR, log);
+		f = fopen(path, "a");
+		if (f) {
+			fprintf(f, "%s %s\n", type, (flags & MS_RDONLY) ? "ro" : "rw");
+			fclose(f);
+		}
+		snprintf(path, sizeof(path), "%s%s", MOUNT_DIR, ok);
+		found = access(path, F_OK) == 0;
+		if (found)
+			kmsg_line("crash-init: mounted %s as %s%s\n", crashdev, type,
+				  (flags & MS_RDONLY) ? " read-only" : "");
+		return found ? 0 : -1;
+	}
+#endif
+}
+
+static int mount_userdata(void)
+{
+	static const struct {
+		const char *type;
+		unsigned long flags;
+	} tries[] = {
+		{ "f2fs", 0 },
+		{ "ext4", 0 },
+		{ "btrfs", 0 },
+		{ "xfs", 0 },
+		{ "f2fs", MS_RDONLY },
+		{ "ext4", MS_RDONLY },
+		{ "btrfs", MS_RDONLY },
+		{ "xfs", MS_RDONLY },
+	};
+	unsigned int i;
+
+	for (i = 0; i < sizeof(tries) / sizeof(tries[0]); i++) {
+		if (!try_mount(tries[i].type, tries[i].flags, NULL))
+			return 1;
+	}
+	return 0;
 }
 
 static int mkdir_p(const char *path)
@@ -495,36 +578,35 @@ int main(int argc, char **argv)
 
 #ifndef CRASH_TEST
 	mkdir_p(mountpoint);
-	for (i = 0; i < 4; i++) {
-		/*
-		 * f2fs, ext4, btrfs, xfs in that order. ext4 is mounted with
-		 * "noload": the crashed kernel may have had writeback in flight, and
-		 * replaying an unfinished journal from a second kernel that knows
-		 * nothing of the first one's in-memory state is how a kdump run turns
-		 * one crash into a corrupted filesystem. Writes still work; the
-		 * journal is simply not replayed here and the next normal boot does
-		 * what it always does.
-		 */
-		static const char *types[] = { "f2fs", "ext4", "btrfs", "xfs" };
-		static const char *opts[] = { NULL, "noload", NULL, NULL };
-
-		if (!mount(crashdev, mountpoint, types[i], 0, opts[i])) {
-			logmsg("crash-init: mounted %s as %s%s%s", crashdev,
-			       types[i], opts[i] ? " with " : "",
-			       opts[i] ? opts[i] : "");
-			break;
-		}
-	}
-	if (i == 4) {
-		logmsg("crash-init: cannot mount %s: %s", crashdev,
-		       strerror(errno));
+#endif
+	if (!mount_userdata()) {
+		logmsg("crash-init: no filesystem on %s could be mounted", crashdev);
+		kmsg_line("crash-init: no filesystem on %s could be mounted\n", crashdev);
 		goto out;
 	}
-	/* The tools need the phone's own /proc (for /proc/vmcore), its /sys and
-	 * its /dev inside the chroot. */
-	bind_dir("/proc", "/tmp/crash-root-proc");
-#else
+#ifdef CRASH_TEST
 	mkdir_p("/mnt");
+#endif
+#ifndef CRASH_TEST
+	/*
+	 * The dumpers run chrooted into the phone's filesystem and read
+	 * /proc/vmcore there, so the three pseudo filesystems have to be visible
+	 * inside it. A failed bind is logged, not fatal: the notes fallback still
+	 * writes something.
+	 */
+	{
+		char inside[600];
+
+		snprintf(inside, sizeof(inside), "%s/proc", mountpoint);
+		if (bind_dir("/proc", inside))
+			logmsg("crash-init: bind /proc: %s", strerror(errno));
+		snprintf(inside, sizeof(inside), "%s/dev", mountpoint);
+		if (bind_dir("/dev", inside))
+			logmsg("crash-init: bind /dev: %s", strerror(errno));
+		snprintf(inside, sizeof(inside), "%s/sys", mountpoint);
+		if (bind_dir("/sys", inside))
+			logmsg("crash-init: bind /sys: %s", strerror(errno));
+	}
 #endif
 
 #ifdef CRASH_TEST

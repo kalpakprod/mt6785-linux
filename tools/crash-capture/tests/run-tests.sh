@@ -32,6 +32,10 @@ run_case() {
 	root=$work/$name
 	mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt"
 	[ "$mode" = novmcore ] || printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+	# The capture kernel mounts the phone filesystem before it writes anything; in
+	# this test build the attempts are simulated, so a case has to plant the one
+	# that succeeds. ext4 read-write is what a real capture boot does.
+	[ "$mode" = nomount ] || : > "$root/mount-ok.ext4.rw"
 	printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' \
 		> "$root/proc/cmdline"
 	# Discard crash-init's own chatter; the assertions look at the files.
@@ -161,6 +165,51 @@ if ! ls "$root"/var/lib/poco/crash/*.txt >/dev/null 2>&1 &&
 	pass "a PARTLABEL that never appears is reported, not guessed"
 else
 	fail "a PARTLABEL that never appears is reported, not guessed"
+fi
+
+# --- 10. mount fallback: f2fs does not match, ext4 read-write must be tried next
+root=$work/mountfallback
+mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'kernel: boot\n' > "$root/dev/kmsg"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+: > "$root/mount-ok.ext4.rw"
+CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
+if [ "$(head -1 "$root/mount-attempts.txt" 2>/dev/null)" = "f2fs rw" ] &&
+   grep -q "^ext4 rw$" "$root/mount-attempts.txt" 2>/dev/null &&
+   grep -q "mounted .* as ext4" "$root"/var/lib/poco/crash/*.kmsg 2>/dev/null; then
+	pass "a filesystem that does not match is passed over for ext4 read-write"
+else
+	fail "a filesystem that does not match is passed over for ext4 read-write"
+fi
+
+# --- 11. planted fault: no read-write mount works -> the read-only pass is tried
+root=$work/mountro
+mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'kernel: boot\n' > "$root/dev/kmsg"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+: > "$root/mount-ok.ext4.ro"
+CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
+if grep -q "^ext4 ro$" "$root/mount-attempts.txt" 2>/dev/null &&
+   grep -q "mounted .* as ext4 read-only" "$root"/var/lib/poco/crash/*.kmsg 2>/dev/null; then
+	pass "an unmatched read-write attempt falls back to read-only and says so"
+else
+	fail "an unmatched read-write attempt falls back to read-only and says so"
+fi
+
+# --- 12. planted fault: nothing mounts -> no dump, and every attempt is recorded
+root=$work/nomount
+mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'kernel: boot\n' > "$root/dev/kmsg"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
+if [ "$(wc -l < "$root/mount-attempts.txt" 2>/dev/null)" = 8 ] &&
+   ! ls "$root"/var/lib/poco/crash/*.txt >/dev/null 2>&1; then
+	pass "with no filesystem at all all eight attempts are recorded and nothing is faked"
+else
+	fail "with no filesystem at all all eight attempts are recorded and nothing is faked"
 fi
 
 echo
