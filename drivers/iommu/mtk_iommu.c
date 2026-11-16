@@ -1047,56 +1047,93 @@ static int mtk_iommu_of_xlate(struct device *dev,
 }
 
 /*
- * The display the bootloader left scanning out: its masters still read the framebuffer at
- * the physical address the loader programmed, and this IOMMU knows nothing about that
- * memory - trial 23 has the first fault at 1.893 s, "iova=0x7cbcf010 pa=0x0
- * master=0x500000d(larb=0 port=3) read", larb 0 port 3 being M4U_PORT_DISP_OVL0, before
- * any display driver has bound.
+ * The display the bootloader left scanning out reads the framebuffer at the physical
+ * address the loader programmed, and this IOMMU knows nothing about that memory - trial 23
+ * has the first fault at 1.893 s, "iova=0x7cbcf010 pa=0x0 master=0x500000d(larb=0 port=3)
+ * read", larb 0 port 3 being M4U_PORT_DISP_OVL0, before any display driver has bound.
  *
  * Upstream states exactly this case as a reserved-memory node carrying reg and
- * iommu-addresses: of_iommu_get_resv_regions() turns it into a DIRECT region for the
- * device (drivers/iommu/of_iommu.c:204-268; the type is DIRECT when the physical and IOVA
- * ranges coincide, :171-190), and iommu_create_device_direct_mappings() maps such a region
- * one-to-one into the domain as soon as it is set up (drivers/iommu/iommu.c:1200-1250) -
- * early enough for the loader-lit display, and known to the IOVA allocator.
+ * iommu-addresses: of_iommu_get_resv_regions() turns it into a region for the device
+ * (drivers/iommu/of_iommu.c:204-268) and iommu_create_device_direct_mappings() maps the
+ * direct ones one-to-one when the domain is set up (drivers/iommu/iommu.c:1200-1250) -
+ * early enough for a loader-lit display, and the range is then reserved in the IOVA
+ * allocator as well.
+ *
+ * DIRECT and not DIRECT_RELAXABLE: RELAXABLE means "identity mapping that may be replaced
+ * later, when the OS owns the device", which is the meaning for USB and Graphics devices
+ * handed to a guest (include/linux/iommu.h:280-288); nothing replaces this mapping - the
+ * loader's framebuffer stays the scanout source for the whole boot, so the region must be a
+ * real identity mapping, which is what DIRECT states.
  *
  * A reserved-memory node cannot be used on this board: the loader's
- * reserved_memory_conflict_check refuses any DT node overlapping one of its own records
- * (measured 13.11 with a ramoops node at the pstore range, evidence/try-force1/
- * boot-force1.lk.txt:2334-2384, and this board's reserved_memory node is empty for that
- * reason). So the region is taken from the /chosen framebuffer the board already
- * describes, and reported for the display's components - the nodes that carry a GCE client
- * register on this SoC family. It stays for the life of the device, as Tegra keeps its
- * framebuffer: the memory itself is the loader's no-map mblock, Linux never allocates it.
+ * reserved_memory_conflict_check refuses every DT node overlapping one of its own records
+ * (measured 13.11 with a ramoops node over the pstore range,
+ * evidence/try-force1/boot-force1.lk.txt:2334-2384; the board's reserved_memory node is
+ * empty for that reason). So the region comes from the framebuffer node the loader itself
+ * leaves in /chosen, and is reported only to the devices that can scan out - the display
+ * masters, which this SoC family names mediatek,<soc>-disp-ovl, -disp-ovl-2l and
+ * -disp-rdma (the compatibles mtk_drm_drv.c matches in its own table). Everything else
+ * this IOMMU serves - MDP, ISP, the camera blocks - has no business with an identity window
+ * into the boot framebuffer.
  */
+static bool mtk_iommu_is_display_master(struct device_node *np)
+{
+	static const char * const scanout[] = { "-disp-ovl", "-disp-ovl-2l", "-disp-rdma" };
+	struct property *prop;
+	const char *compat;
+	int i;
+
+	of_property_for_each_string(np, "compatible", prop, compat) {
+		for (i = 0; i < ARRAY_SIZE(scanout); i++) {
+			size_t len = strlen(scanout[i]);
+
+			if (strlen(compat) > len &&
+			    !strcmp(compat + strlen(compat) - len, scanout[i]))
+				return true;
+		}
+	}
+
+	return false;
+}
+
 static void mtk_iommu_bootfb_resv(struct device *dev, struct list_head *head)
 {
 	struct iommu_resv_region *region;
-	struct device_node *fb;
+	struct device_node *chosen;
 	struct resource res;
 
-	if (!of_property_present(dev->of_node, "mediatek,gce-client-reg"))
+	if (!mtk_iommu_is_display_master(dev->of_node))
 		return;
 
-	fb = of_find_node_by_path("/chosen/framebuffer0");
-	if (!fb)
+	/*
+	 * The framebuffer node the loader leaves behind: simplefb and sysfb both find it by
+	 * walking the children of /chosen for the compatible, because the binding leaves the
+	 * node name free (firmware developers call it framebuffer@<addr>).
+	 */
+	chosen = of_find_node_by_path("/chosen");
+	if (!chosen)
 		return;
 
-	if (of_address_to_resource(fb, 0, &res)) {
-		of_node_put(fb);
-		return;
+	for_each_child_of_node_scoped(chosen, fb) {
+		if (!of_device_is_compatible(fb, "simple-framebuffer"))
+			continue;
+
+		if (of_address_to_resource(fb, 0, &res))
+			continue;
+
+		region = iommu_alloc_resv_region(res.start, PAGE_ALIGN(resource_size(&res)),
+						 IOMMU_READ | IOMMU_WRITE,
+						 IOMMU_RESV_DIRECT, GFP_KERNEL);
+		if (!region) {
+			dev_warn(dev, "cannot reserve the boot framebuffer\n");
+			break;
+		}
+
+		list_add_tail(&region->list, head);
+		break;
 	}
-	of_node_put(fb);
 
-	region = iommu_alloc_resv_region(res.start, PAGE_ALIGN(resource_size(&res)),
-					 IOMMU_READ | IOMMU_WRITE,
-					 IOMMU_RESV_DIRECT, GFP_KERNEL);
-	if (!region) {
-		dev_warn(dev, "cannot reserve the boot framebuffer\n");
-		return;
-	}
-
-	list_add_tail(&region->list, head);
+	of_node_put(chosen);
 }
 
 static void mtk_iommu_get_resv_regions(struct device *dev,
