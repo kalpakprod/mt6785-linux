@@ -15,6 +15,18 @@
 			#io-channel-cells = <1>;
 		};
 
+		/*
+		 * The PMIC's 26 MHz clock buffer outputs: SOC, WCN, NFC, CEL and EXT.
+		 * Consumers take them as clocks (the NFC controller takes XO_NFC);
+		 * buffers nobody asks for keep whatever state the bootloader left,
+		 * see drivers/clk/mediatek/clk-mt6359-clkbuf.c.
+		 */
+		clkbuf: clock-buffer {
+			compatible = "mediatek,mt6359-clkbuf";
+			#clock-cells = <1>;
+			clock-frequency = <26000000>;
+		};
+
 		mt6359codec: audio-codec {
 			compatible = "mediatek,mt6359-codec";
 		};
