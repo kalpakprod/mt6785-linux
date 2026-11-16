@@ -871,6 +871,13 @@ INT32 mtk_wcn_consys_hw_pwr_on(UINT32 co_clock_type)
 	}
 	iRet += mtk_wcn_consys_hw_reg_ctrl(1, co_clock_type);
 	iRet += mtk_wcn_consys_hw_gpio_ctrl(1);
+
+	/* Release the PDMA hold taken in mtk_wcn_consys_hw_pwr_off(), the same
+	 * way the vendor's reset releases it once reg_ctrl(1) has finished.
+	 */
+	if (wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high)
+		wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high(0);
+
 	mtk_wcn_consys_jtag_set_for_mcu();
 
 	WMT_PLAT_PR_DBG("CONSYS-HW-PWR-ON, finish(%d)\n", iRet);
@@ -883,6 +890,30 @@ INT32 mtk_wcn_consys_hw_pwr_off(UINT32 co_clock_type)
 
 	WMT_PLAT_PR_DBG("CONSYS-HW-PWR-OFF, start\n");
 	WMT_STEP_DO_ACTIONS_FUNC(STEP_TRIGGER_POINT_BEFORE_POWER_OFF);
+
+	/*
+	 * Hold the conn PDMA out of sleep-protect for the whole power cycle.
+	 *
+	 * The vendor does this around its reset (mtk_wcn_consys_hw_rst(),
+	 * "write 0x5000_0154.Bit[1] = 1 (pdma_axi_rready_force_high) to
+	 * prevent pdma block slpprot" before reg_ctrl(0), and the matching
+	 * "Make sure pdma_axi_rready_force_high set to 0 after reset" after
+	 * reg_ctrl(1)). It does not need it in the plain power off/on because
+	 * there the power domain itself is cycled: consys_ic_hw_power_ctrl()
+	 * drives clk_scp_conn_main, i.e. <&scpsys SCP_SYS_CONN>, so the SPM
+	 * powers the conn domain down and back up and the PDMA wakes with it.
+	 *
+	 * This port has no such clock - mainline models that domain as the
+	 * MT6785_POWER_DOMAIN_CONN genpd, which is powered once at probe and
+	 * never toggled - so the PDMA is left in the half-down state the
+	 * power off puts it in, and the connector MCU cannot fetch from EMI
+	 * afterwards. That is the second power-on failure: chip registers
+	 * answer (the ROM patch download in polling_consys_chipid() runs,
+	 * chip id and EMI are fine) but every STP command times out, because
+	 * the MCU never boots.
+	 */
+	if (wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high)
+		wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high(1);
 
 	iRet += mtk_wcn_consys_hw_reg_ctrl(0, co_clock_type);
 	iRet += mtk_wcn_consys_hw_gpio_ctrl(0);

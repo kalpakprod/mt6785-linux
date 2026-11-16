@@ -645,6 +645,18 @@ static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 			msleep(20);
 			cnt++;
 		}
+
+		/*
+		 * 0x18002600 is the connector MCU's boot handshake: it reads 0x1D1E
+		 * once the MCU has started executing from EMI. If it never does, the
+		 * firmware is not running and every later STP command over BTIF will
+		 * time out while conn registers still answer - so say so out loud
+		 * instead of carrying on silently.
+		 */
+		if (consys_ver_id != 0x1D1E)
+			WMT_PLAT_PR_ERR(
+				"connector MCU did not boot: 0x18002600=0x%x after %u polls\n",
+				consys_ver_id, cnt);
 	}
 }
 
