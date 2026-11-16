@@ -212,7 +212,8 @@ static void usage(const char *prog)
 {
 	fprintf(stderr,
 		"usage: %s [options]\n"
-		"  --dev PATH        STP GNSS device (default /dev/stpgps)\n"
+		"  --dev PATH        STP GNSS device, or - for standard input\n"
+		"                    (default /dev/stpgps)\n"
 		"  --pty-link PATH   symlink to the published pty slave\n"
 		"                    (default /run/stpgps/nmea)\n"
 		"  --silence-ms N    close and reopen after N ms without data\n"
@@ -250,6 +251,7 @@ int main(int argc, char **argv)
 	long silence_ms = 1000;
 	long max_lines = -1;
 	long capture_left = 0;
+	long fail_delay_ms = 200;
 	int once = 0, quiet = 0;
 	struct sigaction sa;
 	struct repub repub;
@@ -339,6 +341,21 @@ int main(int argc, char **argv)
 	}
 
 	dev_fd = -1;
+	if (strcmp(dev_path, "-") == 0) {
+		/*
+		 * Standard input as the source. The engine on this chip does not
+		 * speak until the host has uploaded its DSP image (see README), so
+		 * the NMEA may well come from a program that drives the device -
+		 * mnld behind a HAL forwarder, a capture replay - and this program
+		 * should still be the thing that publishes it to gpsd, unchanged.
+		 */
+		dev_fd = STDIN_FILENO;
+		send_spec = NULL;
+	}
+	if (dev_fd == STDIN_FILENO && !quiet)
+		fprintf(stderr, "stpgps-bridge: reading standard input\n");
+
+	fail_delay_ms = 200;
 	while (!g_stop) {
 		long long last_rx;
 		int opened = 0;
@@ -348,11 +365,19 @@ int main(int argc, char **argv)
 			if (dev_fd < 0) {
 				if (!quiet)
 					fprintf(stderr,
-						"stpgps-bridge: open %s: %s\n",
-						dev_path, strerror(errno));
-				usleep(200 * 1000);
+						"stpgps-bridge: open %s: %s, retrying in %ld ms\n",
+						dev_path, strerror(errno),
+						fail_delay_ms);
+				usleep((useconds_t)fail_delay_ms * 1000);
+				/* A second GNSS session without a connsys power cycle
+				 * returns EIO, so hammering the device is pointless and
+				 * noisy: back off to five seconds per attempt. */
+				fail_delay_ms *= 2;
+				if (fail_delay_ms > 5000)
+					fail_delay_ms = 5000;
 				continue;
 			}
+			fail_delay_ms = 200;
 			opened = 1;
 			repub_init(&repub);
 			if (!quiet)
@@ -381,12 +406,21 @@ int main(int argc, char **argv)
 					continue;
 				break;
 			}
-			if (pr == 0)
+			if (pr == 0) {
+				/* Silence is what tells us the engine is gone, but a
+				 * source like standard input is silent by nature; there
+				 * is nothing to reopen, so keep waiting. */
+				if (dev_fd == STDIN_FILENO)
+					continue;
 				break; /* silence: reopen below */
+			}
 
-			if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
-				break;
-
+			/*
+			 * Read before acting on the error flags: a pipe whose writer
+			 * has gone reports POLLIN together with POLLHUP, and breaking
+			 * on the HUP first throws away the bytes that are still
+			 * there - two-sentence captures lost exactly that way.
+			 */
 			if (pfd.revents & POLLIN) {
 				ssize_t n = read(dev_fd, rx, sizeof(rx));
 
@@ -418,11 +452,30 @@ int main(int argc, char **argv)
 				if (max_lines >= 0 &&
 				    (long)repub.lines >= max_lines)
 					g_stop = 1;
+			} else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+				break;
 			}
 		}
 
 		if (g_stop)
 			break;
+		if (dev_fd == STDIN_FILENO) {
+			/*
+			 * The source ended, the channel must not: closing the master
+			 * throws away whatever the consumer has not read yet, and a
+			 * forwarder upstream of us restarting must not make gpsd's
+			 * device disappear. Stay up and let a signal be the stop.
+			 */
+			if (!quiet)
+				fprintf(stderr,
+					"stpgps-bridge: standard input closed, keeping the pty open\n");
+			dev_fd = -1;
+			if (once)
+				break;
+			while (!g_stop)
+				pause();
+			break;
+		}
 		/* Silence, EOF or error: the engine is gone. Drop the channel so
 		 * the kernel's release() runs FUNC_CTRL(GPS off), then reopen. */
 		if (!quiet)
@@ -435,7 +488,7 @@ int main(int argc, char **argv)
 			break;
 	}
 
-	if (dev_fd >= 0)
+	if (dev_fd >= 0 && dev_fd != STDIN_FILENO)
 		close(dev_fd);
 	close(master);
 	if (slave_fd >= 0)

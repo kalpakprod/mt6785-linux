@@ -7,25 +7,34 @@ Republishes the MT6785 (Poco M5s `rosemary`) GNSS engine's NMEA from
 C, libc only, no threads. The phone build is static:
 
     make phone        # zig cc -target aarch64-linux-musl -static
-    make test         # host: three pty scenarios, all must pass
+    make test         # host: five scenarios, all must pass
     make test-fault   # host: the planted fault must be caught
     make show-fault-fails   # host: the same, from a reader's point of view
 
 ## What the program does
 
+Two ways to give it a source: a character device (the normal case) or standard input (`--dev -`, for NMEA
+produced by another program - see "What that means" below).
+
     stpgps-bridge --dev /dev/stpgps --pty-link /run/stpgps/nmea
+    mnld-forward | stpgps-bridge --dev - --pty-link /run/stpgps/nmea
 
 1. Creates a pty, keeps **both** ends open (a write to the master whose slave
    nobody has opened yet is discarded by the tty layer, so the first sentences
    of a session would vanish while `gpsd` is still starting), and publishes the
    slave path as a symlink.
-2. Opens `/dev/stpgps`, which is `FUNC_CTRL(GPS on)` on the kernel side.
+2. Opens `/dev/stpgps`, which is `FUNC_CTRL(GPS on)` on the kernel side. With
+   `--dev -` it reads standard input instead: silence never reopens it, and
+   when the source ends the pty stays up (a forwarder restarting must not make
+   gpsd's device vanish) until a signal stops the program.
 3. Reads frames, splits them on `\n` and writes the sentences unchanged to the
    pty. It never assumes one `read()` is one sentence: a sentence may arrive
    split across two reads and two sentences may arrive in one read.
 4. If no byte arrives for `--silence-ms` (default 1000), it closes the device -
-   which runs the kernel's `FUNC_CTRL(GPS off)` - and reopens, because a second
-   GNSS session without a connsys power cycle is known to return `EIO`.
+   which runs the kernel's `FUNC_CTRL(GPS off)` - and reopens. A second GNSS
+   session without a connsys power cycle returns `EIO`, so a failed open backs
+   off from 200 ms to five seconds per attempt instead of hammering the
+   device.
 5. `--send 'STR'` writes a byte sequence once after each open; this is how a
    proven start sequence will be injected without touching the code.
 6. `--capture PATH --capture-bytes N` records the first N bytes the engine sends
@@ -57,37 +66,45 @@ Every claim below was read in this repo; the file:line is the source.
   ioctls, the device is created at `:187`/`:209`, and each ioctl handler only logs. So on stock that device
   neither reserves memory nor returns an address.
 
-* **A DSP image load into the EMI window is named but disabled.**
-  `gps_stp/gps_emi.c:249` uses `pFullPatchName = "MNL.bin"` and copies it into the window - inside the
-  `#if 0` block that spans `:232-284`. So the idea exists in vendor code and is switched off in this drop.
+* **NMEA sentences are ASCII and newline-terminated** - standard NMEA 0183.
 
-* **NMEA sentences are ASCII and newline-terminated** - standard NMEA 0183, and begonia's port notes
-  (`poco-m5s/research/native/2-connectivity.md` §4.5) record this engine answering `$PMTK010,001` and
-  emitting GGA/RMC/GSA at 1 Hz.
+And the three facts this note asked for, which **are** answered - not by a file in the dump, but by the
+project's own worked port on this chip family (`scratch/native/2-connectivity/logs/begonia-notes.md`, a
+Poco X3 NFC / begonia, HCR `0x6632`, the same CONNSYS GPS block as `0x6785`):
 
-## What is missing, and why the program stops before it
+1. **Where the DSP image comes from.** Not from a file: `begonia-notes.md:425` - "There is no separate GPS
+   firmware in /vendor/firmware (only patch_mcu, ram_{mcu,bt,wifi}, fm)". The image lives inside the closed
+   `libmnl.so` that `mnld` loads, and `mnld` **uploads ~40 KB into the chip over this same channel**
+   (`:442`: `tx 39721 B`, ~7-28 KB of answers). Our own dump agrees: `vendor-firmware.sha256` has 106
+   entries and not one of them is GPS, and the WMT patch download logs `There is no need to download (2)
+   type patch!` for GPS in every trial.
+2. **The start sequence.** The chip answers only after that upload: `begonia-notes.md:441` - "without
+   firmware the chip is silent to PMTK (rx 0 B) -> the host uploads the DSP"; `:424` - during 8 s of
+   `FUNC_CTRL(GPS on)` with no upload, "NOT A SINGLE frame of type 2 came over STP". So the sequence is not
+   a set of PMTK commands we could send: it is the vendor's DSP upload protocol, 40 KB of it, spoken by
+   `libmnl`.
+3. **What comes back first.** With the DSP loaded: `$PMTK010,001`, then NMEA at 1 Hz, GGA/RMC/GSA and no GSV
+   (`begonia-notes.md:750`).
 
-The note that asked for this program said: if the start sequence cannot be proven, stop at step 3 and
-write what is missing. It cannot be proven from this repo, and here is precisely what is absent:
+### What that means for this program
 
-1. **The DSP image.** No `MNL.bin`, no GPS firmware of any kind, is in the repo: the stock dump carries
-   `vendor-firmware.sha256` (106 entries) and none of them is GPS (`grep -iE 'gps|gnss|mnl'` → 0 hits);
-   the WMT patch set this port already downloads contains only `soc1_0_ram_{bt,wifi,mcu}` and logs
-   `There is no need to download (2) type patch!` for GPS in every trial. Begonia's port reached NMEA
-   without loading anything itself, which suggests the engine image arrives through a path we have not
-   read. **Needed:** the file list and the contents of `/vendor/etc/gps/`, `/vendor/lib*/libmnl*.so` and
-   `/vendor/bin/mnld` from the phone, or the vendor HAL source.
-2. **The start sequence.** Without `mnld` or the HAL source there is no way to tell PMTK from a binary
-   blob, and guessing it would violate the project rule against trial-and-error on the phone.
-   **Needed:** `strings /vendor/bin/mnld` (or `libmnl.so`) filtered for `$PMTK`, plus the GPS config in
-   `/vendor/etc/gps/` (`gps.conf`, `mnl.prop`).
-3. **The engine's first bytes.** The same sources would show whether the first output is `$PMTK010,001`
-   (boot notification) or something binary. **Needed:** a single capture from the phone of `cat /dev/stpgps`
-   with the engine powered on, hex-dumped.
+`stpgps-bridge` cannot make the engine speak, and it never could: on this chip the host uploads the engine's
+DSP, and that upload is inside a closed vendor library. The bridge's job is the part that is provable and
+still needed - owning the character device, keeping the channel alive, and giving gpsd a stable pty - and it
+now also reads its source from standard input (`--dev -`) so that the NMEA produced by whatever does the
+upload is published the same way. The three routes and their real costs:
 
-Until those exist, the bridge does everything that is proven and nothing that is guessed: it opens the
-device, republishes whatever the engine emits, survives silence, and can inject a sequence given on the
-command line the moment one is proven.
+| route | what it needs | cost |
+|---|---|---|
+| (a) stock `mnld` + `libmnl` in a small chroot, as begonia did | the phone's own `/vendor` files, our `/dev/stpgps` and `/dev/gps_emi`, and a GNSS HAL forwarder that turns `mnld`'s socket output into NMEA | proven on hardware once already (`begonia-notes.md:747-750`); the forwarder is a small program, and this bridge publishes its output |
+| (b) reverse `libmnl`'s upload and write our own engine interface | reversing ~1.2 MB of `.text` | weeks; begonia's notes say an open engine is impossible without it |
+| (c) accept that this milestone ends at "the channel works" | nothing | GPS produces no position, by decision |
+
+Route (a) is the only one that has already produced NMEA on this hardware, and the bridge is what makes its
+output usable by gpsd. Two facts from that trial shape the bridge's design and are honoured here: a second
+session in a row without a connsys power cycle returns `EIO` (`begonia-notes.md:752`), so the reopen path
+backs off to five seconds instead of hammering the device; and the engine's DSP upload goes through
+`/dev/gps_emi` ioctls 1 and 4 (`:442`), which is exactly the ioctl set our kernel driver implements.
 
 ## Host tests, and how they can fail
 
@@ -100,6 +117,7 @@ command line the moment one is proven.
 | `sentence-split-across-frames` | one sentence cut in half, 200 ms apart | still republished as one sentence |
 | `two-sentences-glued-in-one-frame` | two sentences in one write | republished as two sentences |
 | `capture-file-equals-the-stream` | two sentences, capture on | the capture decodes back to the same bytes |
+| `stdin-source` | two sentences on `--dev -` | published the same way, and the pty outlives the source |
 
 Both pty ends are put in raw mode by the harness; without that, a pty's line discipline would hold the
 first half of a sentence until its newline and the "split frame" scenario would silently test nothing.
@@ -129,14 +147,15 @@ or `gpsmon` shows whether gpsd found it.
 
 To answer "what does the engine say first" in the same session:
 
-    stpgps-bridge --dev /dev/stpgps --pty-link /run/stpgps/nmea \
+    stpgps-bridge --dev /dev/stpgps --pty-link /run/stpgps/nmea
+    mnld-forward | stpgps-bridge --dev - --pty-link /run/stpgps/nmea \
         --capture /run/stpgps/first-bytes.txt --capture-bytes 256
 
 ## Files
 
-    stpgps-bridge.c   device handling, pty publication, reopen loop, --send
+    stpgps-bridge.c   device or stdin source, pty publication, reopen loop, --send
     republish.c/.h    byte stream -> NMEA lines, no syscalls, unit-testable
-    test-bridge.c     pty-pair harness, four scenarios plus the fault mode
+    test-bridge.c     pty-pair harness, five scenarios plus the fault mode
     stpgps-bridge.service   systemd unit for the phone
     stpgps-bridge-gpsd.conf gpsd drop-in that points gpsd at the pty
     Makefile          host build, zig static aarch64 build, tests

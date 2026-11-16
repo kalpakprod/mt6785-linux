@@ -169,7 +169,83 @@ struct scenario {
 	int glue_last_two;
 	int split_middle;
 	int capture;
+	int from_stdin;
 };
+
+/*
+ * Same requirement, different source: with --dev - the bridge reads standard
+ * input. This is the shape the tool will have if the NMEA comes from a program
+ * that owns the device (the engine on this chip does not speak until the host
+ * uploads its DSP), and it must behave exactly like the device case.
+ */
+static int run_stdin_case(const char *bridge)
+{
+	char link[256], got[BUF], want[BUF];
+	int pipefd[2], out_fd, status, ok;
+	pid_t pid;
+
+	snprintf(link, sizeof(link), "/tmp/stpgps-bridge-stdin-%d.nmea",
+		 (int)getpid());
+	unlink(link);
+
+	if (pipe(pipefd) != 0) {
+		fprintf(stderr, "FAIL stdin-source: pipe: %s\n", strerror(errno));
+		return 1;
+	}
+	pid = fork();
+	if (pid < 0) {
+		fprintf(stderr, "FAIL stdin-source: fork\n");
+		return 1;
+	}
+	if (pid == 0) {
+		dup2(pipefd[0], STDIN_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execl(bridge, bridge, "--dev", "-", "--pty-link", link,
+		      "--silence-ms", "400", "--quiet", (char *)NULL);
+		_exit(127);
+	}
+	close(pipefd[0]);
+
+	{
+		long long deadline = now_ms() + 3000;
+
+		while (now_ms() < deadline) {
+			struct stat st;
+
+			if (lstat(link, &st) == 0)
+				break;
+			msleep(20);
+		}
+	}
+	out_fd = open(link, O_RDONLY | O_NOCTTY | O_NONBLOCK);
+	if (out_fd < 0) {
+		fprintf(stderr, "FAIL stdin-source: no pty: %s\n", strerror(errno));
+		stop_child(pid, NULL);
+		close(pipefd[1]);
+		return 1;
+	}
+	msleep(200);
+	write(pipefd[1], f1, strlen(f1));
+	write(pipefd[1], f2, strlen(f2));
+	close(pipefd[1]);
+
+	snprintf(want, sizeof(want), "%s%s", f1, f2);
+	read_all(out_fd, got, sizeof(got), 1500);
+	ok = same_lines(want, got);
+
+	stop_child(pid, &status);
+	close(out_fd);
+	unlink(link);
+
+	if (ok == 1) {
+		printf("PASS stdin-source\n");
+		return 0;
+	}
+	printf("FAIL stdin-source: expected the published stream to match\n");
+	printf("  want: %s\n  got : %s\n", want, got);
+	return 1;
+}
 
 /*
  * Decode a capture file back into bytes: sheet lines start with '#', every other
@@ -378,6 +454,7 @@ int main(int argc, char **argv)
 		failures += run_one(&split, bridge, 1);
 		failures += run_one(&glue, bridge, 1);
 		failures += run_one(&cap, bridge, 1);
+		failures += run_stdin_case(bridge);
 	} else {
 		/*
 		 * The planted fault is a moved frame boundary: one sentence arrives
