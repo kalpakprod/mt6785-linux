@@ -22,12 +22,18 @@
  *                enum xo_id { SOC, WCN, NFC, CEL, AUD, PD, EXT } - the buffer
  *                list exposed below, minus the two the vendor marks disabled
  *
- * Mechanism, and why it is implemented the way it is. The vendor clkbuf driver
- * itself is not in any tree in this repository, so what a vote field means is
- * taken from the register definition alone: eleven bits, one register per
- * buffer, no enable bit beside them. That is enough to know that writing the
- * high bits is wrong and that a plain 0/1 write is wrong; it is not enough to
- * know which bit belongs to which master. Two consequences, both deliberate:
+ * Mechanism, and why it is implemented the way it is. The vendor's PMIC layer is
+ * in this repository and settles the shape: mt6359_upmu_set_xo_nfc_vote() writes
+ * the whole field through pmic_config_interface(MT6359_XO_BUF_CTL2, val,
+ * PMIC_XO_NFC_VOTE_MASK 0x7ff, shift 0)
+ * (4-modem/src/los-mt6785/drivers/misc/mediatek/pmic/mt6359/v1/pmic_api.c:10384-10393,
+ * declared in pmic/include/mt6359/mtk_pmic_api.h:750). So a caller passes a whole
+ * vote word, there is no separate enable bit in that register, and no getter
+ * exists anywhere in the tree - the vendor never reads the field back. What is
+ * still not knowable from these sources is which bit belongs to which master: the
+ * clkbuf driver that calls this setter is not in the tree, so the individual
+ * votes, and the value it passes to switch a buffer on, are unknown. Two
+ * consequences, both deliberate:
  *
  *   - enable writes the whole vote field (0x7ff), which is the only value that
  *     cannot be mistaken for "somebody else's vote";
