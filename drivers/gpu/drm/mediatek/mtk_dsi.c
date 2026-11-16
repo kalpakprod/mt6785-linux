@@ -33,6 +33,7 @@
 #include "mtk_drm_drv.h"
 
 #define DSI_START		0x00
+#define VM_CMD_START			BIT(16)
 
 #define DSI_INTEN		0x08
 
@@ -42,6 +43,7 @@
 #define TE_RDY_INT_FLAG			BIT(2)
 #define VM_DONE_INT_FLAG		BIT(3)
 #define EXT_TE_RDY_INT_FLAG		BIT(4)
+#define VM_CMD_DONE_INT_FLAG		BIT(5)
 #define DSI_BUSY			BIT(31)
 
 #define DSI_CON_CTRL		0x10
@@ -160,7 +162,23 @@
 
 /* DSI_VM_CMD_CON */
 #define VM_CMD_EN			BIT(0)
+#define VM_CMD_LONG_PKT			BIT(1)
 #define TS_VFP_EN			BIT(5)
+#define VM_CMD_DATA_ID			GENMASK(15, 8)
+#define VM_CMD_DATA_0			GENMASK(23, 16)
+#define VM_CMD_DATA_1			GENMASK(31, 24)
+
+/*
+ * Payload of a long VM command: three windows, DSI_VM_CMD_DATA0 (0x134),
+ * DATA10 (0x180) and DATA20 (0x1a0) in the vendor's MT6785 ddp_reg_dsi.h,
+ * 16 + 16 + 32 bytes. The panel took 22-byte gamma table writes through
+ * them on the phone (poco-m5s/evidence/disp-trial8).
+ */
+static const struct {
+	u16 off;
+	u8 len;
+} mtk_dsi_vm_cmd_data[] = { { 0x134, 16 }, { 0x180, 16 }, { 0x1a0, 32 } };
+#define VM_CMD_MAX_PAYLOAD		64
 
 /* DSI_SHADOW_DEBUG */
 #define FORCE_COMMIT			BIT(0)
@@ -215,6 +233,7 @@ struct mtk_dsi_driver_data {
 	bool support_per_frame_lp;
 	bool needs_mem_conti;
 	bool has_hstx_cklp_auto;
+	bool vm_cmd_writes;
 };
 
 struct mtk_dsi {
@@ -1276,6 +1295,85 @@ static ssize_t mtk_dsi_host_send_cmd(struct mtk_dsi *dsi,
 		return 0;
 }
 
+/*
+ * Send a write while the engine stays in video mode: the VM command engine
+ * puts the packet into the vertical front porch (TS_VFP_EN, set with VM_CMD_EN
+ * by mtk_dsi_set_vm_cmd() on the switch to video). This is how the MT6785
+ * vendor driver sends every command in video mode (ddp_dsi.c DSI_set_cmdq_V2()
+ * -> DSI_send_vm_cmd(), DSI_EnableVM_CMD() polls INTSTA bit 5), and how the
+ * phone's loader sets the brightness.
+ *
+ * It is needed, not only nicer: on MT6785 a long packet sent from the command
+ * queue right before the switch back to video leaves the engine adding four
+ * zero bytes to every long packet of the video stream (the pixel lines and the
+ * HSA blanking packet), so the panel shows each line shifted by 4/3 pixel and
+ * its colours rotated. Measured on the phone with the DSI packet checksum
+ * (DSI 0x144 with CHKSUM_REC_EN): a black line checks as 3244 zero bytes
+ * instead of 3240, a white one as 3240 x 0xff followed by four zeros. Any long
+ * command-queue packet (2 to 8 bytes tried, LP or HS) does it, a short packet
+ * sent after it undoes it, a DSI engine or D-PHY reset does not, and a VM
+ * command does not cause it. Mainline's path stops the video, sends the
+ * backlight's two-byte brightness as a long DCS write and restarts the video,
+ * which is exactly that order.
+ */
+static bool mtk_dsi_vm_cmd_can_send(struct mtk_dsi *dsi,
+				    const struct mipi_dsi_msg *msg)
+{
+	return dsi->driver_data->vm_cmd_writes &&
+	       !MTK_DSI_HOST_IS_READ(msg->type) &&
+	       msg->tx_len <= VM_CMD_MAX_PAYLOAD;
+}
+
+static ssize_t mtk_dsi_vm_cmd_send(struct mtk_dsi *dsi,
+				   const struct mipi_dsi_msg *msg)
+{
+	const u8 *tx_buf = msg->tx_buf;
+	u32 con = VM_CMD_EN | TS_VFP_EN | FIELD_PREP(VM_CMD_DATA_ID, msg->type);
+	unsigned int w = 0, start = 0;
+	size_t i, j;
+	u32 val;
+	int ret;
+
+	if (mipi_dsi_packet_format_is_long(msg->type)) {
+		con |= VM_CMD_LONG_PKT |
+		       FIELD_PREP(VM_CMD_DATA_0, msg->tx_len & 0xff) |
+		       FIELD_PREP(VM_CMD_DATA_1, msg->tx_len >> 8);
+		for (i = 0; i < msg->tx_len; i += 4) {
+			if (i - start >= mtk_dsi_vm_cmd_data[w].len)
+				start += mtk_dsi_vm_cmd_data[w++].len;
+			val = 0;
+			for (j = 0; j < 4 && i + j < msg->tx_len; j++)
+				val |= tx_buf[i + j] << (j * 8);
+			writel(val, dsi->regs + mtk_dsi_vm_cmd_data[w].off + i - start);
+		}
+	} else {
+		if (msg->tx_len > 0)
+			con |= FIELD_PREP(VM_CMD_DATA_0, tx_buf[0]);
+		if (msg->tx_len > 1)
+			con |= FIELD_PREP(VM_CMD_DATA_1, tx_buf[1]);
+	}
+
+	writel(con, dsi->regs + dsi->driver_data->reg_vm_cmd_off);
+	mtk_dsi_mask(dsi, DSI_INTSTA, VM_CMD_DONE_INT_FLAG, 0);
+	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, 0);
+	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, VM_CMD_START);
+
+	/* sent in the next front porch; a frame is 16.7 ms at 60 Hz */
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, val,
+				 val & VM_CMD_DONE_INT_FLAG, 100,
+				 100 * USEC_PER_MSEC);
+
+	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, 0);
+	mtk_dsi_mask(dsi, DSI_INTSTA, VM_CMD_DONE_INT_FLAG, 0);
+
+	if (ret) {
+		dev_err(dsi->dev, "VM command 0x%02x not sent: %d\n", msg->type, ret);
+		return ret;
+	}
+
+	return msg->tx_len;
+}
+
 static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 				     const struct mipi_dsi_msg *msg)
 {
@@ -1289,6 +1387,9 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 	int ret, i;
 
 	dsi_mode = readl(dsi->regs + DSI_MODE_CTRL);
+	if ((dsi_mode & MODE) && mtk_dsi_vm_cmd_can_send(dsi, msg))
+		return mtk_dsi_vm_cmd_send(dsi, msg);
+
 	if (dsi_mode & MODE) {
 		mtk_dsi_stop(dsi);
 		ret = mtk_dsi_switch_to_cmd_mode(dsi, VM_DONE_INT_FLAG, 500);
@@ -1477,6 +1578,7 @@ static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
 	.has_size_ctl = true,
 	.needs_mem_conti = true,
 	.has_hstx_cklp_auto = true,
+	.vm_cmd_writes = true,
 };
 
 static const struct mtk_dsi_driver_data mt8186_dsi_driver_data = {
