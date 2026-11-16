@@ -675,6 +675,7 @@ static int md_boot(struct ccci_md *md)
 	u32 before = 0, after = 0;
 	struct md_query_ap_feature hs1_query;
 	bool hs1_pending = false;
+	bool modem_in_ee = false;
 	int ret;
 
 	if (md->no_boot_info) {
@@ -729,12 +730,62 @@ static int md_boot(struct ccci_md *md)
 	 * measured (boot stage 0x2c04010a, no second release, and the modem awake and
 	 * holding its clock request rather than parked).
 	 */
-	if (md->first_boot)
-		hs1_pending = ccci_ccif_pending_hs1(md, &hs1_query);
-	if (hs1_pending)
-		dev_info(md->dev, "the loader's modem is already asking for the runtime data: answering it instead of restarting it\n");
-	else
-		ccci_ccif_reset(md);
+	/*
+	 * What the modem left behind, before anything is wiped. Both are printed
+	 * every boot so a trial never has to guess again:
+	 *
+	 *  - the SRAM header words: a pending first handshake shows as
+	 *    data[1] = MD_INIT_START_BOOT and reserved = MD_INIT_CHK_ID;
+	 *  - RCHNUM and BUSY: which channels the modem rang that nobody answered.
+	 *    A modem already in its exception handler rings the exception channels
+	 *    and then waits, exactly like a modem waiting for its runtime data.
+	 */
+	{
+		struct ccci_header h = { };
+		u32 rchnum = readl(md->ccif_ap + APCCIF_RCHNUM);
+		u32 busy = readl(md->ccif_ap + APCCIF_BUSY);
+
+		ccci_sram_read(md, SRAM_DL_HEADER, &h, sizeof(h));
+		dev_info(md->dev,
+			 "CCIF before the reset: RCHNUM %#x BUSY %#x, SRAM header %08x %08x ch %u seq %u assert %u reserved %08x\n",
+			 rchnum, busy, h.data[0], h.data[1], h.channel, h.seq_num,
+			 h.assert_bit, h.reserved);
+		if (md->first_boot)
+			hs1_pending = ccci_ccif_pending_hs1(md, &hs1_query);
+		if (hs1_pending)
+			dev_info(md->dev, "the modem is already asking for the runtime data: answering it instead of restarting it\n");
+		else if (rchnum & ~GENMASK(CCIF_CH_SRAM, 0)) {
+			/*
+			 * The modem rang the exception channels before this driver was
+			 * listening, so nobody answered and it is sitting in its own
+			 * exception handler -- which is why it keeps its clock request and
+			 * never sleeps (trial 21: PCM_REG13_DATA still asking, accept no
+			 * clamp). The vendor's stop path handles this the same way: before it
+			 * stops the hardware it checks for an exception and runs the EE flow
+			 * (fsm_routine_stop() calls ccci_md_pre_exception ->
+			 * fsm_check_for_ee(), fsm/ccci_fsm.c:486-522). Answering the stages it
+			 * is waiting for lets it hand over and stop, which is what makes the
+			 * power-off below possible at all.
+			 */
+			u32 ex = rchnum & ~GENMASK(CCIF_CH_SRAM, 0);
+
+			dev_info(md->dev, "the modem is in its exception handler (%#x): answering its stages before stopping it\n",
+				 ex);
+			writel(ex, md->ccif_ap + APCCIF_ACK);
+			md->ex_channels |= ex;
+			while (ex) {
+				unsigned int ch = __ffs(ex);
+
+				if (ch != CCIF_CH_EX_PEER_WAKEUP &&
+				    ch != CCIF_CH_EX_SEQ_ERROR)
+					ccci_ee_on_channel(md, ch);
+				ex &= ex - 1;
+			}
+			modem_in_ee = true;
+		} else {
+			ccci_ccif_reset(md);
+		}
+	}
 	md_step(md, hs1_pending ? "ccif_reset (skipped)" : "ccif_reset");
 	/*
 	 * The data path starts before the modem (the vendor is in
@@ -807,7 +858,16 @@ static int md_boot(struct ccci_md *md)
 	 * modem it brought up itself. That also removes the last dependency on the
 	 * power-domain provider being synced: nothing here needs the domain switched.
 	 */
-	if (md->first_boot && !hs1_pending) {
+	if (modem_in_ee) {
+		/*
+		 * It answered the stages it was waiting for and handed over, so it is
+		 * stopped now rather than running: take it down and bring it back up, and
+		 * the fresh modem waits for the release like the loader's would have.
+		 */
+		ret = md_power_cycle(md);
+		if (ret)
+			goto err_seq;
+	} else if (md->first_boot && !hs1_pending) {
 		u32 stage0, stage1;
 
 		ret = md_first_boot_check(md);
@@ -1256,6 +1316,37 @@ void ccci_md_stop(struct ccci_md *md)
 	ccci_set_state(md, MD_STATE_OFF);
 }
 
+/**
+ * rosemary_ccci_shutdown() - power the modem off before the machine restarts
+ * @pdev: the modem's platform device
+ *
+ * kexec runs device_shutdown(), not .remove, so without this hook a warm reboot
+ * carries a running modem into the next kernel: its MTCMOS domain, its clocks and
+ * its 26 MHz request all survive, and the new kernel finds a modem that is neither
+ * in boot-ROM wait nor asleep -- the state trials 18 to 21 kept failing on. A real
+ * SoC reset would clear it (mainline's mtk_wdt_restart() issues WDT_SWRST, and the
+ * MT6785 TOPRGU has an MD reset bit at all, MT6785_TOPRGU_MD_RST = 7,
+ * include/dt-bindings/reset/mediatek,mt6785-resets.h:22), but kexec does not reset
+ * the SoC.
+ *
+ * The vendor never needed this hook -- its .shutdown() is an empty function
+ * (mt6785/md_sys1_platform.c) because a phone reboot is a real reset there -- so
+ * this is the one place where a kexec-based port has to do more than the vendor.
+ *
+ * The stop itself is the same sequence the driver already uses: the reference is
+ * put back, the clock request and the rails go, and everything happens after the
+ * EE handover if the modem was in exception (see md_boot()).
+ */
+static void rosemary_ccci_shutdown(struct platform_device *pdev)
+{
+	struct ccci_md *md = platform_get_drvdata(pdev);
+
+	if (!md)
+		return;
+	dev_info(md->dev, "shutdown: powering the modem off for the next kernel\n");
+	ccci_md_stop(md);
+}
+
 static void rosemary_ccci_remove(struct platform_device *pdev)
 {
 	struct ccci_md *md = platform_get_drvdata(pdev);
@@ -1279,6 +1370,7 @@ static void rosemary_ccci_remove(struct platform_device *pdev)
 static struct platform_driver rosemary_ccci_driver = {
 	.probe = rosemary_ccci_probe,
 	.remove = rosemary_ccci_remove,
+	.shutdown = rosemary_ccci_shutdown,
 	.driver = {
 		.name = "rosemary-ccci",
 		.dev_groups = ccci_groups,
