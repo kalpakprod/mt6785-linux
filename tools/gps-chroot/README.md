@@ -105,6 +105,36 @@ and something that reads `mtk_mnl2hal`.
   (`begonia-notes.md:752`), which is kernel-side work: a GPS off that actually power-cycles the
   chip, instead of only dropping the function.
 
+## Deploying
+
+    ./deploy.sh                 # host: extracts, builds the helpers, writes out/gps-engine-*.tar.gz
+
+On the phone, one command:
+
+    tar -xzf gps-engine-*.tar.gz && sudo sh install.sh
+
+`install.sh` places the tree in `/opt/gps-engine`, the forwarder in
+`/usr/local/bin/nmea-forward`, the property shim inside the tree, and then runs `check.sh`, which
+prints PASS or FAIL for every prerequisite:
+
+* the two device nodes exist,
+* the tree holds every file the runtime needs,
+* **bionic's own linker resolves mnld's whole closure inside the tree** (`linker64 --list`), which is
+  the only check that cannot be faked,
+* `nmea-forward` binds `mtk_mnl2hal` and waits.
+
+It deliberately does not start the daemon. `start.sh` does that, and it is where a vendor binary
+first runs against the chip:
+
+    /opt/gps-engine/start.sh      # forwarder + chroot mnld, logs in /var/log/gps-engine
+    tail -f /var/log/gps-engine/mnld.log
+    /opt/gps-engine/stop.sh
+
+The helpers are built with zig for aarch64: `nmea-forward` is static musl, and `libprops-shim.so` is
+built with `-nostdlib` on purpose - its only external symbols are `open`, `read`, `close` and
+`strlen`, which the bionic process already has, so preloading it cannot drag a second C library into
+an Android binary.
+
 ## Reproducing
 
     ./assemble.py --super ~/poco-m5s/backup-2026-11-14/super.img --out /path/to/tree
