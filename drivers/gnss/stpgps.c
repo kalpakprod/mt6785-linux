@@ -29,9 +29,11 @@
 #include <linux/fs.h>
 #include <linux/kthread.h>
 #include <linux/miscdevice.h>
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/skbuff.h>
@@ -64,8 +66,34 @@
 #define COMBO_IOC_GPS_LISTEN_RST_EVT	20
 #define COMBO_IOC_GPS_GET_MD_STATUS	21
 
-/* The vendor EMI stub hands out a 1 MiB window; keep the same size. */
-#define GPS_EMI_SIZE		SZ_1M
+/*
+ * The vendor EMI stub hands out a window inside the CONNSYS carve-out, not a
+ * separately allocated buffer: `gGpsEmiPhyBase = gConEmiPhyBase +
+ * GPS_EMI_BASE_ADDR_OFFSET` (gps_emi.c, mtk_wcn_consys_gps_memory_reserve()).
+ * The MNL daemon then writes its DSP image into that window through
+ * /dev/gps_emi and the conn MCU fetches it from there, which is why this
+ * window must be real memory the chip can reach and not a private vmalloc
+ * buffer.
+ *
+ * The offset for MT6785 is not in the vendor file - gps_emi.c has no
+ * CONFIG_MACH_MT6785 branch at all, only MT6765/61/68 (2 MiB + 1.5 MiB +
+ * 0x1000), MT6779/6873/6853 (3 MiB + 0x10000), MT6771/75/58 (1 MiB) and
+ * MT6873. So the window is anchored on what this port's own carveout says:
+ * the conn EMI region is 4 MiB (consys_reserved, DT size 0x400000) and the
+ * WMT patch images already live in its first 1.5 MiB
+ * (soc1_0_ram_mcu @0x0, soc1_0_ram_bt @0x80000, soc1_0_ram_wifi @0x140000,
+ * the last one 0x30444 long).
+ *
+ * Placing GPS after the Wi-Fi image - at 0x1A0000, 1.5 MiB in - keeps it
+ * inside the 4 MiB carveout with 2.5 MiB to spare and clear of every offset
+ * the WMT patch download uses on this SoC, which is the same relative
+ * position the MT6765 family uses (2 MiB + 1.5 MiB). The window is 1.5 MiB,
+ * the size the vendor allocates for the bigger SoCs, and it is checked
+ * against the real carveout at probe so a wrong offset fails loudly instead
+ * of handing the daemon memory the chip cannot reach.
+ */
+#define GPS_EMI_BASE_ADDR_OFFSET	(0x1A0000)
+#define GPS_EMI_SIZE			(SZ_1M + SZ_1M / 2)
 
 /* One STP frame holds one NMEA sentence or one PMTK command. */
 #define STPGPS_FRAME_SIZE	1024
@@ -87,6 +115,8 @@ struct stpgps {
 	unsigned int rx_len;
 
 	void *emi_buf;
+	phys_addr_t emi_phys;
+	size_t emi_size;
 };
 
 static struct stpgps *stpgps_dev;
@@ -160,6 +190,21 @@ static int stpgps_open(struct inode *inode, struct file *file)
 
 	gps->gps_on = true;
 	file->private_data = gps;
+
+	/*
+	 * The vendor's GPS_open() refuses to proceed unless the STP transport is
+	 * ready: "STP is not ready, Cannot open GPS Devices" -> -ENODEV. Ours
+	 * skipped that, so a daemon could open the device on a WMT that never
+	 * finished coming up and then read nothing forever, with no error to
+	 * show for it. Closing again restores the function state.
+	 */
+	if (!mtk_wcn_stp_is_ready()) {
+		mtk_wcn_wmt_func_off(WMTDRV_TYPE_GPS);
+		gps->gps_on = false;
+		gps->opened = false;
+		file->private_data = NULL;
+		return -ENODEV;
+	}
 
 	return 0;
 }
@@ -342,17 +387,77 @@ static int gps_emi_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct stpgps *gps = file->private_data;
 	unsigned long size = vma->vm_end - vma->vm_start;
+	int err;
 
-	if (size > GPS_EMI_SIZE)
+	if (size > gps->emi_size)
 		return -EINVAL;
 
-	return remap_vmalloc_range(vma, gps->emi_buf, 0);
+	/*
+	 * Real carveout memory, mapped straight to userspace: the MNL daemon
+	 * writes the DSP image here and the conn MCU fetches it over EMI, so a
+	 * private buffer would look right and never reach the chip.
+	 */
+	vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+	err = remap_pfn_range(vma, vma->vm_start,
+			      gps->emi_phys >> PAGE_SHIFT, size,
+			      vma->vm_page_prot);
+	if (err)
+		return err;
+
+	return 0;
+}
+
+/*
+ * The MNL daemon's ioctl numbers on /dev/gps_emi, from the vendor
+ * gps_emi.c. 1 is the one on the path to NMEA: it makes the driver reserve
+ * and map the GPS window (there `mtk_wcn_consys_gps_emi_init()`), and the
+ * daemon calls it before writing the DSP image. 2 and 3 are the NVRAM
+ * helpers the daemon uses to keep its calibration file in sync with the
+ * window; on this port the window is ordinary carveout memory the daemon
+ * can read and write directly, so they only have to succeed. 4 returns the
+ * window's physical address, which the daemon passes to the chip.
+ */
+#define IOCTL_EMI_MEMORY_INIT		1
+#define IOCTL_MNL_NVRAM_FILE_TO_MEM	2
+#define IOCTL_MNL_NVRAM_MEM_TO_FILE	3
+#define IOCTL_ADC_CAPTURE_ADDR_GET	4
+
+static long gps_emi_ioctl(struct file *file, unsigned int cmd,
+			  unsigned long arg)
+{
+	struct stpgps *gps = file->private_data;
+	u32 addr = (u32)gps->emi_phys;
+
+	switch (cmd) {
+	case IOCTL_EMI_MEMORY_INIT:
+		/* The window is reserved at probe; this is the daemon's cue to
+		 * start writing, and answering 1 is what the vendor returns on
+		 * success. */
+		dev_dbg(gps->gps_misc.this_device,
+			"GPS EMI window ready: phys 0x%llx size 0x%zx\n",
+			(unsigned long long)gps->emi_phys, gps->emi_size);
+		return 1;
+
+	case IOCTL_MNL_NVRAM_FILE_TO_MEM:
+	case IOCTL_MNL_NVRAM_MEM_TO_FILE:
+		/* Directly addressable memory: no copy needed either way. */
+		return 0;
+
+	case IOCTL_ADC_CAPTURE_ADDR_GET:
+		return copy_to_user((u32 __user *)arg, &addr, sizeof(addr)) ?
+			-EFAULT : 0;
+
+	default:
+		/* The vendor driver returns 0 for unknown commands here. */
+		return 0;
+	}
 }
 
 static const struct file_operations gps_emi_fops = {
 	.owner = THIS_MODULE,
 	.open = gps_emi_open,
 	.mmap = gps_emi_mmap,
+	.unlocked_ioctl = gps_emi_ioctl,
 };
 
 /* ---------------------------------------------------------------- driver */
@@ -371,9 +476,54 @@ static int stpgps_probe(struct platform_device *pdev)
 	init_waitqueue_head(&gps->close_wait);
 	INIT_LIST_HEAD(&gps->rx_list);
 
-	gps->emi_buf = vmalloc(GPS_EMI_SIZE);
-	if (!gps->emi_buf)
-		return -ENOMEM;
+	/*
+	 * Carve the GPS window out of the CONNSYS EMI region itself, the way
+	 * stock does (gGpsEmiPhyBase = gConEmiPhyBase + GPS_EMI_BASE_ADDR_OFFSET),
+	 * so the conn MCU can fetch the DSP image the daemon writes there.
+	 * The DT's consys node carries the region through memory-region; the
+	 * WMT module resolved it before us, so read it back from the same
+	 * reservation rather than allocating fresh memory the chip cannot see.
+	 */
+	{
+		struct device_node *consys;
+		struct resource res;
+
+		consys = of_find_compatible_node(NULL, NULL,
+						 "mediatek,mt6785-consys");
+		if (!consys) {
+			dev_err(&pdev->dev, "cannot find the consys node for the EMI window\n");
+			return -ENODEV;
+		}
+		err = of_reserved_mem_region_to_resource_byname(consys,
+								"memory-region", &res);
+		of_node_put(consys);
+		if (err) {
+			dev_err(&pdev->dev, "cannot resolve the consys EMI region (%d)\n",
+				err);
+			return err;
+		}
+
+		gps->emi_phys = res.start + GPS_EMI_BASE_ADDR_OFFSET;
+		gps->emi_size = GPS_EMI_SIZE;
+		if (gps->emi_phys + gps->emi_size > res.end + 1) {
+			dev_err(&pdev->dev,
+				"GPS EMI window 0x%llx+0x%zx does not fit the carveout (end 0x%llx)\n",
+				(unsigned long long)gps->emi_phys, gps->emi_size,
+				(unsigned long long)res.end);
+			return -ERANGE;
+		}
+
+		/*
+		 * ioremap, not memremap: the carveout is declared no-map, so it is
+		 * not in the linear map and the vendor maps it the same way
+		 * (ioremap() in mtk_wcn_consys_gps_emi_init()).
+		 */
+		gps->emi_buf = ioremap(gps->emi_phys, gps->emi_size);
+		if (!gps->emi_buf) {
+			dev_err(&pdev->dev, "cannot map the GPS EMI window\n");
+			return -ENOMEM;
+		}
+	}
 
 	gps->gps_misc.minor = MISC_DYNAMIC_MINOR;
 	gps->gps_misc.name = STPGPS_DEV_NAME;
@@ -409,8 +559,10 @@ static int stpgps_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, gps);
 	WRITE_ONCE(stpgps_dev, gps);
 
-	dev_info(&pdev->dev, "GNSS bridge ready: /dev/%s, /dev/%s\n",
-		 STPGPS_DEV_NAME, GPS_EMI_DEV_NAME);
+	dev_info(&pdev->dev,
+		 "GNSS bridge ready: /dev/%s, /dev/%s, EMI window 0x%llx+0x%zx\n",
+		 STPGPS_DEV_NAME, GPS_EMI_DEV_NAME,
+		 (unsigned long long)gps->emi_phys, gps->emi_size);
 
 	return 0;
 
@@ -419,7 +571,7 @@ err_unreg_emi:
 err_unreg_gps:
 	misc_deregister(&gps->gps_misc);
 err_free:
-	vfree(gps->emi_buf);
+	iounmap(gps->emi_buf);
 
 	return err;
 }
@@ -433,7 +585,7 @@ static void stpgps_remove(struct platform_device *pdev)
 
 	misc_deregister(&gps->emi_misc);
 	misc_deregister(&gps->gps_misc);
-	vfree(gps->emi_buf);
+	iounmap(gps->emi_buf);
 }
 
 static const struct of_device_id stpgps_of_match[] = {
