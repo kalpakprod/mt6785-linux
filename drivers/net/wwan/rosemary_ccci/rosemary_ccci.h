@@ -444,6 +444,7 @@ const struct ccci_c_item *ccci_smem_region(struct ccci_md *md, u32 id);
 /* ccif.c */
 int ccci_ccif_init(struct ccci_md *md);
 void ccci_ccif_reset(struct ccci_md *md);
+bool ccci_ccif_pending_hs1(struct ccci_md *md, struct md_query_ap_feature *q);
 irqreturn_t ccci_ccif_isr(int irq, void *data);
 int ccci_send_raw(struct ccci_md *md, int txq, void *pkt, size_t len);
 int ccci_send(struct ccci_md *md, int txq, u16 channel, u32 data0, u32 data1,

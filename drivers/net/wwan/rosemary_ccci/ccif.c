@@ -163,6 +163,44 @@ void ccci_sram_read(struct ccci_md *md, u32 off, void *dst, size_t len)
 }
 
 /**
+ * ccci_ccif_pending_hs1() - is the modem already asking for the runtime data?
+ * @md: the modem
+ * @q: where to put the query, if there is one
+ *
+ * The modem's first handshake is not a ring packet: it writes a ccci_header and
+ * its feature query into the CCIF SRAM and rings the SRAM channel, and the AP reads
+ * the payload straight out of the SRAM there (vendor
+ * md_ccif_sram_rx_work(), hif/ccci_hif_ccif.c:584-620, reading
+ * ccif_sram_layout->dl_header and ->md_rt_data). The query header carries
+ * MD_INIT_START_BOOT in data[1] and MD_INIT_CHK_ID in reserved, which is what
+ * ccci_recv_control() keys on.
+ *
+ * This asks BEFORE ccci_ccif_reset() wipes the SRAM, because a modem the loader
+ * already released may have asked once and be waiting for an answer that never
+ * came: the vendor's flow always restarts the modem, so its query is lost and the
+ * modem is expected to ask again after the restart, but a modem left running by the
+ * loader asks once and then waits. Zeroing the SRAM throws that query away and no
+ * answer can ever arrive.
+ *
+ * Returns true when a query is present, and fills @q.
+ */
+bool ccci_ccif_pending_hs1(struct ccci_md *md, struct md_query_ap_feature *q)
+{
+	struct ccci_header h;
+
+	if (!md->ccif_ap || !q)
+		return false;
+	ccci_sram_read(md, SRAM_DL_HEADER, &h, sizeof(h));
+	if (h.data[1] != MD_INIT_START_BOOT || h.reserved != MD_INIT_CHK_ID)
+		return false;
+	ccci_sram_read(md, SRAM_MD_RT_DATA, q, sizeof(*q));
+	if (q->head_pattern != MD_FEATURE_QUERY_PATTERN ||
+	    q->tail_pattern != MD_FEATURE_QUERY_PATTERN)
+		return false;
+	return true;
+}
+
+/**
  * ccci_ccif_reset() - clear the CCIF state and the SRAM before a boot
  * @md: the modem
  *

@@ -673,6 +673,8 @@ static int md_boot(struct ccci_md *md)
 	int limit = stage_limit();
 	unsigned long deadline;
 	u32 before = 0, after = 0;
+	struct md_query_ap_feature hs1_query;
+	bool hs1_pending = false;
 	int ret;
 
 	if (md->no_boot_info) {
@@ -717,8 +719,23 @@ static int md_boot(struct ccci_md *md)
 	if (ret)
 		goto err_off;
 	md_step(md, "ccif_clocks_on");
-	ccci_ccif_reset(md);
-	md_step(md, "ccif_reset");
+	/*
+	 * Look into the CCIF SRAM BEFORE the reset below wipes it. A modem the loader
+	 * already released asks for the runtime data once and then waits; the vendor
+	 * never sees that case because it restarts the modem, whose query therefore
+	 * arrives after the restart. Here the modem is not restarted, so its query is
+	 * still in the SRAM -- and the reset would throw it away and leave the modem
+	 * waiting for an answer that can no longer come, which is what trials 18 and 20
+	 * measured (boot stage 0x2c04010a, no second release, and the modem awake and
+	 * holding its clock request rather than parked).
+	 */
+	if (md->first_boot)
+		hs1_pending = ccci_ccif_pending_hs1(md, &hs1_query);
+	if (hs1_pending)
+		dev_info(md->dev, "the loader's modem is already asking for the runtime data: answering it instead of restarting it\n");
+	else
+		ccci_ccif_reset(md);
+	md_step(md, hs1_pending ? "ccif_reset (skipped)" : "ccif_reset");
 	/*
 	 * The data path starts before the modem (the vendor is in
 	 * BOOT_WAITING_FOR_HS1 here), and a modem without one never reaches its
@@ -790,7 +807,7 @@ static int md_boot(struct ccci_md *md)
 	 * modem it brought up itself. That also removes the last dependency on the
 	 * power-domain provider being synced: nothing here needs the domain switched.
 	 */
-	if (md->first_boot) {
+	if (md->first_boot && !hs1_pending) {
 		u32 stage0, stage1;
 
 		ret = md_first_boot_check(md);
@@ -852,6 +869,24 @@ static int md_boot(struct ccci_md *md)
 			goto err_seq;
 		}
 	}
+	if (hs1_pending) {
+		/*
+		 * The modem is already released and waiting: answer the query it left in
+		 * the SRAM, from where it is. No restarts and no power cycle -- the two
+		 * things this port cannot do to a running modem (it does not park, so it
+		 * cannot acknowledge the bus protection) are exactly what this path
+		 * avoids.
+		 */
+		md_dump_state(md, "pending HS1");
+		md->first_boot = false;
+		enable_irq(md->irq_ccif);
+		enable_irq(md->irq_ccif_exp);
+		enable_irq(md->irq_wdt);
+		ccci_send_runtime_data(md, &hs1_query);
+		ccci_set_state(md, MD_STATE_HS1);
+		dev_info(md->dev, "HS1 answered from the query the loader's modem left behind\n");
+		goto hs1_done;
+	}
 	md_dump_state(md, "before release");
 
 	/*
@@ -899,6 +934,7 @@ static int md_boot(struct ccci_md *md)
 		ccci_set_state(md, MD_STATE_EXCEPTION);
 		return 0;
 	}
+hs1_done:
 	if (limit < 3) {
 		dev_info(md->dev, "stop_after m2: the modem stays at the first handshake\n");
 		return 0;
