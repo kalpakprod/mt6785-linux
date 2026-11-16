@@ -1380,7 +1380,6 @@
 				 <&iommu M4U_PORT_DISP_OVL0_HDR>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1400XXXX 0x8000 0x1000>;
-			resets = <&mmsys MT6785_MMSYS_DISP_OVL0_RST>;
 
 			ports {
 				#address-cells = <1>;
@@ -1414,7 +1413,6 @@
 				 <&iommu M4U_PORT_DISP_OVL0_2L_HDR>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1400XXXX 0x9000 0x1000>;
-			resets = <&mmsys MT6785_MMSYS_DISP_OVL0_2L_RST>;
 
 			ports {
 				#address-cells = <1>;
