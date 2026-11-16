@@ -77,6 +77,35 @@ impl<'a, const IDX: usize> Ldo<'a, IDX> {
     /// The range as a static slice for `Params`.
     const RANGES: &'static [LinearRange] = &[Self::RANGE];
 
+    /// Microvolts of `selector`, or `None` past the last selector - the same mapping the
+    /// core reaches through `list_voltage`, callable without a client so the tests can use it.
+    const fn uv(selector: u32) -> Option<i32> {
+        if selector >= N_VOLTAGES {
+            return None;
+        }
+
+        Some(base_uv(IDX) + selector as i32 * step_uv(IDX))
+    }
+
+    /// The selector for `uv`, rounded up to the next supported step the way the regulator
+    /// core's `regulator_map_voltage_linear_range` does, or `None` outside the range.
+    const fn selector_for_uv(uv: i32) -> Option<u32> {
+        let span = uv - base_uv(IDX);
+
+        if span < 0 {
+            return None;
+        }
+
+        let step = step_uv(IDX);
+        let selector = (span + step - 1) / step;
+
+        if selector as u32 >= N_VOLTAGES {
+            return None;
+        }
+
+        Some(selector as u32)
+    }
+
     fn read(&self, reg: u8) -> Result<u8> {
         self.client.smbus_io().try_read8(reg as usize)
     }
@@ -104,11 +133,7 @@ impl<const IDX: usize> RegOps for Ldo<'_, IDX> {
     }
 
     fn list_voltage(_data: &Self, selector: u32) -> Result<i32> {
-        if selector >= N_VOLTAGES {
-            return Err(EINVAL);
-        }
-
-        Ok(base_uv(IDX) + selector as i32 * step_uv(IDX))
+        Self::uv(selector).ok_or(EINVAL)
     }
 
     fn set_voltage_sel(data: &Self, selector: u32) -> Result {
@@ -213,23 +238,64 @@ kernel::module_i2c_driver! {
 mod tests {
     use super::*;
 
-    /// The selector mapping from the vendor's model: 600 mV + 6 mV * selector, 1200 mV +
-    /// 12.5 mV * selector.
+    /// Selector 0 is the bottom of each range, and the expected microvolts are written out
+    /// from the vendor's model (`wl2866d.c`: `VSET_BASE_12` 600 mV + 6 mV * vset for outputs
+    /// 1-2, `VSET_BASE_34` 1200 mV + 12.5 mV * vset for outputs 3-4), not computed here.
     #[test]
-    fn selector_maps_to_microvolts() {
-        assert_eq!(Ldo::<0>::RANGE, LinearRange::new(600_000, 6_000, 256));
-        assert_eq!(Ldo::<1>::RANGE, LinearRange::new(600_000, 6_000, 256));
-        assert_eq!(Ldo::<2>::RANGE, LinearRange::new(1_200_000, 12_500, 256));
-        assert_eq!(Ldo::<3>::RANGE, LinearRange::new(1_200_000, 12_500, 256));
+    fn bottom_of_each_range() {
+        assert_eq!(Ldo::<0>::uv(0), Some(600_000));
+        assert_eq!(Ldo::<1>::uv(0), Some(600_000));
+        assert_eq!(Ldo::<2>::uv(0), Some(1_200_000));
+        assert_eq!(Ldo::<3>::uv(0), Some(1_200_000));
     }
 
-    /// Values the phone's camera rails ask for, and the selectors they must produce.
+    /// Selector 255 is the top: 0.6 V + 255 * 6 mV = 2.13 V, and 1.2 V + 255 * 12.5 mV =
+    /// 4.3875 V - the two upper bounds the binding states.
     #[test]
-    fn camera_rail_values() {
-        // dvdd1 1.2 V -> 0x64, dvdd2 1.05 V -> 0x4B, avdd1/2 2.8 V -> 0x80 (vendor table).
-        for (idx, uv, sel) in [(0, 1_200_000, 0x64), (1, 1_050_000, 0x4B), (2, 2_800_000, 0x80)] {
-            let want = uv - base_uv(idx);
-            assert_eq!(want / step_uv(idx), sel);
-        }
+    fn top_of_each_range() {
+        assert_eq!(Ldo::<0>::uv(255), Some(2_130_000));
+        assert_eq!(Ldo::<1>::uv(255), Some(2_130_000));
+        assert_eq!(Ldo::<2>::uv(255), Some(4_387_500));
+        assert_eq!(Ldo::<3>::uv(255), Some(4_387_500));
+    }
+
+    /// The three voltages the phone's camera rails ask for, as the vendor's table writes
+    /// them: dvdd1 1.2 V -> 0x64, dvdd2 1.05 V -> 0x4B, avdd1 2.8 V -> 0x80.
+    #[test]
+    fn vendor_table_values_round_trip() {
+        assert_eq!(Ldo::<0>::selector_for_uv(1_200_000), Some(0x64));
+        assert_eq!(Ldo::<0>::uv(0x64), Some(1_200_000));
+
+        assert_eq!(Ldo::<1>::selector_for_uv(1_050_000), Some(0x4B));
+        assert_eq!(Ldo::<1>::uv(0x4B), Some(1_050_000));
+
+        assert_eq!(Ldo::<2>::selector_for_uv(2_800_000), Some(0x80));
+        assert_eq!(Ldo::<2>::uv(0x80), Some(2_800_000));
+
+        assert_eq!(Ldo::<3>::selector_for_uv(2_800_000), Some(0x80));
+    }
+
+    /// A request between two steps rounds up to the next one, as the core's linear-range
+    /// mapping does: 1.203 V on a 6 mV grid above 0.6 V is selector 101, i.e. 1.206 V.
+    #[test]
+    fn between_steps_rounds_up() {
+        assert_eq!(Ldo::<0>::selector_for_uv(1_203_000), Some(101));
+        assert_eq!(Ldo::<0>::uv(101), Some(1_206_000));
+
+        // 2.701 V on the 12.5 mV grid above 1.2 V is selector 121 (0x79), i.e. 2.7125 V.
+        assert_eq!(Ldo::<2>::selector_for_uv(2_701_000), Some(0x79));
+        assert_eq!(Ldo::<2>::uv(0x79), Some(2_712_500));
+    }
+
+    /// Outside the range there is no selector, and past the last one there is no voltage.
+    #[test]
+    fn out_of_range_is_rejected() {
+        assert_eq!(Ldo::<0>::selector_for_uv(599_000), None);
+        assert_eq!(Ldo::<0>::selector_for_uv(2_131_000), None);
+        assert_eq!(Ldo::<2>::selector_for_uv(1_199_000), None);
+        assert_eq!(Ldo::<2>::selector_for_uv(4_388_000), None);
+
+        assert_eq!(Ldo::<0>::uv(256), None);
+        assert_eq!(Ldo::<2>::uv(u32::MAX), None);
     }
 }
