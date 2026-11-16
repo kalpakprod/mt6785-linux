@@ -1,14 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Xiaomi POCO M5s / Redmi Note 10S (rosemary) AMOLED panel
- * dsi_panel_k7_38_0c_0a_fhdp_video: 1080x2400, Samsung-made module driven by a
- * FocalTech FT3418-class display driver IC, MIPI DSI video mode with sync
- * pulses, 4 lanes at 1098 Mbps, no DSC, brightness over DCS 0x51 (11-bit).
+ * dsi_panel_k7_38_0c_0a_fhdp_video: 1080x2400 module whose display driver IC is
+ * a **Samsung S6E8FC0** (the FocalTech FT3418 is this board's touch controller,
+ * a separate chip on I2C0 at 0x38). MIPI DSI video mode with sync pulses, 4
+ * lanes, RGB888, no DSC, brightness over DCS 0x51 (11-bit).
  *
- * The init sequence is the vendor LCM driver's, verbatim:
+ * The DDIC is the same one mainline already drives for the Mi A3 in
+ * drivers/gpu/drm/panel/panel-samsung-s6e8fc0-m1906f9.c, and the command set is
+ * the same family: the 0xf0/0xfc test keys, the 0xb0 offset register, 0xed and
+ * 0xe1 0x93 in the failsafe block, 0x53 0x20 for brightness control.
+ *
+ * The init sequence below is the vendor LCM driver's, verbatim:
  *   drivers/misc/mediatek/lcm/dsi_panel_k7_38_0c_0a_fhdp_video/
  * in Youffx/kernel_xiaomi_rosemary @ 634d6ac5d96e, branch 23.2-lineage,
  * extracted into poco-m5s/research/native/1-display-touch/panel-init-sequence.txt.
+ * Two independent Xiaomi drivers for the same module carry the same table, so its
+ * commands are not in doubt (poco-m5s/research/panel-k7-prior-art-2026-11-16.md):
+ *
+ *  - begonia's MTK-DRM driver drivers/gpu/drm/panel/panel-samsung-s6e8fc01.c in
+ *    AgentFabulous/begonia, for the same S6E8FC0 and the same porches
+ *    (HSA 14, HBP 22, HFP 48, VSA 2, VBP 9, VFP 21); its lcm_panel_init() equals
+ *    this table except 0x80, which is 0x01 there and 0x80 in rosemary's LCM;
+ *  - the Qualcomm side's DT command table, Redmi Note 10
+ *    dsi_panel_k7_38_0c_0a_fhdp_video.dtsi in the sunny/mojito kernels.
  *
  * The mode is the loader's, not the vendor C's: LK recomputes the porches to
  * land exactly on 60 Hz and those are the values provably scanning out on this
