@@ -441,6 +441,7 @@ static int md_boot(struct ccci_md *md)
 	reinit_completion(&md->hs2);
 	md->pending = 0;
 	md->ex_channels = 0;
+	md->ee_printed = false;
 
 	ret = clear_smem(md);
 	if (ret)
