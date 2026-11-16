@@ -62,6 +62,8 @@ struct ft3418_data {
 	struct regulator *vdd;
 	struct regulator *iovdd;
 	struct touchscreen_properties prop;
+	/* ids reported down in the last frame, the vendor's data->touchs */
+	unsigned long tracked_ids;
 };
 
 static int ft3418_reg_read(struct i2c_client *client, u8 reg, void *buf,
@@ -160,22 +162,31 @@ static void ft3418_report(struct ft3418_data *ts, const u8 *buf)
 {
 	struct input_dev *input = ts->input;
 	unsigned int point_num = FT3418_POINT_NUM(buf);
+	unsigned long touchs = 0;
 	unsigned int i;
 
 	/*
-	 * An incell part answers point_num 0x0f with an 0xff payload when the
-	 * IC is in a bad state; the vendor releases every finger and recovers.
-	 * Recovering needs process context, so only the release is done here.
+	 * The incell parts answer point_num 0x0f with an 0xff payload when the IC
+	 * is in a bad state. The vendor rejects any count above the panel's
+	 * maximum (fts_read_touchdata(): if (data->point_num > max_touch_num)
+	 * FTS_INFO("invalid point_num")), which covers that frame, and then
+	 * releases every finger because no point follows.
 	 */
-	if (point_num == 0x0f)
-		point_num = 0;
-
 	if (point_num > FT3418_MAX_POINTS) {
 		dev_dbg_ratelimited(&ts->client->dev,
 				    "invalid point_num %u\n", point_num);
 		point_num = 0;
 	}
 
+	/*
+	 * Walk the slot table the way the vendor does, not point_num times: it
+	 * iterates max_touch_number slots and stops at the first entry whose id
+	 * byte is out of range (fts_read_touchdata():
+	 *   pointid = (buf[FTS_TOUCH_ID_POS + base]) >> 4;
+	 *   if (pointid >= FTS_MAX_ID) break;),
+	 * so a frame that carries fewer points than the count byte claims still
+	 * reports the points it has, and one whose id byte is stale ends there.
+	 */
 	for (i = 0; i < point_num; i++) {
 		const u8 *p = &buf[3 + FT3418_POINT_LEN * i];
 		unsigned int event = p[0] >> 6;
@@ -185,13 +196,19 @@ static void ft3418_report(struct ft3418_data *ts, const u8 *buf)
 		unsigned int weight = p[4];
 		unsigned int area = p[5] >> 4;
 
-		if (event == FT3418_EVENT_RESERVED || id >= FT3418_MAX_POINTS)
+		if (id >= FT3418_MAX_POINTS || event == FT3418_EVENT_RESERVED)
 			break;
 
 		input_mt_slot(input, id);
 
 		if (event == FT3418_EVENT_UP) {
-			input_mt_report_slot_state(input, MT_TOOL_FINGER, false);
+			/*
+			 * fts_input_report_b(): input_mt_report_slot_state(...,
+			 * MT_TOOL_FINGER, false) for a point whose event is up,
+			 * which is input_mt_report_slot_inactive() in mainline
+			 * terms - it clears the slot and its tracking id.
+			 */
+			input_mt_report_slot_inactive(input);
 			continue;
 		}
 
@@ -199,7 +216,31 @@ static void ft3418_report(struct ft3418_data *ts, const u8 *buf)
 		touchscreen_report_pos(input, &ts->prop, x, y, true);
 		input_report_abs(input, ABS_MT_PRESSURE, weight);
 		input_report_abs(input, ABS_MT_TOUCH_MAJOR, area);
+		touchs |= BIT(id);
 	}
+
+	/*
+	 * Points that were down last frame and are not in this one have to be
+	 * released even though this frame does not mention them - the vendor's
+	 *   if (unlikely(data->touchs ^ touchs))
+	 *       for (i = 0; i < max_touch_num; i++)
+	 *           if (BIT(i) & (data->touchs ^ touchs))
+	 *               input_mt_report_slot_state(..., false);
+	 */
+	for (i = 0; i < FT3418_MAX_POINTS; i++) {
+		if (BIT(i) & ts->tracked_ids & ~touchs) {
+			input_mt_slot(input, i);
+			input_mt_report_slot_inactive(input);
+		}
+	}
+	ts->tracked_ids = touchs;
+
+	/*
+	 * And the button, as the vendor reports it after the release pass:
+	 *   input_report_key(input_dev, BTN_TOUCH, 0/1);
+	 *   input_sync(input_dev);
+	 */
+	input_report_key(input, BTN_TOUCH, touchs ? 1 : 0);
 
 	input_mt_sync_frame(input);
 	input_sync(input);
