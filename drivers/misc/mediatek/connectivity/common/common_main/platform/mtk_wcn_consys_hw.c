@@ -141,8 +141,12 @@ const struct of_device_id apwmt_of_ids[] = {
 struct CONSYS_BASE_ADDRESS conn_reg;
 #endif
 
+INT32 mtk_wcn_consys_co_clock_type(VOID);
+static void mtk_wmt_shutdown(struct platform_device *pdev);
+
 static struct platform_driver mtk_wmt_dev_drv = {
 	.probe = mtk_wmt_probe,
+	.shutdown = mtk_wmt_shutdown,
 	.remove = mtk_wmt_remove,
 	.driver = {
 		   .name = "mtk_wmt",
@@ -449,6 +453,50 @@ static INT32 mtk_wmt_probe(struct platform_device *pdev)
 	atomic_set(&g_probe_called, 1);
 
 	return 0;
+}
+
+/*
+ * Hand CONNSYS over cold.
+ *
+ * kexec calls device_shutdown() before the next kernel starts, and a warm reboot
+ * leaves the conn power domain as it was - there is nothing in the reset path that
+ * drops it. Without this, the next kernel probes a chip that is still powered with
+ * WMT firmware running and PDMA rings pointing into the old kernel's memory, which
+ * is exactly the state the modem area measured surviving every warm reboot
+ * (poco-m5s/evidence/modem-trial21/README.md).
+ *
+ * Upstream's nearest equivalents power the block off rather than freeing anything:
+ * mt7921's PCI driver points .shutdown at its own remove path
+ * (drivers/net/wireless/mediatek/mt76/mt7921/pci.c:720-726), and the Bluetooth
+ * transports disable the controller in hdev->shutdown (btmtkuart.c:722). Here the
+ * power switch is the one this file already owns: mtk_wcn_consys_hw_pwr_off(),
+ * which drives the vendor's off sequence and, with the runtime-PM bracket added for
+ * lead note 16, lets genpd cut the conn domain afterwards.
+ */
+static void mtk_wmt_shutdown(struct platform_device *pdev)
+{
+	WMT_PLAT_PR_INFO("CONSYS shutdown: powering the conn block off for hand-over\n");
+
+	/*
+	 * Only if this driver ever powered it on: the runtime-PM reference is taken in
+	 * mtk_wcn_consys_hw_pwr_on() and dropped in mtk_wcn_consys_hw_pwr_off(), so a
+	 * powered block shows as an active device here.
+	 */
+	if (pm_runtime_active(&pdev->dev)) {
+		INT32 co_clock = mtk_wcn_consys_co_clock_type();
+
+		/* The same value the WMT layer passes on a normal power-off
+		 * (wmt_plat_alps.c:599), so the clock buffer is left as that path
+		 * leaves it. A negative answer means "not known yet", which the
+		 * power-off sequence treats as no co-clock. */
+		mtk_wcn_consys_hw_pwr_off(co_clock < 0 ? 0 : (UINT32)co_clock);
+	} else {
+		WMT_PLAT_PR_INFO("CONSYS shutdown: the block is already off\n");
+	}
+
+	/* The BGF wake line (wmt_plat_eirq_ctrl) stays as it is: it is disarmed inside
+	 * the power-off path above, and disarming it twice would trip the same balance
+	 * counter that lead note 14 had to fix. */
 }
 
 /* 4.14->6.11: platform_driver.remove callback now returns void. */
