@@ -95,6 +95,18 @@ static const struct snd_soc_dapm_route mt6785_mt6359_routes[] = {
 	/* the codec's analog outputs feed the two side paths */
 	{ "Headphone Jack", NULL, "Headphone L" },
 	{ "Headphone Jack", NULL, "Headphone R" },
+	/*
+	 * The MTKAIF wire between the AFE and the codec, both ways. Playback and
+	 * capture live on the codec's AIF1, and the AFE's ends of that wire are
+	 * its ADDA playback and capture ports. These two routes are what powers
+	 * those ports: the ADDA DAI belongs to no PCM of this simple card (it is
+	 * a be-link of the vendor's dynamic card), so its widgets never see a
+	 * stream start, and without these routes the capture chain from the
+	 * codec's AIF1 TX up to the UL1 memory interface has no source to power
+	 * it from — the memif then records zeros.
+	 */
+	{ "ADDA Capture", NULL, "AIF1TX" },
+	{ "AIF_RX", NULL, "ADDA Playback" },
 	/* and the three microphones feed the codec's analog inputs */
 	{ "AIN1", NULL, "Headset Mic" },
 	{ "AIN0", NULL, "Main Mic" },
