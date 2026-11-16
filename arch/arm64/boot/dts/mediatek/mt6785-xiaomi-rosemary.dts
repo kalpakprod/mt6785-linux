@@ -395,6 +395,14 @@
 	status = "okay";
 
 	maximum-speed = "high-speed";
+	/*
+	 * Dual role, stated explicitly. mtu3 would pick OTG on its own when the
+	 * property is absent (drivers/usb/mtu3/mtu3_plat.c:277-279), and
+	 * ssusb_set_mode() ignores every role change unless dr_mode is OTG
+	 * (mtu3_dr.c:179), so this line is what makes the Type-C role switch below
+	 * actually do anything.
+	 */
+	dr_mode = "otg";
 	usb-role-switch;
 	role-switch-default-mode = "peripheral";
 	vusb33-supply = <&mt6359_vusb_ldo_reg>;
