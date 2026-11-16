@@ -666,10 +666,23 @@ static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 		 * time out while conn registers still answer - so say so out loud
 		 * instead of carrying on silently.
 		 */
-		if (consys_ver_id != 0x1D1E)
+		if (consys_ver_id != 0x1D1E) {
 			WMT_PLAT_PR_ERR(
 				"connector MCU did not boot: 0x18002600=0x%x after %u polls\n",
 				consys_ver_id, cnt);
+			/*
+			 * One extra line, and only on failure: 0x1800216c and the
+			 * CPUPCR tell "the core never left reset" from "the core runs
+			 * but its EMI handshake never completes", which is the
+			 * difference between a clock problem and a firmware problem.
+			 * Both were already read inside the loop, at DBG, i.e. never
+			 * visible on the phone.
+			 */
+			WMT_PLAT_PR_ERR("MCU boot detail: 0x1800216c=0x%x CPUPCR=0x%x\n",
+					CONSYS_REG_READ(conn_reg.mcu_base + 0x16c),
+					CONSYS_REG_READ(conn_reg.mcu_conn_hif_on_base +
+							CONSYS_CPUPCR_OFFSET));
+		}
 		else
 			WMT_PLAT_PR_ERR("connector MCU booted: 0x18002600=0x1d1e, 0x18004154=0x%x\n",
 					conn_reg.mcu_conn_hif_pdma_base ?

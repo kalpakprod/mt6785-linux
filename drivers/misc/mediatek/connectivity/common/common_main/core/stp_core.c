@@ -1034,7 +1034,7 @@ static INT32 wmt_parser_data(PUINT8 buffer, UINT32 length, UINT8 type)
 			if (fgRxOk == 0) {
 				STP_DBG_FUNC("wmt package!\n");
 				/* RXTRACE: bytes are in the task ring, notify the owner. */
-				STP_INFO_FUNC("RXTRACE task %u: %u bytes queued, notifying\n",
+				STP_DBG_FUNC("RXTRACE task %u: %u bytes queued, notifying\n",
 					      type, packet_length + 4);
 				(*sys_event_set)(type);
 			} else
@@ -2397,7 +2397,7 @@ INT32 mtk_wcn_stp_parser_data(PUINT8 buffer, UINT32 length)
 	 * point where BTIF hands the bytes to the STP parser, so the gap between
 	 * it and the BT task getting them is the parser's own cost.
 	 */
-	STP_INFO_FUNC("RXTRACE parser: %u bytes from btif\n", length);
+	STP_DBG_FUNC("RXTRACE parser: %u bytes from btif\n", length);
 
 	/* STP is not enabled and only WMT can use Raw data path */
 	if (STP_NOT_ENABLE(stp_core_ctx) && WMT_TASK_INDX == STP_PENDING_TYPE(stp_core_ctx)) {

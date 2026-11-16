@@ -297,8 +297,7 @@ static void btmtkbtif_rx_cb(void)
 	struct btmtkbtif_data *btdev = READ_ONCE(btmtkbtif_active);
 
 	if (btdev) {
-		/* RXTRACE: STP just told us the BT task ring is non-empty. */
-		bt_dev_info(btdev->hdev, "RXTRACE cb: stp event -> wake kthread");
+		bt_dev_dbg(btdev->hdev, "RXTRACE cb: stp event -> wake kthread");
 		wake_up_interruptible(&btdev->rx_wait);
 	}
 }
@@ -331,13 +330,13 @@ static int btmtkbtif_rx_kthread(void *data)
 			 * bytes go straight into the H4 assembler, so this line and the
 			 * "BT rx" trace below bracket hci_recv_frame().
 			 */
-			bt_dev_info(hdev, "RXTRACE kthread: stp task has data");
+			bt_dev_dbg(hdev, "RXTRACE kthread: stp task has data");
 			cnt = mtk_wcn_stp_receive_data(btdev->rx_buf,
 						       BTMTKBTIF_RX_SIZE,
 						       BT_TASK_INDX);
 			if (cnt <= 0)
 				break;
-			bt_dev_info(hdev, "RXTRACE kthread: got %d bytes", cnt);
+			bt_dev_dbg(hdev, "RXTRACE kthread: got %d bytes", cnt);
 
 			hdev->stat.byte_rx += cnt;
 
@@ -383,15 +382,13 @@ static int btmtkbtif_open(struct hci_dev *hdev)
 	btdev->rx_skb = NULL;
 
 	/*
-	 * The address is back at the firmware default; restore the one the
-	 * factory nvdata copy holds, or the core's if there is no copy.
+	 * The address is back at the firmware default; take the one the factory
+	 * nvdata copy holds, or the core's if there is no copy. Only the local
+	 * copy happens here: writing it is setup()'s job, because no HCI
+	 * command may be sent from open().
 	 */
 	if (mtk_nvdata_get_bt_addr(addr))
 		bacpy(&hdev->bdaddr, (bdaddr_t *)addr);
-
-	err = btmtkbtif_apply_bdaddr(hdev);
-	if (err)
-		bt_dev_warn(hdev, "BD_ADDR could not be re-applied (%d)", err);
 
 	btdev->rx_thread = kthread_run(btmtkbtif_rx_kthread, btdev,
 				       "btmtkbtif-rx");
@@ -403,8 +400,12 @@ static int btmtkbtif_open(struct hci_dev *hdev)
 		return err;
 	}
 
-	if (!test_and_set_bit(HCI_RUNNING, &hdev->flags))
-		bt_dev_info(hdev, "Bluetooth on");
+	/*
+	 * HCI_RUNNING belongs to hci_dev_init_sync(), which sets it right after
+	 * this function returns. Setting it here made the driver and the core
+	 * disagree about the device state.
+	 */
+	bt_dev_info(hdev, "Bluetooth on");
 
 	return 0;
 }
@@ -412,8 +413,6 @@ static int btmtkbtif_open(struct hci_dev *hdev)
 static int btmtkbtif_close(struct hci_dev *hdev)
 {
 	struct btmtkbtif_data *btdev = hci_get_drvdata(hdev);
-
-	clear_bit(HCI_RUNNING, &hdev->flags);
 
 	if (btdev->rx_thread) {
 		kthread_stop(btdev->rx_thread);
@@ -427,9 +426,25 @@ static int btmtkbtif_close(struct hci_dev *hdev)
 	return 0;
 }
 
+/*
+ * hci_dev_init_sync() calls setup() after open() returned and after it set
+ * HCI_RUNNING, so this is the first moment an HCI command may be sent at all.
+ * Doing that work in open() - as this driver did - failed before it was sent
+ * ("cannot read BD_ADDR (-110)" logged ahead of "Bluetooth on", with no
+ * transmit line for it) and left the core's command queue unable to carry the
+ * next init command: 0x1003 was never transmitted and timed out two seconds
+ * later. Both symptoms are one bug, and the fix is the standard order.
+ *
+ * The LE event mask widening stays in send() where the packet is visible.
+ */
 static int btmtkbtif_setup(struct hci_dev *hdev)
 {
-	/* The address and the LE mask are handled in open() and send(). */
+	int err;
+
+	err = btmtkbtif_apply_bdaddr(hdev);
+	if (err)
+		bt_dev_warn(hdev, "BD_ADDR could not be re-applied (%d)", err);
+
 	return 0;
 }
 

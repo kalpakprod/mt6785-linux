@@ -230,7 +230,7 @@ MODULE_PARM_DESC(dbg_level, "BTIF log level: 0=ERR 1=WARN 2=INFO 3=DBG 4=LOUD");
  * task ring -> HCI. Kernel log timestamps carry the microseconds.
  */
 #define BTIF_RX_TRACE(stage, fmt, arg...) \
-	BTIF_INFO_FUNC("RXTRACE " stage ": " fmt, ##arg)
+	BTIF_DBG_FUNC("RXTRACE " stage ": " fmt, ##arg)
 #if BTIF_RXD_BE_BLOCKED_DETECT
 static struct timeval btif_rxd_time_stamp[MAX_BTIF_RXD_TIME_REC];
 #endif
@@ -1427,6 +1427,14 @@ int _btif_rx_dma_setup(struct _mtk_btif_ *p_btif)
 		hal_btif_rx_mode_ctrl(p_btif_info, BTIF_MODE_DMA);
 
 /*DMA Rx IRQ register*/
+		/*
+		 * Request it masked and unmask it exactly once below. Without
+		 * IRQF_NO_AUTOEN request_irq() already enables the line, and the
+		 * explicit enable_irq() then trips the core's balance check:
+		 * "Unbalanced enable for IRQ N" at kernel/irq/manage.c in every
+		 * power-on since the arming change.
+		 */
+		p_btif_irq->irq_flags |= IRQF_NO_AUTOEN;
 		_btif_irq_reg(p_btif_irq, btif_rx_dma_irq_handler, p_btif);
 		/*
 		 * Enable the Rx DMA interrupt. The vendor left this disabled with
