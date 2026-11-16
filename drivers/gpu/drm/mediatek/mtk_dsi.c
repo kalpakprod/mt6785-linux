@@ -1442,7 +1442,19 @@ static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
 	.reg_cmdq_off = 0x200,
 	.reg_vm_cmd_off = 0x130,
 	.reg_shadow_dbg_off = 0x190,
-	.has_shadow_ctl = true,
+	/*
+	 * No shadow control, because the vendor only touches it under
+	 * DISP_OPT_SHADOW_REGISTER and this phone runs with that off: its
+	 * _ddp_dsi_start() writes DSI_SHADOW_DEBUG only inside that option
+	 * (ddp_dsi.c:6321-6346), and the loader's working state reads
+	 * 0x190 = 0x00000000 (poco-m5s/evidence/disp-trial8/regs-loader.txt).
+	 *
+	 * Mainline writes FORCE_COMMIT | BYPASS_SHADOW there for every SoC whose
+	 * data says has_shadow_ctl, which is mt8183 and later; for mt6785 that
+	 * bypasses the DSI's shadow registers, so a timing register write takes
+	 * effect the moment it lands instead of at a frame boundary.
+	 */
+	.has_shadow_ctl = false,
 	.has_size_ctl = true,
 	.needs_mem_conti = true,
 };
