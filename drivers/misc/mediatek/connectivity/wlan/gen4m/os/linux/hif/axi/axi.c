@@ -860,6 +860,26 @@ static int mtk_axi_remove(IN struct platform_device *pdev)
 #endif
 }
 
+/*
+ * Hand Wi-Fi over off. kexec calls device_shutdown() and a warm reboot powers
+ * nothing down, so without this the WLAN function keeps running with its WFDMA
+ * rings pointing into the old kernel's memory.
+ *
+ * Upstream's precedent is the same shape this file already uses for removal:
+ * mt7921 points .shutdown at its remove path
+ * (drivers/net/wireless/mediatek/mt76/mt7921/pci.c:720-726). Here the function is
+ * switched off through WMT, which is what mtk_wcn_wmt_wlan_unreg() triggers on a
+ * real remove; unregistering the callback list during shutdown would race with the
+ * userspace being killed, so only the power side is done.
+ */
+static void mtk_axi_shutdown(struct platform_device *pdev)
+{
+	if (!mtk_wcn_wmt_func_off(WMTDRV_TYPE_WIFI))
+		dev_warn(&pdev->dev, "WLAN function off failed at shutdown\n");
+	else
+		dev_info(&pdev->dev, "WLAN handed over off (shutdown)\n");
+}
+
 static int mtk_axi_suspend(IN struct platform_device *pdev,
 	IN pm_message_t state)
 {
@@ -895,6 +915,7 @@ uint32_t glRegisterBus(probe_card pfProbe, remove_card pfRemove)
 	mtk_axi_driver.remove = mtk_axi_remove;
 
 	mtk_axi_driver.suspend = mtk_axi_suspend;
+	mtk_axi_driver.shutdown = mtk_axi_shutdown;
 	mtk_axi_driver.resume = mtk_axi_resume;
 
 	ret = (platform_driver_register(&mtk_axi_driver) == 0) ?
