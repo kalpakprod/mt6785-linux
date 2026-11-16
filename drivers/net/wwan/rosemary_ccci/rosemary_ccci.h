@@ -236,6 +236,8 @@ struct ap_query_md_feature_v2_1 {
 #define SPM_CLK_CON		0x008	/* BIT(21): srclken_o1 */
 #define SPM_PWR_STATUS		0x160	/* BIT(0): the md domain is on */
 #define SPM_PWR_STATUS_2ND	0x164	/* the same, one SPM stage later */
+/* the domain's control register: PWR_RST_B BIT(0), PWR_ON BIT(2) */
+#define SPM_MD1_PWR_CON		0x318
 #define SPM_AP_MDSRC_REQ	0x434	/* ack in BIT(4) (mtk_spm_reg.h:265,
 					 * AP_MDSMSRC_ACK_LSB at :1851)
 					 */
@@ -245,6 +247,8 @@ struct ap_query_md_feature_v2_1 {
 #define INFRA_MD_SRCCLKENA	0xf0c	/* low byte 0x21 on, 0 off */
 #define INFRA_RST0_AO		0x140
 #define INFRA_RST1_AO		0x144
+/* the MD bus protection: step1 BIT(7), step2 BIT(3)|BIT(4) (vendor clk-mt6785-pg.c) */
+#define INFRA_TOPAXI_PROTECTEN	0x220
 #define INFRA_RST0_PD		0x150
 #define INFRA_RST1_PD		0x154
 

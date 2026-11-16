@@ -435,14 +435,42 @@ static int clear_smem(struct ccci_md *md)
  * again. If it still reads clear the boot says so with the value instead of
  * failing 30 s later at the handshake.
  */
+/*
+ * One line per attempt, with the registers that decide it, so a trial can be read
+ * instead of argued about. PWR_CON is the domain's own control register (0x318),
+ * the two status registers are the pair scpsys_domain_is_on() consults
+ * (mtk-pm-domains.c:90-107), and INFRA_TOPAXI_PROTECTEN is the bus protection the
+ * vendor's own MD1 sequence writes (clk-mt6785-pg.c:1015-1105).
+ */
+static void md_domain_trace(struct ccci_md *md, const char *when)
+{
+	unsigned int sta = 0, sta2 = 0, con = 0, prot = 0;
+
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+	regmap_read(md->spm_map, SPM_PWR_STATUS_2ND, &sta2);
+	regmap_read(md->spm_map, SPM_MD1_PWR_CON, &con);
+	/* the infra window is mapped after the probe's first check, so it may be absent */
+	if (md->infra)
+		prot = readl(md->infra + INFRA_TOPAXI_PROTECTEN);
+	dev_info(md->dev,
+		 "domain %-16s: PWR_STATUS=%#x PWR_STATUS_2ND=%#x md_bit=%u PWR_CON(%#x)=%#x PROTECTEN=%#x runtime_status=%d usage=%d\n",
+		 when, sta, sta2, (u32)(sta & BIT(0)), SPM_MD1_PWR_CON, con, prot,
+		 md->dev->power.runtime_status,
+		 atomic_read(&md->dev->power.usage_count));
+}
+
 static int md_domain_on(struct ccci_md *md)
 {
 	unsigned int status = 0;
 	int ret;
 
+	md_domain_trace(md, "before get");
 	ret = pm_runtime_resume_and_get(md->dev);
-	if (ret)
+	if (ret) {
+		md_domain_trace(md, "get failed");
 		return ret;
+	}
+	md_domain_trace(md, "after get");
 
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	if (status & BIT(0))
@@ -465,7 +493,17 @@ static int md_domain_on(struct ccci_md *md)
 	status = 0;
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	if (!(status & BIT(0))) {
+		/*
+		 * genpd reported success and the hardware says otherwise. Record what
+		 * the hardware says after a short wait too: if the bit appears on its
+		 * own the domain was still settling, and if it does not the power-on
+		 * genuinely did not take. Both are facts a trial can use; neither is
+		 * assumed here.
+		 */
+		msleep(20);
+		md_domain_trace(md, "20ms later");
 		pm_runtime_put_sync(md->dev);
+		md_domain_trace(md, "after put");
 		return dev_err_probe(md->dev, -EIO,
 				     "the md domain will not power on (PWR_STATUS %#x)\n",
 				     status);
@@ -785,11 +823,14 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	ret = md_get_spm(md);
 	if (ret)
 		return ret;
+	md_domain_trace(md, "probe before get");
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "cannot power the md domain\n");
+	md_domain_trace(md, "probe after get");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	pm_runtime_put_sync(dev);
+	md_domain_trace(md, "probe after put");
 	/* BIT() is unsigned long, so the expression is narrowed for the format */
 	dev_info(dev, "rosemary_ccci: M0 md power status %u\n",
 		 (u32)(status & BIT(0)));

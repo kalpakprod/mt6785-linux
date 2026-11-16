@@ -206,6 +206,46 @@ static struct regmap *scpsys_bus_protect_get_regmap(struct scpsys_domain *pd,
 	return scpsys->bus_prot[block_idx];
 }
 
+/*
+ * Instrumentation for the one domain this port is chasing: the modem's.
+ *
+ * set only by the two calls below, which is why it is a file-scope flag and not a
+ * property of the domain data: nothing here changes behaviour, it only records
+ * what the hardware and the registers say at each step.
+ */
+static void mtk_scpd_trace_md(struct scpsys_domain *pd, const char *what, int ret)
+{
+	struct scpsys *scpsys = pd->scpsys;
+	u32 con = 0, sta = 0, sta2 = 0, en = 0, en1 = 0, sta1 = 0;
+	struct regmap *infra;
+	bool on;
+
+	if (strcmp(pd->genpd.name, "md"))
+		return;
+
+	regmap_read(scpsys->base, pd->data->ctl_offs, &con);
+	regmap_read(scpsys->base, pd->data->pwr_sta_offs, &sta);
+	regmap_read(scpsys->base, pd->data->pwr_sta2nd_offs, &sta2);
+	/*
+	 * The three bus-protection registers the vendor's own MD1 sequence writes
+	 * (INFRA_TOPAXI_PROTECTEN, its _STA1 and PROTECTEN_1, clk-mt6785-pg.c:1015
+	 * -1105). They are read through the same regmap the driver uses for the
+	 * INFRA block, so the values are comparable with the vendor's masks.
+	 */
+	infra = scpsys_bus_protect_get_regmap(pd, &pd->data->bp_cfg[0]);
+	if (infra) {
+		regmap_read(infra, 0x220, &en);
+		regmap_read(infra, 0x228, &sta1);
+		regmap_read(infra, 0x250, &en1);
+	}
+	on = scpsys_domain_is_on(pd);
+
+	dev_info(scpsys->dev,
+		 "md-trace %-24s: PWR_CON(%#x)=%#x PWR_STATUS=%#x PWR_STATUS_2ND=%#x is_on=%d PROTECTEN=%#x PROTECT_STA=%#x PROTECTEN_1=%#x ret=%d\n",
+		 what, pd->data->ctl_offs, con, sta, sta2, on, en, sta1, en1, ret);
+}
+
+
 static struct regmap *scpsys_bus_protect_get_sta_regmap(struct scpsys_domain *pd,
 							const struct scpsys_bus_prot_data *bpd)
 {
@@ -700,6 +740,7 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 	struct scpsys *scpsys = pd->scpsys;
 	int ret;
 
+	mtk_scpd_trace_md(pd, "power_on entry", 0);
 	ret = scpsys_regulator_enable(pd->supply);
 	if (ret)
 		return ret;
@@ -763,6 +804,7 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 			goto err_enable_bus_protect;
 	}
 
+	mtk_scpd_trace_md(pd, "power_on exit ok", 0);
 	return 0;
 
 err_enable_bus_protect:
@@ -776,6 +818,7 @@ err_disable_subsys_clks:
 		clk_bulk_disable_unprepare(pd->num_subsys_clks,
 					   pd->subsys_clks);
 err_pwr_ack:
+	mtk_scpd_trace_md(pd, "power_on err_pwr_ack", ret);
 	clk_bulk_disable_unprepare(pd->num_clks, pd->clks);
 err_reg:
 	scpsys_regulator_disable(pd->supply);
@@ -838,8 +881,12 @@ static int scpsys_power_off_internal(struct scpsys_domain *pd)
 static int scpsys_power_off(struct generic_pm_domain *genpd)
 {
 	struct scpsys_domain *pd = container_of(genpd, struct scpsys_domain, genpd);
+	int ret;
 
-	return scpsys_power_off_internal(pd);
+	mtk_scpd_trace_md(pd, "power_off entry", 0);
+	ret = scpsys_power_off_internal(pd);
+	mtk_scpd_trace_md(pd, "power_off exit", ret);
+	return ret;
 }
 
 static struct
