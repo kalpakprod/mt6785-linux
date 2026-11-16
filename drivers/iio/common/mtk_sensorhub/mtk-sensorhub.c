@@ -167,8 +167,13 @@ static int mtk_sh_activate(struct mtk_sh *sh, u8 type, u32 rate_hz)
 	return mtk_sh_send(sh, msg, len, "CONFIG_CMD_ENABLE");
 }
 
-/* the sensors this board has, from the firmware's own strings: icm40607 (accel
- * and gyro), akm09918 (magnetometer), tsl2540 (light and proximity)
+/*
+ * The sensors this board has, from the firmware's own strings: icm40607 (accel
+ * and gyro), akm09918 (magnetometer), tsl2540 (light and proximity). The type
+ * numbers are MediaTek's SENSOR_TYPE_* from the vendor's hwmsensor.h - branch
+ * rosemary-r-oss of MiCode/Xiaomi_Kernel_OpenSource, commit
+ * 7094834e4fca19af2ca43a752debf95c0022b949, lines 30-37 - which follow Android's
+ * numbering; mtk-sensorhub-ring.h carries them with the same citation.
  */
 static const struct {
 	const char *name;

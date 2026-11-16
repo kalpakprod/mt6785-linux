@@ -2,11 +2,13 @@
 /*
  * MediaTek SCP sensorhub: the messages the AP sends to the hub.
  *
- * Every structure below is the vendor's, from the sensorhub header the sensors
- * area keeps at scratch/wt/sensors/tmp/vendor/sensors/SCP_sensorHub.h, and the
- * encoders are the only place in this driver that knows their byte layout, so
- * that layout can be checked against the vendor's sizes in a unit test instead
- * of being trusted in the middle of the driver.
+ * Every structure below is the vendor's: MiCode/Xiaomi_Kernel_OpenSource,
+ * branch rosemary-r-oss, commit 7094834e4fca19af2ca43a752debf95c0022b949,
+ * drivers/misc/mediatek/sensors-1.0/sensorHub/inc_v1/SCP_sensorHub.h (the copy
+ * the sensors area keeps at scratch/wt/sensors/tmp/vendor/sensors/ is the same
+ * file). The encoders are the only place in this driver that knows their byte
+ * layout, so that layout can be checked against the vendor's sizes in a unit
+ * test instead of being trusted in the middle of the driver.
  *
  * The transport is IPI id 8 (IPI_SENSOR, the vendor's enum ipi_id in
  * scratch/wt/sensors/tmp/vendor/scp_cm4.h:17-38). Each message starts with the
@@ -20,7 +22,7 @@
 #include <linux/errno.h>
 #include <linux/types.h>
 
-/* SCP_sensorHub.h:65-75 */
+/* SCP_sensorHub.h:75-81 */
 enum mtk_sh_action {
 	MTK_SH_ACTION_ACTIVATE = 0,
 	MTK_SH_ACTION_SET_DELAY = 1,
@@ -34,7 +36,7 @@ enum mtk_sh_action {
 	MTK_SH_ACTION_POWER_NOTIFY = 9,
 };
 
-/* SCP_sensorHub.h:22-28: the newer client's single-message form, where cmd is
+/* SCP_sensorHub.h:31-36: the newer client's single-message form, where cmd is
  * one of these; named differently from struct mtk_sh_config_cmd because C has a
  * single tag namespace for both.
  */
@@ -47,14 +49,14 @@ enum mtk_sh_cfg_cmd {
 	MTK_SH_CFG_SELF_TEST = 5,
 };
 
-/* SCP_sensorHub.h:19-20 */
+/* SCP_sensorHub.h:27-28 */
 #define MTK_SH_RATE_ONCHANGE	0xffffff01UL
 #define MTK_SH_RATE_ONESHOT	0xffffff02UL
 
-/* SCP_sensorHub.h:18 */
+/* SCP_sensorHub.h:26 */
 #define MTK_SH_EVT_NO_SENSOR_CONFIG	0x00000300
 
-/* SCP_sensorHub.h:357-370 */
+/* SCP_sensorHub.h:367-379 */
 enum mtk_sh_cust_action {
 	MTK_SH_CUST_SET_CUST = 1,
 	MTK_SH_CUST_SET_CALI,
@@ -64,9 +66,13 @@ enum mtk_sh_cust_action {
 	MTK_SH_CUST_SHOW_REG,
 	MTK_SH_CUST_GET_RAW_DATA,
 	MTK_SH_CUST_SET_PS_THRESHOLD,
+	MTK_SH_CUST_SHOW_ALSLV,
+	MTK_SH_CUST_SHOW_ALSVAL,
+	MTK_SH_CUST_SET_FACTORY,
+	MTK_SH_CUST_GET_SENSOR_INFO,
 };
 
-/* SCP_sensorHub.h:30-38, packed: 4 + 8 + 4 + 1 + 1 + 2 = 20 bytes */
+/* SCP_sensorHub.h:39-47, packed: 4 + 8 + 4 + 1 + 1 + 2 = 20 bytes */
 struct mtk_sh_config_cmd {
 	u32 evt_type;
 	u64 latency;
@@ -77,16 +83,16 @@ struct mtk_sh_config_cmd {
 	u8 data[];
 } __packed;
 
-/* SCP_sensorHub.h:283-292: { hdr, u32 enable } */
+/* SCP_sensorHub.h:296-304: { hdr, u32 enable } */
 #define MTK_SH_ACTIVATE_LEN	8
-/* SCP_sensorHub.h:294-303: { hdr, u32 delay } */
+/* SCP_sensorHub.h:306-315: { hdr, u32 delay } */
 #define MTK_SH_SET_DELAY_LEN	8
-/* SCP_sensorHub.h:325-336: { hdr, u8 flag, u8 reserve, u32 period, u32 timeout } */
+/* SCP_sensorHub.h:338-346: { hdr, u8 flag, u8 reserve, u32 period, u32 timeout } */
 #define MTK_SH_BATCH_LEN	16
-/* SCP_sensorHub.h:340-354: { hdr, u32 base, u32 size, u64 ap_ts, u64 arch } */
+/* SCP_sensorHub.h:351-361: { hdr, u32 base, u32 size, u64 ap_ts, u64 arch } */
 #define MTK_SH_SET_CONFIG_LEN	28
 /*
- * SCP_sensorHub.h:357-370: { hdr, u32 data[] }; the vendor's callers put the
+ * SCP_sensorHub.h:381+: { hdr, u32 data[] }; the vendor's callers put the
  * CUST_ACTION_* value in data[0], so mtk_sh_encode_set_cust() writes @cust there
  * and @data after it.
  */

@@ -51,15 +51,27 @@ struct mtk_sh_frame {
 	size_t payload_len;
 };
 
-/* what the SCP is allowed to write, from the union in data_unit_t */
+/*
+ * The sensor type byte of a frame is MediaTek's SENSOR_TYPE_*, which follows
+ * Android's numbering. Taken from the vendor's own header for this phone:
+ * MiCode/Xiaomi_Kernel_OpenSource, branch rosemary-r-oss, commit
+ * 7094834e4fca19af2ca43a752debf95c0022b949,
+ * drivers/misc/mediatek/sensors-1.0/hwmon/include/hwmsensor.h:30-37 -
+ * ACCELEROMETER 1, MAGNETIC_FIELD 2, ORIENTATION 3, GYROSCOPE 4, LIGHT 5,
+ * PROXIMITY 8. The sensor hub's handle ids are the same numbers minus one
+ * (hwmsensor.h:96-103: ID_ACCELEROMETER = ID_BASE + SENSOR_TYPE_ACCELEROMETER - 1),
+ * which is why the type byte and the handle must not be confused. The SCP
+ * firmware is built from the same vendor tree (its strings name
+ * middleware/contexthub/...), so it speaks these numbers.
+ */
 enum mtk_sh_type {
-	MTK_SH_TYPE_ACCEL = 1,
-	MTK_SH_TYPE_GYRO = 4,
-	MTK_SH_TYPE_MAG = 2,
-	MTK_SH_TYPE_LIGHT = 5,
-	MTK_SH_TYPE_PROXIMITY = 8,
-	MTK_SH_TYPE_ORIENTATION = 3,
-	MTK_SH_TYPE_MAX,
+	MTK_SH_TYPE_ACCEL = 1,		/* SENSOR_TYPE_ACCELEROMETER */
+	MTK_SH_TYPE_MAG = 2,		/* SENSOR_TYPE_MAGNETIC_FIELD */
+	MTK_SH_TYPE_ORIENTATION = 3,	/* SENSOR_TYPE_ORIENTATION */
+	MTK_SH_TYPE_GYRO = 4,		/* SENSOR_TYPE_GYROSCOPE */
+	MTK_SH_TYPE_LIGHT = 5,		/* SENSOR_TYPE_LIGHT */
+	MTK_SH_TYPE_PROXIMITY = 8,	/* SENSOR_TYPE_PROXIMITY */
+	MTK_SH_TYPE_MAX = 9,
 };
 
 /**
