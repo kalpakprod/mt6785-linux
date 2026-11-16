@@ -72,6 +72,27 @@ use core::marker::PhantomData;
 #[derive(Clone, Copy)]
 pub struct LinearRange(bindings::linear_range);
 
+impl PartialEq for LinearRange {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.min == other.0.min
+            && self.0.step == other.0.step
+            && self.0.min_sel == other.0.min_sel
+            && self.0.max_sel == other.0.max_sel
+    }
+}
+
+impl Eq for LinearRange {}
+
+impl core::fmt::Debug for LinearRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LinearRange")
+            .field("min", &self.0.min)
+            .field("step", &self.0.step)
+            .field("max_sel", &self.0.max_sel)
+            .finish()
+    }
+}
+
 impl LinearRange {
     /// A range of `count` values from `min_uv` in steps of `step_uv`, all microvolts.
     pub const fn new(min_uv: i32, step_uv: i32, count: u32) -> Self {
@@ -209,11 +230,29 @@ impl<T: Ops> Adapter<T> {
     }
 }
 
+/// The kind of regulator, mirroring `enum regulator_type`.
+#[derive(Clone, Copy)]
+pub enum Kind {
+    /// A voltage regulator.
+    Voltage,
+    /// A current sink.
+    Current,
+}
+
+impl Kind {
+    const fn raw(self) -> bindings::regulator_type {
+        match self {
+            Kind::Voltage => bindings::regulator_type_REGULATOR_VOLTAGE,
+            Kind::Current => bindings::regulator_type_REGULATOR_CURRENT,
+        }
+    }
+}
+
 /// Everything a [`Registration`] needs to describe the regulator it registers.
 #[derive(Clone, Copy)]
 pub struct Params {
     name: &'static CStr,
-    kind: bindings::regulator_type,
+    kind: Kind,
     ops: Option<&'static OpsVTable>,
     n_voltages: u32,
     ranges: Option<&'static [LinearRange]>,
@@ -223,7 +262,7 @@ pub struct Params {
 impl Params {
     /// The name and the kind from `enum regulator_type`
     /// (`include/linux/regulator/driver.h:249`).
-    pub const fn new(name: &'static CStr, kind: bindings::regulator_type) -> Self {
+    pub const fn new(name: &'static CStr, kind: Kind) -> Self {
         Self {
             name,
             kind,
@@ -263,9 +302,19 @@ pub struct Registration<T: Ops> {
     _data: KBox<T>,
 }
 
+// SAFETY: a registration owns the descriptor and the driver data; both are only reachable
+// through the regulator core, which serialises access to them.
+unsafe impl<T: Ops> Send for Registration<T> {}
+// SAFETY: as above.
+unsafe impl<T: Ops> Sync for Registration<T> {}
+
 impl<T: Ops> Registration<T> {
     /// Registers one regulator of `dev`.
-    pub fn new(dev: &Device, params: Params, data: T) -> Result<Self> {
+    pub fn new<Ctx: crate::device::DeviceContext>(
+        dev: &Device<Ctx>,
+        params: Params,
+        data: T,
+    ) -> Result<Self> {
         let ops = params.ops.ok_or(EINVAL)?;
 
         // SAFETY: `regulator_desc` is a plain data structure - integers, pointers and one
@@ -275,7 +324,7 @@ impl<T: Ops> Registration<T> {
                                  GFP_KERNEL)?;
 
         desc.name = params.name.as_char_ptr();
-        desc.type_ = params.kind;
+        desc.type_ = params.kind.raw();
         // SAFETY: the kernel's own module object, as every C driver does in this field.
         desc.owner = core::ptr::addr_of_mut!(bindings::__this_module);
         desc.ops = ops.as_ptr();
