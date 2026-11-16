@@ -291,10 +291,22 @@ int main(int argc, char **argv)
 #ifndef CRASH_TEST
 	mkdir_p(mountpoint);
 	for (i = 0; i < 4; i++) {
+		/*
+		 * f2fs, ext4, btrfs, xfs in that order. ext4 is mounted with
+		 * "noload": the crashed kernel may have had writeback in flight, and
+		 * replaying an unfinished journal from a second kernel that knows
+		 * nothing of the first one's in-memory state is how a kdump run turns
+		 * one crash into a corrupted filesystem. Writes still work; the
+		 * journal is simply not replayed here and the next normal boot does
+		 * what it always does.
+		 */
 		static const char *types[] = { "f2fs", "ext4", "btrfs", "xfs" };
+		static const char *opts[] = { NULL, "noload", NULL, NULL };
 
-		if (!mount(crashdev, mountpoint, types[i], 0, NULL)) {
-			logmsg("crash-init: mounted %s as %s", crashdev, types[i]);
+		if (!mount(crashdev, mountpoint, types[i], 0, opts[i])) {
+			logmsg("crash-init: mounted %s as %s%s%s", crashdev,
+			       types[i], opts[i] ? " with " : "",
+			       opts[i] ? opts[i] : "");
 			break;
 		}
 	}
@@ -375,7 +387,17 @@ int main(int argc, char **argv)
 	logmsg("crash-init: %s (%ld bytes)", done ? marker : "no dump", total);
 
 out:
+	/*
+	 * Leave the filesystem clean: sync, unmount, sync again. The capture kernel
+	 * reboots without a shutdown, and an unclean userdata would be the second
+	 * piece of damage a crash does.
+	 */
 	sync();
+#ifndef CRASH_TEST
+	if (umount(mountpoint))
+		logmsg("crash-init: umount %s: %s", mountpoint, strerror(errno));
+	sync();
+#endif
 	sleep(1);
 #ifndef CRASH_TEST
 	reboot(RB_AUTOBOOT);

@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Xiaomi POCO M5s — IR transmitter
+ *
+ * The phone has an IR LED on GPIO26, driven by PWM channel 0. Evidence, in the
+ * order of how much it settles:
+ *
+ *   1. The vendor board description puts it there: rosemary.dts:493-519 maps
+ *      &irtx_pwm with two pin states, "irtx_gpio_led_default" (GPIO26 as plain
+ *      GPIO, output-low) and "irtx_gpio_led_set" (GPIO26 as PWM_0, output-high),
+ *      and the live device tree of the phone carries the same node
+ *      (poco-m5s/device-dump-2026-11-12/device-tree.dts:7583, compatible
+ *      "mediatek,irtx-pwm", pwm_ch = 0).
+ *   2. The mainline pin table says GPIO26 function 1 is "PWM_0"
+ *      (drivers/pinctrl/mediatek/pinctrl-mtk-mt6785.h:338-347), and the pinfunc
+ *      macro PINMUX_GPIO26__FUNC_PWM_0 exists for it.
+ *   3. The vendor kernel built an IR driver for exactly this contract:
+ *      drivers/misc/mediatek/Kconfig:384 sources drivers/misc/mediatek/irtx/,
+ *      guarded by CONFIG_MTK_IRTX_PWM_SUPPORT (its Makefile:45), i.e. "PWM
+ *      based IR TX" - the driver source itself is not in any tree in this repo,
+ *      so the DT contract above is the specification used here.
+ *
+ * Upstream route: pwm-ir-tx (drivers/media/rc/pwm-ir-tx.c), which generates the
+ * carrier on a PWM and toggles it for marks and spaces - the same electrical
+ * scheme the vendor uses, minus the pin-state switching: here the pin stays on
+ * PWM_0 permanently and the PWM block idles low when the driver disables it, so
+ * the LED is off between transmissions. ir-spi is not involved (no SPI line in
+ * the vendor node) and gpio-ir-tx would bit-bang a carrier in software, which
+ * the hardware does not need.
+ *
+ * The period below is only the PWM core's initial state (38 kHz, the NEC
+ * carrier); pwm-ir-tx reprograms it per carrier with s_tx_carrier.
+ */
+
+&pwm0 {
+	status = "okay";
+};
+
+&pio {
+	irtx_pwm_pins: irtx-pwm-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO26__FUNC_PWM_0>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+};
+
+/ {
+	ir_tx: ir-tx {
+		compatible = "pwm-ir-tx";
+		/* <&pwm0 channel period-ns>; 26315 ns = 38 kHz NEC carrier */
+		pwms = <&pwm0 0 26315>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&irtx_pwm_pins>;
+		status = "okay";
+	};
+};
