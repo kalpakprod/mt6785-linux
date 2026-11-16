@@ -344,13 +344,13 @@ static void mtk_dsi_trace_add(struct mtk_dsi *dsi, bool wr, u32 off, u32 val)
 
 static void mtk_dsi_writel(struct mtk_dsi *dsi, u32 val, u32 off)
 {
-	mtk_dsi_writel(dsi, val, off);
+	writel(val, dsi->regs + off);
 	mtk_dsi_trace_add(dsi, true, off, val);
 }
 
 static u32 mtk_dsi_readl(struct mtk_dsi *dsi, u32 off)
 {
-	u32 val = mtk_dsi_readl(dsi, off);
+	u32 val = readl(dsi->regs + off);
 
 	mtk_dsi_trace_add(dsi, false, off, val);
 
@@ -359,7 +359,7 @@ static u32 mtk_dsi_readl(struct mtk_dsi *dsi, u32 off)
 
 static u8 mtk_dsi_readb(struct mtk_dsi *dsi, u32 off)
 {
-	u8 val = mtk_dsi_readb(dsi, off);
+	u8 val = readb(dsi->regs + off);
 
 	mtk_dsi_trace_add(dsi, false, off, val);
 
