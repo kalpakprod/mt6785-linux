@@ -46,23 +46,21 @@
 /*
  * Workaround 1 - the LE event mask.
  *
- * The controller does not declare "LE Set Scan Enable" and its neighbours in
- * Read Local Supported Commands (octets 26/27 read 0), so
- * hci_le_set_event_mask_sync() (net/bluetooth/hci_sync.c) builds an LE event
- * mask without the advertising-report bit and the host never sees a single
- * advertisement. This driver ORs the four low bits into the mask the core
- * sends. On begonia that took a scan from 0 to 43 devices (RESULT #18/#19).
+ * Claim, from begonia's firmware of the same family: the controller does not
+ * declare "LE Set Scan Enable" in Read Local Supported Commands (octets 26/27
+ * read 0). The core asks that bit before it enables the advertising-report
+ * event (net/bluetooth/hci_sync.c:4511: "if (hdev->commands[26] & 0x08)
+ * events[0] |= 0x02"), so without it the host never sees an advertisement. On
+ * begonia, ORing the four low bits took a scan from 0 to 43 devices
+ * (RESULT #18/#19).
+ *
+ * NOT YET PROVEN ON THIS PHONE. Trial 13 run 3 does answer 0x1002, but the
+ * trace prints 32 bytes and the reply needs 35 to reach octet 26, so this
+ * phone's own bits are not in that log. btmtkbtif_note_supported_cmds() below
+ * logs octets 26 and 27 at INFO as soon as the reply passes through, which is
+ * what settles it: if 26 & 0x08 is set, this workaround is dead weight and goes.
  */
 #define BTMTKBTIF_LE_MASK_OR	0x0f
-
-/*
- * Workaround 3 - opcode 0x0c77 (Read Synchronization Train Parameters).
- *
- * This firmware rejects the command with status 0x01, which the HCI core
- * treats as fatal and the setup sequence stops there. The driver answers it
- * itself with a Command Complete carrying status 0 (RESULT #14).
- */
-#define BTMTKBTIF_SYNC_TRAIN_OPCODE	0x0c77
 
 struct btmtkbtif_data {
 	struct hci_dev *hdev;
@@ -88,11 +86,6 @@ static unsigned int btmtkbtif_le_mask_or = BTMTKBTIF_LE_MASK_OR;
 module_param_named(le_mask_or, btmtkbtif_le_mask_or, uint, 0644);
 MODULE_PARM_DESC(le_mask_or,
 		 "Bits forced into byte 0 of LE Set Event Mask; 0 disables the workaround");
-
-static bool btmtkbtif_sync_train_fake = true;
-module_param_named(sync_train_fake, btmtkbtif_sync_train_fake, bool, 0644);
-MODULE_PARM_DESC(sync_train_fake,
-		 "Answer opcode 0x0c77 locally instead of letting the firmware reject it");
 
 /*
  * How many packets at each end of the link are dumped byte by byte.
@@ -133,38 +126,30 @@ static const struct h4_recv_pkt btmtkbtif_recv_pkts[] = {
 	{ H4_RECV_ISO,   .recv = hci_recv_frame },
 };
 
-/* Answer a command ourselves, the way the controller would have. */
-static int btmtkbtif_cmd_complete(struct hci_dev *hdev, u16 opcode)
+/*
+ * Diagnostic, not a workaround: say what this controller declares about LE
+ * scanning, from its own Read Local Supported Commands reply (0x1002). The bit
+ * the core asks about is commands[26] & 0x08 ("LE Set Scan Enable",
+ * net/bluetooth/hci_sync.c:4511); octet 27 carries the connection-update and
+ * read-remote-features bits. One INFO line per boot, only when the reply is
+ * complete, and it decides whether workaround 1 above is still needed.
+ */
+static void btmtkbtif_note_supported_cmds(struct hci_dev *hdev, const u8 *buf,
+					  unsigned int len)
 {
-	struct hci_ev_cmd_complete *ev;
-	struct sk_buff *skb;
-	u8 *p;
+	if (len < 35)
+		return;
+	if (buf[0] != HCI_EVENT_PKT || buf[1] != HCI_EV_CMD_COMPLETE)
+		return;
+	if (get_unaligned_le16(buf + 4) != HCI_OP_READ_LOCAL_COMMANDS)
+		return;
+	if (buf[6] != 0x00)	/* status */
+		return;
 
-	/*
-	 * An HCI event packet is three things in a row: the H4 packet type byte
-	 * (HCI_EVENT_PKT, 0x04), the event code (HCI_EV_CMD_COMPLETE, 0x0e) and
-	 * the parameter length. This used to set the *event code* as the H4
-	 * packet type, and hci_recv_frame() classifies by that type: it hit its
-	 * default branch, freed the skb and returned -EINVAL
-	 * (net/bluetooth/hci_core.c, the "default:" arm of the switch on
-	 * hci_skb_pkt_type()). That -EINVAL then travelled back out of ->send()
-	 * as "sending frame failed (-22)" and aborted HCI init at 0x0c77.
-	 */
-	skb = bt_skb_alloc(sizeof(*ev) + 2, GFP_KERNEL);
-	if (!skb)
-		return -ENOMEM;
-
-	hci_skb_pkt_type(skb) = HCI_EVENT_PKT;
-	p = skb_put(skb, 1);
-	*p = HCI_EV_CMD_COMPLETE;
-	p = skb_put(skb, 1);
-	*p = sizeof(*ev);
-	ev = skb_put(skb, sizeof(*ev));
-	ev->ncmd = 1;
-	ev->opcode = cpu_to_le16(opcode);
-
-	/* hci_recv_frame() takes ownership of the skb. */
-	return hci_recv_frame(hdev, skb);
+	bt_dev_info(hdev,
+		    "local commands: octet 26 = 0x%02x (LE Set Scan Enable %s), octet 27 = 0x%02x",
+		    buf[7 + 26], (buf[7 + 26] & 0x08) ? "declared" : "absent",
+		    buf[7 + 27]);
 }
 
 static int btmtkbtif_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
@@ -357,6 +342,8 @@ static int btmtkbtif_rx_kthread(void *data)
 				break;
 			bt_dev_dbg(hdev, "RXTRACE kthread: got %d bytes", cnt);
 
+			btmtkbtif_note_supported_cmds(hdev, btdev->rx_buf, cnt);
+
 			hdev->stat.byte_rx += cnt;
 
 			if (btdev->traced_rx < btmtkbtif_trace_frames) {
@@ -475,26 +462,6 @@ static int btmtkbtif_send(struct hci_dev *hdev, struct sk_buff *skb)
 		return btmtkbtif_send_frame(hdev, skb);
 
 	opcode = get_unaligned_le16(skb->data);
-
-	/* Workaround 3: the firmware rejects this one with status 0x01. */
-	if (opcode == BTMTKBTIF_SYNC_TRAIN_OPCODE && btmtkbtif_sync_train_fake) {
-		int ret = btmtkbtif_cmd_complete(hdev, opcode);
-
-		if (ret) {
-			/* Nothing was delivered, so the command must fail - and
-			 * on a failure the skb belongs to hci_send_frame(), which
-			 * frees it. Freeing it here as well was the second way
-			 * this path could double free.
-			 */
-			return ret;
-		}
-		/* The command was answered without touching the wire, so the
-		 * core treats it as sent: it will not free the skb, and this is
-		 * the one place that owns it.
-		 */
-		kfree_skb(skb);
-		return 0;
-	}
 
 	/* Workaround 1: widen the LE event mask the core computed. */
 	if (opcode == HCI_OP_LE_SET_EVENT_MASK && btmtkbtif_le_mask_or &&

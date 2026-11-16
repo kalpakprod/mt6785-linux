@@ -79,6 +79,7 @@
 
 #include <linux/mm.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #ifndef CONFIG_X86
@@ -408,6 +409,24 @@ static int axiDmaSetup(struct platform_device *pdev,
 			ret);
 		goto exit;
 	}
+
+	/*
+	 * 18000000.wifi is a second consumer of the conn power domain (it
+	 * declares power-domains in the DT), and a genpd only powers down when
+	 * every device in it is suspended - so without runtime PM this device
+	 * pins CONN_TOP on for the whole boot, however the consys side behaves.
+	 * Trial 13 showed exactly that: pm_genpd_summary listed conn "on" with
+	 * both 18002000.consys and 18000000.wifi "unsupported".
+	 *
+	 * Nothing here needs the domain while no function is powered: every
+	 * register access happens either during this probe (the domain is on
+	 * then) or while a WMT function is on, and that path holds the domain
+	 * through the consys device (mtk_wcn_consys_hw_pwr_on() ->
+	 * pm_runtime_resume_and_get()). So the device comes up suspended.
+	 */
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_put(&pdev->dev);
 
 exit:
 	return ret;
@@ -834,6 +853,8 @@ static int mtk_axi_remove(IN struct platform_device *pdev)
 	hifAxiRemove();
 #endif
 	platform_set_drvdata(pdev, NULL);
+
+	pm_runtime_disable(&pdev->dev);
 #if KERNEL_VERSION(6, 11, 0) > CFG80211_VERSION_CODE
 	return 0;
 #endif

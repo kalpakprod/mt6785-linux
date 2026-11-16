@@ -36,6 +36,8 @@
 *                    E X T E R N A L   R E F E R E N C E S
 ********************************************************************************
 */
+#include <linux/pm_runtime.h>
+
 #include "osal_typedef.h"
 #include "mtk_wcn_consys_hw.h"
 #include "wmt_step.h"
@@ -329,7 +331,6 @@ static INT32 mtk_wmt_probe(struct platform_device *pdev)
 		if (wmt_consys_ic_ops->consys_ic_need_store_pdev() == MTK_WCN_BOOL_TRUE) {
 			if (wmt_consys_ic_ops->consys_ic_store_pdev)
 				wmt_consys_ic_ops->consys_ic_store_pdev(pdev);
-			pm_runtime_enable(&pdev->dev);
 			dev_pm_syscore_device(&pdev->dev, true);
 		}
 	}
@@ -422,6 +423,29 @@ static INT32 mtk_wmt_probe(struct platform_device *pdev)
 
 	INIT_WORK(&plt_resume_worker, plat_resume_handler);
 
+	/*
+	 * The conn power domain is owned through runtime PM from here on.
+	 *
+	 * Stock expresses the same thing as a clock: the consys node has
+	 * <&scpsys SCP_SYS_CONN> as "conn" and the vendor driver enables it on
+	 * power-on and disables it on power-off (vendor
+	 * common_main/platform/mt6785.c:438, :596, :765), which is how the
+	 * vendor cuts the CONN_TOP MTCMOS between sessions. Mainline models that
+	 * MTCMOS as the MT6785_POWER_DOMAIN_CONN genpd in the DT node's
+	 * power-domains, and a genpd powers down only when every device in the
+	 * domain is suspended - so a device without runtime PM pins the domain
+	 * on for the life of the boot. That is what pm_genpd_summary showed in
+	 * trial 13 ("unsupported" for 18002000.consys) and why the connector MCU
+	 * never got a cold start after the first power-off.
+	 *
+	 * The idiom below leaves the device suspended: set_active() because the
+	 * genpd has already powered the domain for probe, then put() drops the
+	 * reference so the domain may be cut until a function powers on.
+	 */
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_put(&pdev->dev);
+
 	atomic_set(&g_probe_called, 1);
 
 	return 0;
@@ -430,10 +454,7 @@ static INT32 mtk_wmt_probe(struct platform_device *pdev)
 /* 4.14->6.11: platform_driver.remove callback now returns void. */
 static void mtk_wmt_remove(struct platform_device *pdev)
 {
-	if (wmt_consys_ic_ops->consys_ic_need_store_pdev) {
-		if (wmt_consys_ic_ops->consys_ic_need_store_pdev() == MTK_WCN_BOOL_TRUE)
-			pm_runtime_disable(&pdev->dev);
-	}
+	pm_runtime_disable(&pdev->dev);
 
 #ifdef CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH
 	if (wmt_consys_ic_ops->consys_ic_dedicated_log_path_deinit)
@@ -869,6 +890,23 @@ INT32 mtk_wcn_consys_hw_pwr_on(UINT32 co_clock_type)
 		WMT_PLAT_PR_ERR("EMI base address is invalid, CONNSYS can not be powered on!");
 		return -1;
 	}
+
+	/*
+	 * Switch the conn domain on before a single register is touched, and
+	 * hold it for as long as a function is powered. This replaces the
+	 * vendor's clk_prepare_enable(<&scpsys SCP_SYS_CONN>) at the same point
+	 * (vendor mt6785.c:596) and is what makes every power-on a cold start
+	 * once the matching put in pwr_off() has let genpd cut the domain.
+	 */
+	if (g_pdev) {
+		INT32 rpm = pm_runtime_resume_and_get(&g_pdev->dev);
+
+		if (rpm) {
+			WMT_PLAT_PR_ERR("conn domain resume failed (%d)\n", rpm);
+			return rpm;
+		}
+	}
+
 	iRet += mtk_wcn_consys_hw_reg_ctrl(1, co_clock_type);
 	iRet += mtk_wcn_consys_hw_gpio_ctrl(1);
 
@@ -879,6 +917,16 @@ INT32 mtk_wcn_consys_hw_pwr_on(UINT32 co_clock_type)
 		wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high(0);
 
 	mtk_wcn_consys_jtag_set_for_mcu();
+
+	if (iRet) {
+		/*
+		 * Nothing is powered: give the domain back, or every retry of a
+		 * failing power-on would leak a reference and keep CONN_TOP on
+		 * for the rest of the boot.
+		 */
+		if (g_pdev)
+			pm_runtime_put_sync(&g_pdev->dev);
+	}
 
 	WMT_PLAT_PR_DBG("CONSYS-HW-PWR-ON, finish(%d)\n", iRet);
 	return iRet;
@@ -898,25 +946,32 @@ INT32 mtk_wcn_consys_hw_pwr_off(UINT32 co_clock_type)
 	 * "write 0x5000_0154.Bit[1] = 1 (pdma_axi_rready_force_high) to
 	 * prevent pdma block slpprot" before reg_ctrl(0), and the matching
 	 * "Make sure pdma_axi_rready_force_high set to 0 after reset" after
-	 * reg_ctrl(1)). It does not need it in the plain power off/on because
-	 * there the power domain itself is cycled: consys_ic_hw_power_ctrl()
-	 * drives clk_scp_conn_main, i.e. <&scpsys SCP_SYS_CONN>, so the SPM
-	 * powers the conn domain down and back up and the PDMA wakes with it.
+	 * reg_ctrl(1)), because there the power domain itself is cycled:
+	 * consys_ic_hw_power_ctrl() drives clk_scp_conn_main, i.e.
+	 * <&scpsys SCP_SYS_CONN>, so the SPM powers the conn domain down and
+	 * back up and the PDMA wakes with it (vendor mt6785.c:596, :765).
 	 *
-	 * This port has no such clock - mainline models that domain as the
-	 * MT6785_POWER_DOMAIN_CONN genpd, which is powered once at probe and
-	 * never toggled - so the PDMA is left in the half-down state the
-	 * power off puts it in, and the connector MCU cannot fetch from EMI
-	 * afterwards. That is the second power-on failure: chip registers
-	 * answer (the ROM patch download in polling_consys_chipid() runs,
-	 * chip id and EMI are fine) but every STP command times out, because
-	 * the MCU never boots.
+	 * In this port the domain is the MT6785_POWER_DOMAIN_CONN genpd, held by
+	 * runtime PM around exactly this bracket (pm_runtime_resume_and_get() in
+	 * pwr_on(), pm_runtime_put_sync() below). The hold is still needed for
+	 * the window between reg_ctrl(0) and the domain actually going down,
+	 * when the PDMA is quiesced but the bus is not yet protected.
 	 */
 	if (wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high)
 		wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high(1);
 
 	iRet += mtk_wcn_consys_hw_reg_ctrl(0, co_clock_type);
 	iRet += mtk_wcn_consys_hw_gpio_ctrl(0);
+
+	/*
+	 * Everything the vendor does with the domain on is done: drop our
+	 * reference and let genpd cut CONN_TOP, which is the vendor's
+	 * clk_disable_unprepare(<&scpsys SCP_SYS_CONN>) at the same point
+	 * (vendor mt6785.c:765). put_sync() rather than put() so the domain is
+	 * down before the caller returns and a following power-on starts cold.
+	 */
+	if (g_pdev)
+		pm_runtime_put_sync(&g_pdev->dev);
 
 	WMT_PLAT_PR_DBG("CONSYS-HW-PWR-OFF, finish(%d)\n", iRet);
 	return iRet;
