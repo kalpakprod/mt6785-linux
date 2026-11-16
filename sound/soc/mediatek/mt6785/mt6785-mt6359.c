@@ -45,40 +45,23 @@
  * two AIFs below. A component must be described by either its name or its node,
  * never by both, which is exactly how the other MediaTek cards do it.
  */
+/*
+ * The card is dynamic, as every mainline MediaTek card is: the user-visible
+ * PCMs are front ends whose data the AFE moves, and the codec sits on a back end
+ * that is started with whichever front end is running. That is what gives the
+ * AFE's ADDA DAI a stream (and with it its hw_params, the capture source's
+ * configuration) and what makes the AFE's playback and capture ports live
+ * widgets whenever audio flows.
+ */
+
+/* front ends: the memory interfaces userspace opens */
 SND_SOC_DAILINK_DEFS(playback,
 		     DAILINK_COMP_ARRAY(COMP_CPU("DL1")),
-		     DAILINK_COMP_ARRAY(COMP_CODEC("mt6359-sound",
-						   "mt6359-snd-codec-aif1")),
+		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
-/*
- * Both directions go through the codec's primary AIF: the MTKAIF link between
- * the AFE and the PMIC carries playback and capture on AIF1, and AIF2 is the
- * second, four-channel link (the vendor's board driver has the same split:
- * its "Primary Codec" backend pairs the ADDA DAI with "mt6359-snd-codec-aif1"
- * for dpcm_playback and dpcm_capture alike, and only its "Primary Codec CH34"
- * backend uses aif2).
- */
 SND_SOC_DAILINK_DEFS(capture,
 		     DAILINK_COMP_ARRAY(COMP_CPU("UL1")),
-		     DAILINK_COMP_ARRAY(COMP_CODEC("mt6359-sound",
-						   "mt6359-snd-codec-aif1")),
-		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
-
-/*
- * Voice calls. The modem's voice port is the AFE's second PCM interface (MD1 on
- * PCM 2: "AFE_TO_MD1" is fed by "PCM 2 Playback" and "PCM 2 Capture" feeds
- * "MD1_TO_AFE"), and the AFE connects it straight to the codec: no data goes
- * through these buffers, opening them is what powers the path inside the AFE.
- * The speech daemon holds both open while a call is up.
- *
- * "PCM 2" is the modem interface itself; the hostless word is the AFE's graph
- * around it (routes in mt6785-dai-hostless.c), and the loopback is the same
- * mechanism with the codec's own output as the source, which is how a call
- * path can be checked without a modem.
- */
-SND_SOC_DAILINK_DEFS(modem_pcm2,
-		     DAILINK_COMP_ARRAY(COMP_CPU("PCM 2")),
 		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
@@ -89,6 +72,33 @@ SND_SOC_DAILINK_DEFS(hostless_speech,
 
 SND_SOC_DAILINK_DEFS(hostless_lpbk,
 		     DAILINK_COMP_ARRAY(COMP_CPU("Hostless LPBK DAI")),
+		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
+		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+/*
+ * Back ends. Both directions go through the codec's primary AIF: the MTKAIF wire
+ * between the AFE and the PMIC carries playback and capture on AIF1, and AIF2 is
+ * the second, four-channel link (the vendor's board driver splits it the same
+ * way: its "Primary Codec" back end pairs the ADDA DAI with
+ * "mt6359-snd-codec-aif1" for dpcm_playback and dpcm_capture alike, and only
+ * "Primary Codec CH34" uses aif2).
+ */
+SND_SOC_DAILINK_DEFS(primary_codec,
+		     DAILINK_COMP_ARRAY(COMP_CPU("ADDA")),
+		     DAILINK_COMP_ARRAY(COMP_CODEC("mt6359-sound",
+						   "mt6359-snd-codec-aif1")),
+		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+/*
+ * Voice calls: the modem's voice port is the AFE's second PCM interface (MD1 on
+ * PCM 2 — "AFE_TO_MD1" is fed by "PCM 2 Playback" and "PCM 2 Capture" feeds
+ * "MD1_TO_AFE"), and the AFE connects it straight to the codec with the routes
+ * in mt6785-dai-hostless.c. No data goes through memory; the speech daemon holds
+ * the hostless speech front end open for the length of a call and this back end
+ * is started with it.
+ */
+SND_SOC_DAILINK_DEFS(modem_pcm2,
+		     DAILINK_COMP_ARRAY(COMP_CPU("PCM 2")),
 		     DAILINK_COMP_ARRAY(COMP_DUMMY()),
 		     DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
@@ -324,61 +334,56 @@ static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 }
 
 static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
+	/* front ends */
 	{
 		.name = "MT6785_DL1",
 		.stream_name = "Playback",
-		.cpus = playback_cpus,
-		.num_cpus = ARRAY_SIZE(playback_cpus),
-		.codecs = playback_codecs,
-		.num_codecs = ARRAY_SIZE(playback_codecs),
-		.platforms = playback_platforms,
-		.num_platforms = ARRAY_SIZE(playback_platforms),
-		.init = mt6785_mt6359_init,
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.playback_only = 1,
+		SND_SOC_DAILINK_REG(playback),
 	},
 	{
 		.name = "MT6785_UL1",
 		.stream_name = "Capture",
-		.cpus = capture_cpus,
-		.num_cpus = ARRAY_SIZE(capture_cpus),
-		.codecs = capture_codecs,
-		.num_codecs = ARRAY_SIZE(capture_codecs),
-		.platforms = capture_platforms,
-		.num_platforms = ARRAY_SIZE(capture_platforms),
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		.capture_only = 1,
+		SND_SOC_DAILINK_REG(capture),
 	},
 	/*
-	 * Voice calls, in the order they are opened: the modem's PCM interface,
-	 * then the AFE's graph for it and the loopback that stands in for the
-	 * modem during tests.
+	 * The voice call's front ends: the hostless speech path (powered for the
+	 * length of a call, routes in mt6785-dai-hostless.c) and the ADDA
+	 * loopback, which stands in for the modem when a call path is checked
+	 * without one.
 	 */
-	{
-		.name = "MT6785_PCM2",
-		.stream_name = "Modem PCM 2",
-		.cpus = modem_pcm2_cpus,
-		.num_cpus = ARRAY_SIZE(modem_pcm2_cpus),
-		.codecs = modem_pcm2_codecs,
-		.num_codecs = ARRAY_SIZE(modem_pcm2_codecs),
-		.platforms = modem_pcm2_platforms,
-		.num_platforms = ARRAY_SIZE(modem_pcm2_platforms),
-	},
 	{
 		.name = "Hostless_Speech",
 		.stream_name = "Hostless_Speech",
-		.cpus = hostless_speech_cpus,
-		.num_cpus = ARRAY_SIZE(hostless_speech_cpus),
-		.codecs = hostless_speech_codecs,
-		.num_codecs = ARRAY_SIZE(hostless_speech_codecs),
-		.platforms = hostless_speech_platforms,
-		.num_platforms = ARRAY_SIZE(hostless_speech_platforms),
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		SND_SOC_DAILINK_REG(hostless_speech),
 	},
 	{
 		.name = "Hostless_LPBK",
 		.stream_name = "Hostless_LPBK",
-		.cpus = hostless_lpbk_cpus,
-		.num_cpus = ARRAY_SIZE(hostless_lpbk_cpus),
-		.codecs = hostless_lpbk_codecs,
-		.num_codecs = ARRAY_SIZE(hostless_lpbk_codecs),
-		.platforms = hostless_lpbk_platforms,
-		.num_platforms = ARRAY_SIZE(hostless_lpbk_platforms),
+		.trigger = {SND_SOC_DPCM_TRIGGER_PRE, SND_SOC_DPCM_TRIGGER_PRE},
+		.dynamic = 1,
+		SND_SOC_DAILINK_REG(hostless_lpbk),
+	},
+	/* back ends */
+	{
+		.name = "Primary Codec",
+		.no_pcm = 1,
+		.ignore_suspend = 1,
+		.init = mt6785_mt6359_init,
+		SND_SOC_DAILINK_REG(primary_codec),
+	},
+	{
+		.name = "Modem PCM 2",
+		.no_pcm = 1,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(modem_pcm2),
 	},
 };
 
