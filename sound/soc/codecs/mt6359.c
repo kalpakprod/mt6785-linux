@@ -2820,8 +2820,10 @@ static const DECLARE_TLV_DB_SCALE(playback_tlv, -1000, 100, 0);
 static const DECLARE_TLV_DB_SCALE(capture_tlv, 0, 600, 0);
 
 /*
- * DIAGNOSTIC (audio9): power the codec's UL sine generator so a capture can be
- * measured without a microphone, and switch it off again.
+ * DIAGNOSTIC, NOT FOR UPSTREAM: this whole pair is scaffolding for one
+ * measurement and must be dropped before this area is sent anywhere. It
+ * powers the codec's UL sine generator so a capture can be measured without a
+ * microphone, and switches it off again.
  *
  * This is the same register sequence mt_sgen_event() runs when the DL generator
  * powers up (AFUNC_AUD_CON2/CON0 for the SDM and scrambler clocks,
@@ -2831,8 +2833,7 @@ static const DECLARE_TLV_DB_SCALE(capture_tlv, 0, 600, 0);
  * no HPOUT, no speaker amplifier, so no speaker, earpiece or headphone can be
  * driven by this switch, whatever the muxes say.
  *
- * It exists only while the capture silence is being located; remove it once the
- * cause is found.
+ * It exists only while the capture silence is being located.
  */
 static int mt6359_sgen_ul_get(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
@@ -2902,8 +2903,9 @@ static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 			   MT6359_AUDENC_ANA_CON1, RG_AUDPREAMPRGAIN_SFT, 4, 0,
 			   snd_soc_get_volsw, mt6359_put_volsw, capture_tlv),
 	/*
-	 * DIAGNOSTIC (audio9): see mt6359_sgen_ul_put(). Set "AIF Out Mux" to
-	 * "Sgen" as well to route the generator into AIF1TX.
+	 * DIAGNOSTIC, NOT FOR UPSTREAM: see mt6359_sgen_ul_put(). Set
+	 * "AIF Out Mux" to "Sgen" as well to route the generator into AIF1TX.
+	 * Remove this control together with the two functions.
 	 */
 	SOC_SINGLE_EXT("Sgen UL Diagnostic Switch", SND_SOC_NOPM, 0, 1, 0,
 		       mt6359_sgen_ul_get, mt6359_sgen_ul_put),
