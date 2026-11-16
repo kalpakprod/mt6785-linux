@@ -80,12 +80,14 @@
 };
 
 /*
- * The data path, in the loader's order:
- *   ovl0 -> ovl_2l0 -> rdma0 -> color0 -> ccorr0 -> aal0 -> gamma0
- *         -> dither0 -> dsi0
- * with every colour block bypassed there. POSTMASK0 is left out because the
- * loader configures it en:0 (pl_lk.txt line 313) and rsz0 because it is a
- * pass-through scaler with no mainline mt6785 driver.
+ * The data path this tree builds, in the loader's order:
+ *   ovl0 -> ovl_2l0 -> rdma0 -> color0 -> ccorr0 -> aal0 -> gamma0 -> dsi0
+ * with every colour block bypassed there. Three blocks of the vendor's chain are not
+ * described here as consumers: POSTMASK0 because the loader configures it en:0
+ * (pl_lk.txt line 313), rsz0 because it is a pass-through scaler with no mainline
+ * mt6785 driver, and dither0 because the DRM master never matches it - a described but
+ * never bound device keeps the power controller's sync_state pending and every domain
+ * on, which blocked the modem's power cycle.
  *
  * The three blocks that read memory name their SMI larb (mediatek,larb): with
  * no IOMMU bound to it a larb is not kept resumed by anyone else, and after a
@@ -124,19 +126,7 @@
 &aal0 { status = "okay"; };
 &gamma0 { status = "okay"; };
 
-&dither0 {
-	status = "okay";
-};
-
-/* mt6785.dtsi already wires gamma0 straight into dither0; the rest of the chain is here. */
-&dither0_out {
-	remote-endpoint = <&dsi0_in>;
-};
-
-&dsi0_in {
-	remote-endpoint = <&dither0_out>;
-};
-
+/* mt6785.dtsi already wires gamma0 straight into dsi0; the panel is what the board adds. */
 &dsi0_out {
 	remote-endpoint = <&panel_in>;
 };
