@@ -49,3 +49,73 @@
 		};
 	};
 };
+
+/*
+ * The two D-PHY sensors the plan starts with (5-cameras.md §5 steps 1 and 3): the back ultra
+ * IMX355 and the front OV13B10, both on the "sub" camera bus, both with upstream drivers.
+ *
+ * Rails are the ones the board's own camera node names, resolved in the live device tree
+ * (device-dump-2026-11-12/device-tree.dtb, kd_camera_hw1): cam1 (front) and cam2 (ultra) take
+ * vcama/vcamd = wl2866d_avdd1/wl2866d_dvdd1, and every module's I/O is the PMIC's vcamio at
+ * 1.8 V. Voltages come from the vendor power tables (5-cameras.md §1.2): 2.7/1.2/1.8 V for the
+ * IMX355, 2.8/1.2/1.8 V for the OV13B10.
+ *
+ * The 24 MHz memory clock is one of the top clock's CAMTG muxes, whose parent list starts with
+ * univpll_192m_d8 (clk-mt6785-top.c:222-230); which mux feeds which position is a guess until
+ * the phone confirms it - the vendor's own mclk driver picks it at runtime, and for an
+ * identification read any of them serves.
+ *
+ * The endpoints carry the lane count and the link frequency the drivers expect (IMX355 4-lane
+ * at 24 MHz: 24 MHz * 60 / (2 * 2) = 360 MHz, imx355.c:131-152; OV13B10:
+ * OV13B10_LINK_FREQ_560MHZ, ov13b10.c:573), but nothing consumes them yet: there is no SENINF
+ * receiver driver in this tree, and upstream boards do describe the sensor endpoint in that
+ * state - the sensor binds and its controls work, only the stream has no sink. When SENINF
+ * lands, its port connects to these endpoints unchanged.
+ */
+&i2c4 {
+	status = "okay";
+
+	imx355: camera@1a {
+		compatible = "sony,imx355";
+		reg = <0x1a>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG1>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG1>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&wl2866d_avdd1>;
+		dvdd-supply = <&wl2866d_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		reset-gpios = <&pio 125 GPIO_ACTIVE_LOW>;
+
+		port {
+			imx355_out: endpoint {
+				link-frequencies = /bits/ 64 <360000000>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+	};
+
+	ov13b10: camera@36 {
+		compatible = "ovti,ov13b10";
+		reg = <0x36>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG2>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&wl2866d_avdd1>;
+		dvdd-supply = <&wl2866d_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		reset-gpios = <&pio 124 GPIO_ACTIVE_LOW>;
+
+		port {
+			ov13b10_out: endpoint {
+				link-frequencies = /bits/ 64 <560000000>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+	};
+};
