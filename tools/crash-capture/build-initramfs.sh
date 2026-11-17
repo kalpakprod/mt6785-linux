@@ -26,20 +26,20 @@ command -v "$zig" >/dev/null || { echo "build-initramfs: no zig" >&2; exit 1; }
 # produce on the first real capture ("no vmcore-dmesg and no makedumpfile on this
 # root"), because the phone has no kexec-tools. A static aarch64 build of
 # kexec-tools' vmcore-dmesg goes into the archive and crash-init runs it first.
-# It is not built here: kexec-tools' source is not in this repository and this
-# environment has no network. Build it once and drop it in bin/:
 #
-#   curl -LO https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-2.0.32.tar.xz
-#   tar xf kexec-tools-2.0.32.tar.xz
-#   ./configure --host=aarch64-linux-musl CC="zig cc -target aarch64-linux-musl" \
-#       --without-xen --without-zlib --without-lzma --without-lzo --without-booke
-#   make -C kexec-tools-2.0.32/purgatory -j
-#   make -C kexec-tools-2.0.32 vmcore-dmesg/vmcore-dmesg
-#   cp kexec-tools-2.0.32/vmcore-dmesg/vmcore-dmesg \
-#      tools/crash-capture/bin/vmcore-dmesg
+# It is not built here - kexec-tools' source is not in this repository - so build it
+# once and drop it in bin/ (recipe as used, kexec-tools 2.0.32 from
+# https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-2.0.32.tar.xz,
+# checked against kernel.org's sha256sums: 8f81422a...):
 #
-# The archive must carry it: the check below fails without it unless
-# --allow-missing-vmcore-dmesg is passed for a diagnostic build.
+#   tar xf kexec-tools-2.0.32.tar.xz && cd kexec-tools-2.0.32
+#   zig cc -target aarch64-linux-musl -O2 -static -s -D_GNU_SOURCE \
+#       -Iutil_lib/include -Iinclude \
+#       vmcore-dmesg/vmcore-dmesg.c util_lib/elf_info.c -o vmcore-dmesg
+#   cp vmcore-dmesg <this tree>/tools/crash-capture/bin/vmcore-dmesg
+#
+# Those two source files are the whole tool: no configure, no purgatory, no other
+# objects. The binary is not committed (bin/ is ignored); the build needs it.
 allow_missing=0
 for a in "$@"; do
 	[ "$a" = --allow-missing-vmcore-dmesg ] && allow_missing=1
@@ -71,8 +71,13 @@ fi
 iso=$(date -u +%Y%m%dT%H%M%SZ)
 archive=$out/crash-initramfs-$iso.cpio.gz
 (cd "$stage" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -9n) > "$archive"
-# The archive itself is checked: the check fails when vmcore-dmesg is not inside.
-if tar -tzf "$archive" 2>/dev/null | grep -qE '^\./vmcore-dmesg$|^vmcore-dmesg$'; then
+# The archive itself is checked, and the archive is a compressed newc cpio:
+# tar cannot read it (a false "not in the archive" the first version printed).
+archive_has_vmcore_dmesg() {
+	zcat "$1" 2>/dev/null | cpio -t 2>/dev/null |
+		grep -qE '^\./vmcore-dmesg$|^vmcore-dmesg$'
+}
+if archive_has_vmcore_dmesg "$archive"; then
 	echo "check: vmcore-dmesg is in the archive"
 elif [ "$allow_missing" = 1 ]; then
 	echo "check: vmcore-dmesg is NOT in the archive (allowed for this build)"
@@ -80,6 +85,41 @@ else
 	echo "check: vmcore-dmesg is not in the archive" >&2
 	exit 1
 fi
+# --self-test plants both ways the check can be wrong: no binary at all (the build
+# must refuse) and an archive without the member (the check must fail).
+if [ "${SELF_TEST:-0}" = 1 ]; then
+	echo
+	echo "== self-test"
+	work=$(mktemp -d "${TMPDIR:-/tmp}/initramfs-selftest.XXXXXX")
+	# (a) an archive without the member
+	(
+		cd "$stage" && rm -f vmcore-dmesg &&
+		find . -print0 | cpio --null -o --format=newc 2>/dev/null |
+			gzip -9n > "$work/no-member.cpio.gz"
+	)
+	listed=$(zcat "$work/no-member.cpio.gz" 2>/dev/null | cpio -t 2>/dev/null | grep -c .)
+	if [ "$listed" -lt 2 ]; then
+		echo "FAIL  the planted archive is not a readable newc cpio ($listed entries)"
+	elif archive_has_vmcore_dmesg "$work/no-member.cpio.gz"; then
+		echo "FAIL  planted fault 'member missing from the archive' was not caught"
+	else
+		echo "PASS  planted fault 'member missing from the archive' caught"
+	fi
+	# (b) no binary to include: the refusal path
+	if [ -f "$vmd" ]; then
+		mv "$vmd" "$work/vmcore-dmesg.saved"
+		if ZIG="$zig" OUT="$work/out2" "$0" >/dev/null 2>&1; then
+			echo "FAIL  planted fault 'no bin/vmcore-dmesg' was not caught"
+		else
+			echo "PASS  planted fault 'no bin/vmcore-dmesg' caught"
+		fi
+		mv "$work/vmcore-dmesg.saved" "$vmd"
+	else
+		echo "INFO  no bin/vmcore-dmesg to plant the second fault with"
+	fi
+	rm -rf "$work"
+fi
+
 sha256sum "$archive" | tee "$archive.sha256"
 ls -l "$archive" | awk '{print "archive:", $9, "(" $5 " bytes)"}'
 echo
