@@ -19,33 +19,19 @@
 #define __MT6359_GAUGE_CALC_H__
 
 /*
- * Charge of one counter unit, in uAh * 1000.
+ * Charge of one counter unit, in uAh * 1000: 0.085, the vendor's UNIT_CHARGE 85
+ * (mt6359_gauge.c:33) with no resistor correction.
  *
- * The vendor's tables give the ADC's charge LSB as 0.085 uAh (UNIT_CHARGE 85,
- * mt6359_gauge.c:33), which is what the first version of this driver scaled by - and
- * conn38's 30-minute log proved that wrong by a factor of twenty: 72035 counter units
- * against 127800 uAh integrated from current_now, which was itself verified against the
- * MT6360's independent current (1.774 uAh per unit). The vendor's own counter path
- * carries further factors - gauge_get_coulomb() converts with
- * "car = car * 100000 / UNIT_CHARGE" (mt6359_gauge.c:1464) and the CAR register is
- * 32-bit (PMIC_FG_CAR_15_00/31_16, upmu_hw.h:8623-8628) - and the numbers in this
- * repository do not let me derive 1.774 from them with the board's R_FG 5 / car_tune
- * 100 without assuming which of those factors applies to which register.
- *
- * What the two logs show together: conn38 compared the EXPORT in uAh with the current's own
- * uAh, so its 1.774 was uAh per uAh, not per raw unit - and using it as a per-unit scale
- * made conn40's charge_counter three times too big (-97969 uAh against 31673 uAh
- * integrated). conn40 is the run that can be solved as it stands, because its current, its
- * counter and its capacity all come from one build: 97969 uAh of export / 1.774 = 55225 raw
- * units, and 31673 uAh of current over those 55225 units is 0.574 uAh per raw unit. The
- * same run checks the number twice: capacity moved 45 -> 46 over 883 s at about 230 mA,
- * which is 56 mAh or 1.1 % of 5 Ah, and 0.574 gives 1.1 % where 1.774 gave 3.4 %.
- *
- * The raw counter is now logged (debugfs car_raw and a probe-time line in dmesg) so the next
- * log of either kind pins the number directly instead of being solved through an export.
+ * Settled by two logs, not by a fit. conn41 and conn40, each split by current sign and
+ * integrated, give 12.05 and 11.71 raw counts per uAh - 11.9, i.e. 0.084 uAh per count,
+ * which is 85/1000 to within the logs' own noise. The earlier attempts (0.574 and 1.774)
+ * came from dividing one export by another and were both wrong; the two runs also show a
+ * constant drift of about 330 counts per second on top of the charge term, which is a
+ * current offset in the counter, not a scale error, and is handled where the offset
+ * belongs - see the FGADC offset registers read at probe in mt6359_gauge.c.
  */
 #ifndef MT6359_CAR_UAH_X1000
-#define MT6359_CAR_UAH_X1000	574
+#define MT6359_CAR_UAH_X1000	85
 #endif
 
 /* Nominal sense resistor, in mOhm (vendor DEFAULT_R_FG). */

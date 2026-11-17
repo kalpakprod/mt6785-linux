@@ -767,6 +767,24 @@ ntc_log:
 	 * The raw counter on demand: two logs of it (one charging, one discharging) are what
 	 * decides uAh per raw unit, so it must be readable without a new build.
 	 */
+	/*
+	 * The FG offset trim: the counter carries a constant current offset (~330 counts/s,
+	 * about 100 mA, measured across conn40 and conn41) and these are the registers that
+	 * trim it - FGADC_OFFSET_CON0/1, the MT6359's FG_OFFSET (the vendor reads
+	 * PMIC_FG_OFFSET and leaves its use commented out in fgauge_get_hw_status,
+	 * mt6359_gauge.c:2548). Reading them here logs what the trim actually is on this
+	 * phone instead of fitting a number into the driver.
+	 */
+	{
+		long long off0 = 0, off1 = 0;
+
+		mt6359_gauge_read_reg(g, 0xd92, &off0);
+		mt6359_gauge_read_reg(g, 0xd94, &off1);
+		dev_info(&pdev->dev,
+			 "FG offset trim FGADC_OFFSET_CON0/1 = 0x%04llx/0x%04llx\n",
+			 off0, off1);
+	}
+
 	debugfs_create_file("car_raw", 0444, NULL, g, &mt6359_gauge_car_fops);
 
 	dev_info(&pdev->dev, "MT6359 gauge: %lld uAh full, R_FG %u/%u x%d, car_tune %u, counter %lld\n",
