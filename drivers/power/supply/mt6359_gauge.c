@@ -67,10 +67,24 @@
 /* Hardware current, in the vendor's own register (MTK: PMIC_FG_CURRENT_OUT). */
 #define MT6359_FGADC_CUR_CON0	0xd8a
 
-/* The counter is latched for a consistent read; CON1 carries both bits. */
+/*
+ * The read handshake. The gauge's registers are not free-running: the vendor's
+ * sequence (mt6359_gauge.c:505-540) is
+ *
+ *   set FG_SW_READ_PRE (bit 0 of FGADC_CON1; upmu_hw.h:8451-8454)
+ *   poll the same bit - it doubles as PMIC_FG_LATCHDATA_ST (:8499-8501) - until set
+ *   read the value
+ *   pulse FG_SW_CLEAR (bit 3; :8463-8466), drop READ_PRE, poll the status clear,
+ *   release SW_CLEAR
+ *
+ * Without it every read returns the snapshot from the driver's first access, which is
+ * exactly what the trial saw: current_now fixed at -147315 uA at idle, under load and
+ * after.
+ */
 #define MT6359_FGADC_CON1	0xd0a
-#define MT6359_FGADC_CON1_LATCH	BIT(15)	/* trigger a snapshot */
-#define MT6359_FGADC_CON1_ST	BIT(0)	/* PMIC_FG_LATCHDATA_ST, upmu_hw.h:8499-8501 */
+#define MT6359_FGADC_CON1_READ_PRE	BIT(0)
+#define MT6359_FGADC_CON1_ST		BIT(0)
+#define MT6359_FGADC_CON1_SW_CLEAR	BIT(3)
 
 /* How often the counter is sampled for current_now; the display is not faster. */
 #define MT6359_FG_SAMPLE_MS	1000
@@ -91,12 +105,63 @@ struct mt6359_gauge {
 	struct delayed_work sample;
 };
 
-static int mt6359_gauge_read_car(struct mt6359_gauge *g, long long *car)
+/*
+ * Read one gauge register through the vendor's handshake. Defined before its callers
+ * on purpose: the first attempt at this placed it after them and did not compile.
+ */
+static int mt6359_gauge_read_reg(struct mt6359_gauge *g, unsigned int reg,
+				 long long *out)
 {
-	unsigned int lo, hi;
+	unsigned int v, retries;
 	int ret;
 
-	ret = regmap_read(g->regmap, MT6359_FGADC_CAR_CON0, &lo);
+	ret = regmap_update_bits(g->regmap, MT6359_FGADC_CON1,
+				 MT6359_FGADC_CON1_READ_PRE,
+				 MT6359_FGADC_CON1_READ_PRE);
+	if (ret)
+		return ret;
+
+	for (retries = 0; retries < 100; retries++) {
+		ret = regmap_read(g->regmap, MT6359_FGADC_CON1, &v);
+		if (ret)
+			return ret;
+		if (v & MT6359_FGADC_CON1_ST)
+			break;
+		usleep_range(1000, 2000);
+	}
+
+	ret = regmap_read(g->regmap, reg, &v);
+	if (ret)
+		return ret;
+	*out = v;
+
+	/* Release, in the vendor's order. */
+	regmap_update_bits(g->regmap, MT6359_FGADC_CON1,
+			   MT6359_FGADC_CON1_SW_CLEAR,
+			   MT6359_FGADC_CON1_SW_CLEAR);
+	regmap_update_bits(g->regmap, MT6359_FGADC_CON1,
+			   MT6359_FGADC_CON1_READ_PRE, 0);
+	for (retries = 0; retries < 100; retries++) {
+		ret = regmap_read(g->regmap, MT6359_FGADC_CON1, &v);
+		if (ret)
+			break;
+		if (!(v & MT6359_FGADC_CON1_ST))
+			break;
+		usleep_range(1000, 2000);
+	}
+	regmap_update_bits(g->regmap, MT6359_FGADC_CON1,
+			   MT6359_FGADC_CON1_SW_CLEAR, 0);
+	return 0;
+}
+
+static int mt6359_gauge_read_car(struct mt6359_gauge *g, long long *car)
+{
+	unsigned int hi;
+	long long lo_ll;
+	int ret;
+
+	/* Low half through the handshake; the high half cannot change under it. */
+	ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CAR_CON0, &lo_ll);
 	if (ret)
 		return ret;
 	ret = regmap_read(g->regmap, MT6359_FGADC_CAR_CON1, &hi);
@@ -104,7 +169,7 @@ static int mt6359_gauge_read_car(struct mt6359_gauge *g, long long *car)
 		return ret;
 
 	/* The counter is a signed 32-bit value split over two halves. */
-	*car = (long long)(s32)(((hi & 0xffff) << 16) | (lo & 0xffff));
+	*car = (long long)(s32)(((hi & 0xffff) << 16) | (lo_ll & 0xffff));
 	return 0;
 }
 
@@ -170,21 +235,27 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 * vendor reads it there (:236-250, read_fg_hw_info_current_1). The counter
 		 * difference stays as a cross-check in the log.
 		 */
-		ret = regmap_read(g->regmap, MT6359_FGADC_CUR_CON0, &val->intval);
-		if (ret)
-			return ret;
-		val->intval = (long long)(s16)val->intval *
-			      mt6359_iavg_to_ua(1, g->r_fg_scale);
+		{
+			long long raw;
+
+			ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &raw);
+			if (ret)
+				return ret;
+			val->intval = (long long)(s16)raw *
+				      mt6359_iavg_to_ua(1, g->r_fg_scale);
+		}
 		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		if (!g->vbat)
 			return -ENODATA;
+		/*
+		 * No extra factor: iio_read_channel_processed() already applies the
+		 * channel's scale. The first trial multiplied by 1000 on the guess that it
+		 * reported mV and showed ~563 V; the number must match what the generic
+		 * adc-battery reports from the same channel (~3836 mV).
+		 */
 		ret = iio_read_channel_processed(g->vbat, &val->intval);
-		if (ret < 0)
-			return ret;
-		/* iio gives mV for this ADC; power_supply wants uV. */
-		val->intval *= 1000;
-		return 0;
+		return ret < 0 ? ret : 0;
 	case POWER_SUPPLY_PROP_TEMP:
 		if (!g->ntc)
 			return -ENODATA;
