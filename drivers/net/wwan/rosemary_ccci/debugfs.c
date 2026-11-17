@@ -528,6 +528,73 @@ static int md_shmem_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
+/*
+ * A map of the two share-memory windows: which 4 KiB pages hold anything at all
+ *
+ * The modem's own debug regions read all zero in trial 45, which is expected once the vendor's
+ * dumper is read properly: it touches SMEM_USER_RAW_MDSS_DBG only in the exception path, to hand
+ * the modem's own crash log to the AEE dumper (fsm/mdee_dumper_v1.c:76-77,
+ * aed_md_exception_api()), not to sample a healthy modem. So zeros there say nothing about the
+ * window -- and the question becomes whether the modem has written anywhere in the windows at all.
+ *
+ * This walks both windows a page at a time and prints only the pages that contain anything,
+ * with the number of non-zero words and the first one. It is a map, not a dump: a few hundred
+ * lines at most, and it is shared DRAM, so reading it cannot hang the modem's bus.
+ */
+static int md_shmem_map_show(struct seq_file *s, void *unused)
+{
+	struct ccci_md *md = s->private;
+
+	if (!md->nc || !md->c) {
+		seq_puts(s, "share memory not mapped\n");
+		return 0;
+	}
+	for (size_t w = 0; w < 2; w++) {
+		void __iomem *base = w ? md->c : md->nc;
+		u32 size = w ? md->c_size : md->nc_size;
+		phys_addr_t phys = w ? md->c_phys : md->nc_phys;
+		u32 pages = 0, used = 0;
+
+		seq_printf(s, "[%s] %#llx + %#x (%u pages of %#x)\n",
+			   w ? "C smem" : "NC smem", (unsigned long long)phys, size,
+			   size / 4096, 4096);
+		for (u32 off = 0; off + 4096 <= size; off += 4096) {
+			u32 nz = 0, first = 0, i;
+
+			for (i = 0; i < 4096; i += 4) {
+				u32 v = readl(base + off + i);
+
+				if (v) {
+					if (!nz)
+						first = i;
+					nz++;
+				}
+			}
+			pages++;
+			if (!nz)
+				continue;
+			used++;
+			seq_printf(s, "  page %06x  %5u non-zero words, first at +%#05x = %#010x\n",
+				   off, nz, first, readl(base + off + first));
+		}
+		seq_printf(s, "  %u pages, %u with data\n", pages, used);
+	}
+	return 0;
+}
+
+static int md_shmem_map_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, md_shmem_map_show, inode->i_private);
+}
+
+static const struct file_operations md_shmem_map_fops = {
+	.owner = THIS_MODULE,
+	.open = md_shmem_map_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int md_shmem_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, md_shmem_show, inode->i_private);
@@ -587,6 +654,7 @@ void rosemary_ccci_debugfs_add(struct ccci_md *md)
 	debugfs_create_file("tags", 0444, md->debugfs, md, &md_tags_fops);
 	debugfs_create_file("bus_dbg", 0444, md->debugfs, md, &md_bus_dbg_fops);
 	debugfs_create_file("md_shmem", 0444, md->debugfs, md, &md_shmem_fops);
+	debugfs_create_file("md_shmem_map", 0444, md->debugfs, md, &md_shmem_map_fops);
 }
 
 void rosemary_ccci_debugfs_remove(struct ccci_md *md)
