@@ -154,3 +154,47 @@ the MT6360's) is the device path it lives under, and that pair is what goes into
 gauge node as `ntc`. With the channel known, the vendor's beta/pull-up still has to
 come from the vendor NTC table or be derived from two known temperatures - the raw
 value alone does not become degrees without it.
+
+## The NTC fit against conn36's calibration run: the divider model is excluded
+
+The lead's run (`poco-m5s/evidence/conn-trial36/ntc-calib.csv`, 5 min idle then 5 min on 8
+CPUs) gives, against the board's own references:
+
+    t=0    ntc_raw 1097, ln8000 33.4 C, cpu-big0 37.1 C
+    t=595  ntc_raw  965, ln8000 41.7 C, cpu-big0 62.8 C
+
+The raw value falls as the phone heats, so the channel sits on the NTC side of a divider -
+that much is confirmed. But the *ratio* of the two readings does not match the battery's
+own NTC table:
+
+| quantity | value |
+|---|---|
+| table resistance at 33.4 C (`mtk_battery_table.h:213-237`, 100k variant) | 68.3 kOhm |
+| table resistance at 41.7 C | 47.4 kOhm |
+| the table's ratio between them | 1.443 |
+| the ratio the two raw values give, 12-bit divider | 1.187 |
+| the same, 15-bit | 1.142 |
+
+A pure divider cannot produce 1.187 where the thermistor's own curve says 1.443, whatever the
+pull-up is (the pull-up cancels in the ratio). Reconciling them needs a series resistance of
+about **64.8 kOhm** at 12 bits - and the vendor files name `BIF_NTC_R` = 16000
+(`mtk_battery_table.h:210`), which is not that. At 15 bits the number is 100.8 kOhm, which is
+the pull-up itself, so that reading is not self-consistent either.
+
+So the fit is under-determined by the sources we have, and the candidate explanations are
+narrow: a series element of ~65 kOhm that no header names, a second divider tap inside the
+PMIC's BAT_TEMP path, or a table variant whose ratio differs from the 100k one (the 47k
+variant has the same shape, so it does not help). `temp` therefore stays unexported, and the
+next measurement is the one that discriminates: **raw at a third temperature far from the
+other two** (a cold phone - a few minutes in a fridge, read-only) plus the same CSV columns. A
+series element stays a series element at any temperature; a wrong FS or offset does not.
+
+What is *not* in question: the gauge's charge, current and capacity numbers, which are checked
+against independent references and agree.
+
+Note on the CSV's other columns: they are raw ADC codes (`chip_temp`, `vcore_temp`,
+`vproc_temp`, `vgpu_temp`, `dcxo_temp`, `tsx_temp`, `mt6360 temp_jc`), and their conversions
+are in vendor headers this repository does not carry (the MT6359 temperature channels use
+their own di/dt characteristic, and the MT6360's die temperature is a different linear
+mapping). They are useful as *ordering* evidence - all of them move together with the board -
+but not yet as absolute degrees, and no constants were invented for them.
