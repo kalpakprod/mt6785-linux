@@ -8,6 +8,7 @@
 
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/debugfs.h>
 #include <linux/module.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
@@ -1877,6 +1878,96 @@ err_irq:
 	return IRQ_HANDLED;
 }
 
+/*
+ * DIAGNOSTIC, NOT FOR UPSTREAM: the AFE's own sine generator and the INNER_LOOP_BACK_MODE field
+ * that decides where it is injected (AFE_SINEGEN_CON0 at 0x01f0 with DAC_EN bit26, MUTE_SW_CH1
+ * bit24, SINE_MODE_CH1 bits[11:8], AMP_DIV_CH1 bits[7:5], FREQ_DIV_CH1 bits[4:0]; CON2 at 0x01dc
+ * with the 6-bit mode at bits[5:0] - the vendor resets that field to 0x3f on suspend, so 0x3f is
+ * "off", mt6785-afe-pcm.c:3228-3232 in the vendor tree).
+ *
+ * Nothing in either tree says which of the 64 mode values drives the generator into the ADDA
+ * uplink or into UL1's memif input, and the question this answers is exactly that: a capture on
+ * UL1 that carries the generator means the memif and the interconnect work and the fault is on
+ * the MTKAIF receive side; silence means the fault is the memif side. Silent by construction: no
+ * playback is involved and no output stage is powered.
+ */
+static int mt6785_afe_sinegen_set(struct mtk_base_afe *afe, u32 con0, u32 loopback)
+{
+	int ret;
+
+	ret = pm_runtime_resume_and_get(afe->dev);
+	if (ret)
+		return ret;
+
+	regmap_write(afe->regmap, AFE_SINEGEN_CON0, con0);
+	regmap_update_bits(afe->regmap, AFE_SINEGEN_CON2,
+			   INNER_LOOP_BACK_MODE_MASK_SFT,
+			   (loopback & INNER_LOOP_BACK_MODE_MASK) <<
+			   INNER_LOOP_BACK_MODE_SFT);
+	if (!con0 && loopback == INNER_LOOP_BACK_MODE_MASK)
+		dev_info(afe->dev, "sine generator off again\n");
+	else
+		dev_info(afe->dev, "sine generator con0 %#x, inner loopback %u\n",
+			 con0, loopback);
+
+	pm_runtime_put(afe->dev);
+	return 0;
+}
+
+static ssize_t mt6785_afe_sinegen_write(struct file *file,
+					const char __user *ubuf,
+					size_t count, loff_t *ppos)
+{
+	struct seq_file *m = file->private_data;
+	struct mtk_base_afe *afe = m->private;
+	u32 con0 = 0, loopback = INNER_LOOP_BACK_MODE_MASK;
+	char buf[32];
+
+	if (count >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+	buf[count] = '\0';
+
+	/* "<con0_hex> <loopback>" sets both, "off" switches the generator back */
+	if (!strncmp(buf, "off", 3)) {
+		mt6785_afe_sinegen_set(afe, 0, INNER_LOOP_BACK_MODE_MASK);
+		return count;
+	}
+	if (sscanf(buf, "%x %u", &con0, &loopback) != 2)
+		return -EINVAL;
+
+	return mt6785_afe_sinegen_set(afe, con0, loopback) ?: count;
+}
+
+static int mt6785_afe_sinegen_show(struct seq_file *m, void *unused)
+{
+	struct mtk_base_afe *afe = m->private;
+	u32 con0 = 0, con2 = 0;
+
+	pm_runtime_resume_and_get(afe->dev);
+	regmap_read(afe->regmap, AFE_SINEGEN_CON0, &con0);
+	regmap_read(afe->regmap, AFE_SINEGEN_CON2, &con2);
+	pm_runtime_put(afe->dev);
+
+	seq_printf(m, "con0 %#x inner_loopback %u\n", con0,
+		   (con2 & INNER_LOOP_BACK_MODE_MASK_SFT) >> INNER_LOOP_BACK_MODE_SFT);
+	return 0;
+}
+
+static int mt6785_afe_sinegen_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mt6785_afe_sinegen_show, inode->i_private);
+}
+
+static const struct file_operations mt6785_afe_sinegen_fops = {
+	.open = mt6785_afe_sinegen_open,
+	.read = seq_read,
+	.write = mt6785_afe_sinegen_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int mt6785_afe_runtime_suspend(struct device *dev)
 {
 	struct mtk_base_afe *afe = dev_get_drvdata(dev);
@@ -2050,6 +2141,9 @@ static int mt6785_afe_pcm_dev_probe(struct platform_device *pdev)
 	if (!afe)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, afe);
+
+	/* DIAGNOSTIC, NOT FOR UPSTREAM: see mt6785_afe_sinegen_set() */
+	debugfs_create_file("sinegen", 0600, NULL, afe, &mt6785_afe_sinegen_fops);
 
 	afe->platform_priv = devm_kzalloc(dev, sizeof(*afe_priv),
 					  GFP_KERNEL);
