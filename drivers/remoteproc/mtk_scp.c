@@ -2391,7 +2391,13 @@ static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when)
  */
 static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when)
 {
+	static const u16 spm_ofs[] = {
+		0xb8, 0xbc, 0x110, 0x4ac, 0x4c0, 0x4f8,
+		0x114, 0x118, 0x11c, 0x120, 0x124,
+	};
 	struct regmap *spm = scp->spm_regmap;
+	u32 spm_val[ARRAY_SIZE(spm_ofs)];
+	unsigned int i;
 	u32 val;
 
 	if (IS_ERR_OR_NULL(spm))
@@ -2403,6 +2409,33 @@ static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when)
 	dev_info(scp->dev, "%s: SPM ULPOSC_CON %#x (en %u, rst %u, cg %u, sel %u)\n",
 		 when, val, val & BIT(0) ? 1 : 0, val & BIT(1) ? 1 : 0,
 		 val & BIT(2) ? 1 : 0, val & BIT(3) ? 1 : 0);
+
+	/*
+	 * Everything the SPM holds about requests and about the SCP's own channel to it, from the
+	 * vendor's MT6785 register map (base 0x10006000):
+	 *
+	 *  - SPM_SRC_REQ (0xb8) holds one request bit per master; the SCP's is bit 13
+	 *    (REG_SPM_SCP_MAILBOX_REQ_LSB, mtk_spm_reg.h:834), and the SPM's request-from-SCP
+	 *    baseline is bit 1 (REG_SPM_F26M_REQ, :825);
+	 *  - SPM_SRC_MASK (0xbc) decides which of the SCP's source requests are *allowed* through:
+	 *    bits 5-10 are SCP_SRCCLKENA_MASK_B, SCP_INFRA_REQ_MASK_B, SCP_APSRC_REQ_MASK_B,
+	 *    SCP_VRF18_REQ_MASK_B, SCP_DDR_EN_MASK_B and SCP_DDR_EN2_MASK_B (:876-881);
+	 *  - SRC_REQ_STA_0..4 (0x114-0x124) are the latched source-request states (:89-93);
+	 *  - PCM_REG13_DATA (0x110, :88) is the PCM block's own data register;
+	 *  - SPM_SCP_CON (0x4ac), SCP_SPM_MAILBOX (0x4c0) and SCP_VCORE_LEVEL (0x4f8) are the
+	 *    SCP's channel and its voltage level as the SPM sees them (:295, :300, :314).
+	 *
+	 * Read only: this says which request arrives and which mask blocks it.
+	 */
+	for (i = 0; i < ARRAY_SIZE(spm_ofs); i++)
+		if (regmap_read(spm, spm_ofs[i], &spm_val[i]))
+			return;
+
+	dev_info(scp->dev,
+		 "%s: SPM src_req %#x src_mask %#x pcm_r13 %#x scp_con %#x scp_mbox %#x scp_vcore %#x\n",
+		 when, spm_val[0], spm_val[1], spm_val[2], spm_val[3], spm_val[4], spm_val[5]);
+	dev_info(scp->dev, "%s: SPM src_req_sta %#x %#x %#x %#x %#x\n", when,
+		 spm_val[6], spm_val[7], spm_val[8], spm_val[9], spm_val[10]);
 }
 
 /*
