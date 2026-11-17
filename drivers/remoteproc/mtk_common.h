@@ -146,6 +146,12 @@ struct mtk_scp_of_data {
 	void (*scp_ipi_ack)(struct mtk_scp *scp);
 	/* SoC clock gates that are not modelled as clocks and have to be opened before loading */
 	int (*scp_clocks_on)(struct mtk_scp *scp);
+	/*
+	 * Leave the block untouched when a boot fails, so its state can still be read
+	 * afterwards: the dump is taken first, and a following /dev/mem read then shows
+	 * what the hardware really holds instead of what a cleanup wrote.
+	 */
+	bool scp_keep_state_on_error;
 	void *(*scp_da_to_va)(struct mtk_scp *scp, u64 da, size_t len);
 
 	u32 host_to_scp_reg;

@@ -469,6 +469,7 @@ struct mt6785_scp_region_info {
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
+static void mt6785_scp_state(struct mtk_scp *scp, const char *when);
 
 static int mt6785_scp_before_load(struct mtk_scp *scp)
 {
@@ -654,6 +655,7 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 {
 	struct mt6785_scp_region_info ri = { 0 };
 	u32 fw_size, dram_size;
+	int ret;
 
 	/*
 	 * The loader copies ap_firmware_size bytes from ap_firmware_start to a fixed
@@ -688,8 +690,14 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 	dev_dbg(scp->dev, "staged loader %#x firmware %#x dram %#x at %pa\n",
 		ri.ap_loader_size, fw_size, dram_size, &scp->dma_addr);
 
+	mt6785_scp_state(scp, "after the ELF copy and the region info");
+
 	/* the images are in place, so the buses need no protection any more */
-	return mt6785_scp_slp_prot_clear(scp);
+	ret = mt6785_scp_slp_prot_clear(scp);
+	if (!ret)
+		mt6785_scp_state(scp, "after the sleep-protect release");
+
+	return ret;
 }
 
 static int mt8183_scp_before_load(struct mtk_scp *scp)
@@ -1012,6 +1020,12 @@ static int scp_start(struct rproc *rproc)
 
 	scp->data->scp_reset_deassert(scp);
 
+	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs) {
+		/* the steps have to be told apart: this is right after the release write */
+		mt6785_scp_state(scp, "right after the core-release write");
+		mt6785_scp_state(scp, "a moment later");
+	}
+
 	ret = wait_event_interruptible_timeout(
 					run->wq,
 					run->signaled,
@@ -1038,7 +1052,12 @@ static int scp_start(struct rproc *rproc)
 	return 0;
 
 stop:
-	scp->data->scp_reset_assert(scp);
+	if (!scp->data->scp_keep_state_on_error) {
+		scp->data->scp_reset_assert(scp);
+	} else {
+		dev_info(dev, "leaving the SCP block untouched for inspection\n");
+		mt6785_scp_state(scp, "at the end of the failed start");
+	}
 	clk_disable(scp->clk);
 	return ret;
 }
@@ -1938,6 +1957,15 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp)
 	return 0;
 }
 
+/* one line of block state, for the steps that must be told apart */
+static void mt6785_scp_state(struct mtk_scp *scp, const char *when)
+{
+	dev_info(scp->dev, "%s: clk_sw %#x sw_rstn %#x tcm[0] %#x tcm[4] %#x\n",
+		 when, readl(scp->cluster->reg_base + MT8183_SCP_CLK_SW_SEL),
+		 readl(scp->cluster->reg_base + MT8183_SW_RSTN),
+		 readl(scp->sram_base), readl(scp->sram_base + 4));
+}
+
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
 {
 	struct regmap *topckgen;
@@ -1984,6 +2012,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_reset_deassert = mt8183_scp_reset_deassert,
 	.scp_stop = mt8183_scp_stop,
 	.scp_dump_regs = mt6785_scp_dump_regs,
+	.scp_keep_state_on_error = true,
 	.scp_ipi_ack = mt6785_scp_ipi_ack,
 	.scp_clocks_on = mt6785_scp_clocks_on,
 	.scp_da_to_va = mt8192_scp_da_to_va,
