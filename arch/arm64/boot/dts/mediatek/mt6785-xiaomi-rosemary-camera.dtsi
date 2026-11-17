@@ -80,8 +80,16 @@
 		compatible = "sony,imx355";
 		reg = <0x1a>;
 
-		clocks = <&topckgen CLK_TOP_CAMTG1>;
-		assigned-clocks = <&topckgen CLK_TOP_CAMTG1>;
+		/*
+		 * CAMTG4, not CAMTG1: the stock HAL's own sensor table puts the rear 8 MP sensor
+		 * at index MAIN2, whose MCLK enum 3 resolves to CMMCLK3 on GPIO121 and TOP_MUX_CAMTG4
+		 * (scratch/native/5-cameras/vendor-img/libcameracustom.so, getCustomConfig 0x61960,
+		 * table 0x1f50c0; decoded in poco-m5s/research/native/5-cameras/
+		 * stock-hal-port-map-2026-11-17.md). CAMTG1 is still enabled, because the vendor's
+		 * kdSetSensorMclk enables it for every sensor (seninf_clk.c:165-185).
+		 */
+		clocks = <&topckgen CLK_TOP_CAMTG4>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG4>;
 		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
 		assigned-clock-rates = <24000000>;
 
@@ -110,8 +118,12 @@
 		compatible = "ovti,ov13b10";
 		reg = <0x10>;
 
-		clocks = <&topckgen CLK_TOP_CAMTG2>;
-		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;
+		/*
+		 * CAMTG3: the front sensor is index SUB, MCLK enum 2 -> CMMCLK2 on GPIO120 and
+		 * TOP_MUX_CAMTG3 in the stock table (same source as above); the tree had CAMTG2.
+		 */
+		clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG3>;
 		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
 		assigned-clock-rates = <24000000>;
 
