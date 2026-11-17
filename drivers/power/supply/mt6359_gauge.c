@@ -69,32 +69,36 @@
 
 /* The counter is latched for a consistent read; CON1 carries both bits. */
 #define MT6359_FGADC_CON1	0xd0a
-/*
- * The read handshake, from the vendor's own sequence (mt6359_gauge.c:505-540):
- * set FG_SW_READ_PRE (bit 0 of FGADC_CON1, upmu_hw.h:8451-8454), poll the same bit
- * - it is also the data-ready status (PMIC_FG_LATCHDATA_ST, :8499-8501) - until it
- * reads back set, take the values, then pulse FG_SW_CLEAR (bit 3, :8463-8466), drop
- * READ_PRE, poll the status clear and release SW_CLEAR. Without this the registers
- * keep the snapshot from the first read: that is why current_now was frozen at
- * -147315 uA at idle, under load and after.
- */
-#define MT6359_FGADC_CON1_READ_PRE	BIT(0)
-#define MT6359_FGADC_CON1_ST		BIT(0)
-#define MT6359_FGADC_CON1_SW_CLEAR	BIT(3)
+#define MT6359_FGADC_CON1_LATCH	BIT(15)	/* trigger a snapshot */
+#define MT6359_FGADC_CON1_ST	BIT(0)	/* PMIC_FG_LATCHDATA_ST, upmu_hw.h:8499-8501 */
+
+/* How often the counter is sampled for current_now; the display is not faster. */
+#define MT6359_FG_SAMPLE_MS	1000
+
+struct mt6359_gauge {
+	struct device *dev;
+	struct regmap *regmap;
+	struct power_supply *psy;
+	struct iio_channel *vbat;
+	struct iio_channel *ntc;
+	unsigned int r_fg_scale;
+	long long charge_full_uah;
+
+	/* Previous counter sample, for current_now. */
+	long long last_car;
+	ktime_t last_time;
+	long long current_ua;
+	struct delayed_work sample;
+};
 
 static int mt6359_gauge_read_car(struct mt6359_gauge *g, long long *car)
 {
 	unsigned int lo, hi;
 	int ret;
 
-	{
-		long long v;
-
-		ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CAR_CON0, &v);
-		if (ret)
-			return ret;
-		lo = (unsigned int)v;
-	}
+	ret = regmap_read(g->regmap, MT6359_FGADC_CAR_CON0, &lo);
+	if (ret)
+		return ret;
 	ret = regmap_read(g->regmap, MT6359_FGADC_CAR_CON1, &hi);
 	if (ret)
 		return ret;
@@ -166,29 +170,21 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 * vendor reads it there (:236-250, read_fg_hw_info_current_1). The counter
 		 * difference stays as a cross-check in the log.
 		 */
-		{
-			long long raw;
-
-			ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &raw);
-			if (ret)
-				return ret;
-			val->intval = (long long)(s16)raw;
-		}
+		ret = regmap_read(g->regmap, MT6359_FGADC_CUR_CON0, &val->intval);
+		if (ret)
+			return ret;
 		val->intval = (long long)(s16)val->intval *
 			      mt6359_iavg_to_ua(1, g->r_fg_scale);
 		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		if (!g->vbat)
 			return -ENODATA;
-		/*
-		 * iio_read_channel_processed() already applies the channel's scale, so the
-		 * value is used as it comes. The first trial multiplied by 1000 on the guess
-		 * that the channel reported mV and reported ~563 V; the scale is the
-		 * channel's business and the check is the comparison with the generic
-		 * adc-battery on the same channel.
-		 */
 		ret = iio_read_channel_processed(g->vbat, &val->intval);
-		return ret < 0 ? ret : 0;
+		if (ret < 0)
+			return ret;
+		/* iio gives mV for this ADC; power_supply wants uV. */
+		val->intval *= 1000;
+		return 0;
 	case POWER_SUPPLY_PROP_TEMP:
 		if (!g->ntc)
 			return -ENODATA;
