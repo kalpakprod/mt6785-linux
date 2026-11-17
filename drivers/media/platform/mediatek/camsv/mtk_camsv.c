@@ -96,7 +96,7 @@ struct mtk_camsv {
 
 	struct video_device vdev;
 	struct v4l2_subdev subdev;
-	struct media_pad pads[1];
+	struct media_pad pads[2];
 	struct media_pad vdev_pad;
 	struct mtk_cam_core *cam;
 	struct mutex vdev_lock;
@@ -484,8 +484,13 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	camsv->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	camsv->subdev.entity.function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
 	strscpy(camsv->subdev.name, dev_name(dev), sizeof(camsv->subdev.name));
+	/*
+	 * Pad 0 takes the stream from the receiver, pad 1 carries it to the video node: a link needs a
+	 * source pad on the source side (mc-entity.c:1147 warns otherwise).
+	 */
 	camsv->pads[0].flags = MEDIA_PAD_FL_SINK;
-	ret = media_entity_pads_init(&camsv->subdev.entity, 1, camsv->pads);
+	camsv->pads[1].flags = MEDIA_PAD_FL_SOURCE;
+	ret = media_entity_pads_init(&camsv->subdev.entity, 2, camsv->pads);
 	if (ret)
 		return ret;
 
@@ -544,7 +549,7 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	 * The video node is an entity of its own in the graph; without a link from the engine's
 	 * subdevice the pipeline cannot be validated at STREAMON.
 	 */
-	if (!media_create_pad_link(&camsv->subdev.entity, 0, &camsv->vdev.entity, 0,
+	if (!media_create_pad_link(&camsv->subdev.entity, 1, &camsv->vdev.entity, 0,
 				   MEDIA_LNK_FL_ENABLED))
 		dev_info(dev, "link %s -> video%d\n", camsv->subdev.name,
 			 camsv->vdev.num);

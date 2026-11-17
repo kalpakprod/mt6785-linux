@@ -86,31 +86,24 @@ static struct v4l2_subdev *cam_subdev_by_node(struct mtk_cam_core *cam,
 
 /*
  * The node this entity's pad @pad is wired to, through the endpoint the device tree declares.
- * Port numbering follows the pads: pad N is port N of the entity's node.
+ * Pad numbering follows the ports: pad N is port N of the entity's node, whether the node spells
+ * it as one "port" or as "ports/port@N" (of_graph_get_port_by_id() handles both).
  */
 static struct device_node *cam_pad_remote_of(struct device_node *np, unsigned int pad)
 {
-	struct device_node *ports, *port, *ep, *remote = NULL;
+	struct device_node *port, *ep, *remote;
 
-	port = of_get_child_by_name(np, "port");
-	if (!port) {
-		ports = of_get_child_by_name(np, "ports");
-		if (!ports)
-			return NULL;
-		port = of_get_child_by_name(ports, "port@%u");
-		of_node_put(ports);
-		(void)port;
-		port = NULL;
-	}
+	port = of_graph_get_port_by_id(np, pad);
+	if (!port)
+		return NULL;
 
-	if (port) {
-		ep = of_get_child_by_name(port, "endpoint");
-		if (ep) {
-			remote = of_graph_get_remote_endpoint(ep);
-			of_node_put(ep);
-		}
-		of_node_put(port);
-	}
+	ep = of_get_child_by_name(port, "endpoint");
+	of_node_put(port);
+	if (!ep)
+		return NULL;
+
+	remote = of_graph_get_remote_endpoint(ep);
+	of_node_put(ep);
 
 	return remote;
 }
@@ -137,23 +130,24 @@ static void mtk_cam_core_make_links(struct mtk_cam_core *cam)
 				continue;
 
 			remote_np = cam_pad_remote_of(sd->dev->of_node, p);
-			if (!remote_np)
+			if (!remote_np) {
+				dev_info(cam->dev, "link try %s:%u: no endpoint in the tree\n",
+					 sd->name, p);
 				continue;
+			}
 
 			src = cam_subdev_by_node(cam, remote_np);
-			of_node_put(remote_np);
-			if (!src)
+			if (!src) {
+				dev_info(cam->dev, "link try %s:%u: remote %pOF not bound yet\n",
+					 sd->name, p, remote_np);
+				of_node_put(remote_np);
 				continue;
+			}
+			of_node_put(remote_np);
 
 			ret = v4l2_create_fwnode_links_to_pad(src, pad, 0);
-			if (ret == -EEXIST)
-				continue;
-			if (!ret)
-				dev_info(cam->dev, "link %s -> %s:%u\n", src->name,
-					 sd->name, p);
-			else
-				dev_dbg(cam->dev, "%s -> %s:%u not yet: %d\n", src->name,
-					sd->name, p, ret);
+			dev_info(cam->dev, "link try %s:0 -> %s:%u: %d\n", src->name,
+				 sd->name, p, ret);
 		}
 	}
 }
