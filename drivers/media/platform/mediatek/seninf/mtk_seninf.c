@@ -63,6 +63,18 @@
 #define SENINF_CSI2_CTRL_DT(dt)		((dt) << 16)
 #define SENINF_CSI2_EN_ON		BIT(0)
 
+/*
+ * The top-level registers that tie the analog ports to the CSI-2 receivers, and the values the
+ * ChromeOS mt8183 driver writes for a four-data-lane D-PHY camera on CSI0
+ * (scratch/native/5-cameras/tmp/cros/mtk_seninf.c:348-356, its SENINF_TOP_PHY_SENINF_CTL_CSI0
+ * case: `(0x7fffc8fe & read) | 0x80001100`; the CSI1/CSI2 cases use 0x80000200). Without this the
+ * receiver instance we enable is not connected to any analog port, which is what "packets 0,
+ * errors 0" on every port looks like.
+ */
+#define SENINF_TOP_PHY_SENINF_CTL_CSI0	0x001C
+#define SENINF_TOP_PHY_CSI0_4D1C	0x80001100
+#define SENINF_TOP_PHY_CSI0_MASK	0x7fffc8fe
+
 /**
  * struct mtk_seninf - one receiver instance
  * @dev: the platform device
@@ -276,6 +288,19 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	ret = pm_runtime_resume_and_get(seninf->dev);
 	if (ret)
 		return ret;
+
+	/* The port select first: which analog port this receiver instance is tied to. */
+	{
+		u32 before = readl(seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
+		u32 after;
+
+		writel((before & SENINF_TOP_PHY_CSI0_MASK) | SENINF_TOP_PHY_CSI0_4D1C,
+		       seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
+		after = readl(seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
+		dev_info(seninf->dev,
+			 "top phy select CSI0: 0x%08x -> 0x%08x (4D1C on CSI0)\n", before,
+			 after);
+	}
 
 	/* The receiver's D-PHY first: without it no port can see anything on the wire. */
 	if (seninf->phy) {

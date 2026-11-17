@@ -77,7 +77,7 @@ static void mtk_phy_csi_dphy_ana_eq_tune(void __iomem *base)
  */
 static void mtk_mipi_phy_dump(struct device *dev, void __iomem *base, const char *when)
 {
-	dev_dbg(dev, "ana %s: A 0x00 %08x %08x %08x %08x | B 0x00 %08x %08x %08x %08x\n",
+	dev_info(dev, "DIAG ana %s: A 0x00 %08x %08x %08x %08x | B 0x00 %08x %08x %08x %08x\n",
 		when,
 		readl(base + 0x00), readl(base + 0x04), readl(base + 0x08), readl(base + 0x0c),
 		readl(base + CSIXB_OFFSET + 0x00), readl(base + CSIXB_OFFSET + 0x04),
