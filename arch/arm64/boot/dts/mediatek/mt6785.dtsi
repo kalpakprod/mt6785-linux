@@ -2083,7 +2083,13 @@
 		 */
 		csi_rx_phy: phy@11c80000 {
 			compatible = "mediatek,mt8365-csi-rx";
-			reg = <0 0x11c80000 0 0x1000>;
+			/*
+			 * Two halves, as the stock tree describes them: CSI0A at 0x11c80000 and CSI0B at
+			 * 0x11c81000, each 0x1000 (the vendor nodes mipi_rx_ana_csi0a/csi0b), and the
+			 * same split the upstream PHY addresses (MIPI_RX_ANA00_CSI0B = 0x1000 in the
+			 * ChromeOS register header). One window covers both.
+			 */
+			reg = <0 0x11c80000 0 0x2000>;
 			num-lanes = <4>;
 			#phy-cells = <1>;
 		};
