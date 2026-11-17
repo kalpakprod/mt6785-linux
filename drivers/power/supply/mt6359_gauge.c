@@ -95,7 +95,8 @@ struct mt6359_gauge {
 	struct power_supply *psy;
 	struct iio_channel *vbat;
 	struct iio_channel *ntc;
-	unsigned int r_fg_scale;
+	unsigned int r_fg_value;
+	unsigned int car_tune_value;
 	long long charge_full_uah;
 
 	/* Previous counter sample, for current_now. */
@@ -241,8 +242,9 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 			 * scale is right and only this one is short by two. That makes the
 			 * current LSB 2 * 305.176 uA, and both numbers now come from one scale.
 			 */
-			val->intval = (long long)(s16)raw *
-				      mt6359_iavg_to_ua(2, g->r_fg_scale);
+			val->intval = mt6359_current_to_ua((long long)(s16)raw,
+							   g->r_fg_value,
+							   g->car_tune_value);
 		}
 		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
@@ -342,9 +344,13 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	 * charge is multiplied by 10 (mt6359_gauge.c:258-260, :303-305). Printing that
 	 * factor as "10 mOhm" was wrong in the first trial; it is a factor.
 	 */
-	g->r_fg_scale = MT6359_R_FG_NOMINAL / 10;	/* R_FG_VALUE 5 -> x10 */
+	/* The board's own numbers, as the vendor battery profile carries them. */
+	g->r_fg_value = 5;		/* R_FG_VALUE 5, bat_setting/mt6785_battery_prop.dtsi:16 */
+	g->car_tune_value = 100;	/* CAR_TUNE_VALUE 100, same file :24 */
 	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,r-fg-value", &val) && val)
-		g->r_fg_scale = MT6359_R_FG_NOMINAL / val;
+		g->r_fg_value = val;
+	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,car-tune-value", &val) && val)
+		g->car_tune_value = val;
 
 	g->charge_full_uah = 5000000;	/* 5 Ah, as the vendor profile reports */
 	if (!of_property_read_u32(pdev->dev.of_node,
@@ -402,8 +408,9 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&g->sample, mt6359_gauge_sample);
 	schedule_delayed_work(&g->sample, msecs_to_jiffies(MT6359_FG_SAMPLE_MS));
 
-	dev_info(&pdev->dev, "MT6359 gauge: %lld uAh full, R_FG scale x%u, counter %lld\n",
-		 g->charge_full_uah, g->r_fg_scale, g->last_car);
+	dev_info(&pdev->dev, "MT6359 gauge: %lld uAh full, R_FG %u/%u x%d, car_tune %u, counter %lld\n",
+		 g->charge_full_uah, MT6359_R_FG_NOMINAL, g->r_fg_value,
+		 MT6359_R_FG_NOMINAL / g->r_fg_value, g->car_tune_value, g->last_car);
 	return 0;
 }
 

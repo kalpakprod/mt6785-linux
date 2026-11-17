@@ -37,8 +37,19 @@ int main(int argc, char **argv)
 	expect("car 1000 -> uAh", mt6359_car_to_uah(1000, 50), 85);
 	/* The same counter on a 10 mOhm board counts five times more charge. */
 	expect("car 1000 at 10 mOhm -> uAh", mt6359_car_to_uah(1000, 10), 425);
-	/* 1000 mA average current = 1000 * 305176 / 1000 = 305176 uA. */
-	expect("iavg 1000 -> uA", mt6359_iavg_to_ua(1000, 50), 305176);
+	/*
+	 * The vendor's current arithmetic (mt6359_gauge.c:250-266) with this board's
+	 * numbers: raw * 610352 / 100000, * 50 / 5, * 100 / 1000, in 0.1 mA.
+	 *   raw 1000 -> 6103 -> 61030 -> 6103 -> 610300 uA
+	 *   raw  498 -> 3039 -> 30390 -> 3039 -> 303900 uA (304 mA, the reference)
+	 */
+	expect("current raw 1000 -> uA", mt6359_current_to_ua(1000, 5, 100), 610300);
+	expect("current raw 498 -> uA", mt6359_current_to_ua(498, 5, 100), 303900);
+	/* A board with the nominal resistor and the same tune is ten times smaller:
+	 * 610352/100000 -> 6103 (integer, as the vendor's do_div does), x1, x0.1 ->
+	 * 610 in 0.1 mA -> 61000 uA. The truncation is the vendor's own. */
+	expect("current raw 1000, r_fg 50 -> uA",
+	       mt6359_current_to_ua(1000, 50, 100), 61000);
 	/* Half a 5 Ah battery is 50 %. */
 	expect("2500 mAh of 5000 mAh -> %", mt6359_uah_to_capacity(2500000, 5000000), 50);
 	expect("clamped high", mt6359_uah_to_capacity(6000000, 5000000), 100);
