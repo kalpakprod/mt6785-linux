@@ -405,21 +405,15 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		 * the virtual channel in [0x400+0x104].
 		 */
 		/*
-		 * The top-side PHY selection for the CSI port in use. The register is per port:
-		 * CSI0 at 0x1c, CSI1 at 0x20, CSI2 at 0x24 (mtk_seninf_reg.h:142-144), and only
-		 * CSI0's was ever written here, while the sensor sits on port 2. Written after the
-		 * PHYs are up, in the ChromeOS order (:351-356), with its 4D1C value and mask.
+		 * No write to the seninf top window here. The stock HAL never touches 0x1a04001c/0x20/0x24:
+		 * its port selection is the per-instance mux (setSeninfMuxCtrl, instance + 0x0..0x0c) and
+		 * the top mux registers at 0x1a040010 / 0x1a040014 (setSeninfTopMuxCtrl :0x30b98-0x30c34,
+		 * base [this+0x38] = the seninf block itself). The 0x1a040024 write that came before this
+		 * was MT8183's value for a register this SoC reads back as zero, so it is dropped.
 		 */
-		{
-			unsigned int ctl = 0x001c + 4 * phy_idx;
-
-			writel((0x7fffc8fe & readl(seninf->base + ctl)) | 0x80001100,
-			       seninf->base + ctl);
-			dev_info(seninf->dev,
-				 "top PHY select CSI%u: 0x%08llx = 0x%08x -> 0x%08x\n", phy_idx,
-				 (unsigned long long)seninf->base_pa + ctl,
-				 0x80001100u, readl(seninf->base + ctl));
-		}
+		dev_info(seninf->dev, "top window: 0x1a040010 0x%08x, 0x1a040014 0x%08x, 0x1a040024 0x%08x\n",
+			 readl(seninf->base + 0x10), readl(seninf->base + 0x14),
+			 readl(seninf->base + 0x24));
 
 		{
 			void __iomem *cmux = seninf->base + 0x400;
