@@ -467,6 +467,14 @@ struct dumper {
 };
 
 static const struct dumper dumpers[] = {
+	/*
+	 * The one shipped in this initramfs comes first: it is a static
+	 * kexec-tools vmcore-dmesg, so it works on a phone that has no
+	 * kexec-tools installed - which is the phone's case, and why the first
+	 * real capture could not produce the crashed kernel's dmesg at all.
+	 */
+	{ "vmcore-dmesg-initramfs", "/vmcore-dmesg",
+	  { "vmcore-dmesg", "/proc/vmcore", NULL } },
 	{ "vmcore-dmesg", "/usr/bin/vmcore-dmesg",
 	  { "vmcore-dmesg", "/proc/vmcore", NULL } },
 	{ "vmcore-dmesg-sbin", "/usr/sbin/vmcore-dmesg",
@@ -516,6 +524,12 @@ static int run_dumper(const struct dumper *d, const char *outpath)
 		dup2(fd, STDOUT_FILENO);
 		dup2(fd, STDERR_FILENO);
 #ifndef CRASH_TEST
+		if (!strncmp(d->path, "/vmcore-dmesg", 13) &&
+		    !strncmp(d->path, "/vmcore-dmesg", strlen(d->path))) {
+			/* Inside the initramfs: no chroot, it carries its own libc. */
+			execv(d->path, d->argv);
+			_exit(127);
+		}
 		snprintf(real, sizeof(real), "%s%s", mountpoint, d->path);
 		if (chroot(mountpoint))
 			_exit(126);
