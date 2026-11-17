@@ -123,3 +123,34 @@ battery's own curve instead of a constant. The sense-resistor unit above is alre
 fixed in the driver (`mediatek,r-fg-value = <5>`, the vendor's number), because a
 factor of ten in the wrong place is exactly the kind of error the host test exists to
 prevent.
+
+## Battery temperature: what is known and what must be measured
+
+The gauge reports no `temp` today because the NTC channel index is not in any source
+here, and a guessed sensor is worse than an absent one. What is known:
+
+* the PMIC does have the battery temperature converter: `MT6359_AUXADC_BAT_TEMP_0..2`
+  at `0x1226`, `0x1228`, `0x122a` (`upmu_hw.h:819-821`), i.e. the value is an AUXADC
+  result register, read the same way as battery voltage;
+* the vendor profile gives the temperature *points* its tables are built for -
+  `TEMPERATURE_T0..T4` = 50, 25, 10, 0, -10 degC
+  (`bat_setting/mt6785_battery_prop.dtsi:32-40`) - but not the NTC's beta or its
+  pull-up;
+* the upstream way to publish it is either the IIO consumer form the gauge already
+  uses (`io-channels = <&adc N>`, `io-channel-names = "ntc"`) if the converter is an
+  IIO ADC, or a `generic-adc-thermal` node over the same channel when a thermal zone
+  is wanted; the `simple-battery` binding has no NTC property of its own.
+
+What has to be measured on the phone, read-only, one run:
+
+    for f in /sys/bus/iio/devices/iio:device*/in_voltage*_raw; do
+        echo "$f $(cat $f)"
+    done > /tmp/adc-cold.txt
+    # then warm the phone (a 5 minute load), repeat into /tmp/adc-warm.txt
+    diff /tmp/adc-cold.txt /tmp/adc-warm.txt
+
+The channel whose raw value moves is the battery NTC; its converter (MT6359 AUXADC or
+the MT6360's) is the device path it lives under, and that pair is what goes into the
+gauge node as `ntc`. With the channel known, the vendor's beta/pull-up still has to
+come from the vendor NTC table or be derived from two known temperatures - the raw
+value alone does not become degrees without it.
