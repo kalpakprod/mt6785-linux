@@ -135,8 +135,24 @@
  * while the capture engine (CAMSV) does not exist yet: the packet counter moving is the proof
  * that a sensor is really streaming on its lanes.
  */
+/*
+ * Both sensors reach this receiver through the board's MIPI switch, whose select line is GPIO21
+ * (stock DT: camera1_mipisel_off/on at gpio21, the pinctrl states the vendor's kd_camera_hw1
+ * names cam_mipi_switch_sel_0/1). The vendor drives it per sensor index - SUB (the front OV13B10)
+ * high, MAIN2 (the IMX355) low (imgsensor_cfg_table.c:101-145) - so each sensor node says which
+ * position it wants and the receiver sets it before starting that sensor.
+ */
 &seninf1 {
 	status = "okay";
+	mipi-sel-gpios = <&pio 21 GPIO_ACTIVE_HIGH>;
+};
+
+&imx355 {
+	mipi-sel-level = <0>;
+};
+
+&ov13b10 {
+	mipi-sel-level = <1>;
 };
 
 /* The capture engine for the same stream, one engine to start with. */

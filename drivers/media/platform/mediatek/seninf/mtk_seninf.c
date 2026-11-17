@@ -32,6 +32,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/gpio/consumer.h>
 #include <linux/seq_file.h>
 #include <media/v4l2-async.h>
 #include <media/v4l2-subdev.h>
@@ -72,6 +73,8 @@ struct mtk_seninf {
 	void __iomem *base;
 	struct clk_bulk_data clks[2];
 	struct delayed_work late_counters;
+	/* The board's MIPI switch select line, when the sensors share one receiver port. */
+	struct gpio_desc *mipi_sel;
 	/* The analog MIPI RX block lives outside this node's window but is part of the receiver. */
 	void __iomem *ana;
 	struct dentry *debugfs;
@@ -315,6 +318,31 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	dev_info(seninf->dev, "stream on holds the receiver: pm usage %d\n",
 		 pm_runtime_active(seninf->dev));
 
+	/*
+	 * The switch position belongs to the sensor that is streaming: the state is read from that
+	 * sensor's own node (`mipi-sel-level`, 0 for the MAIN2 side, 1 for the SUB side) and then
+	 * driven before the sensor is started, with the value logged.
+	 */
+	{
+		struct media_pad *remote =
+			media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+
+		if (!IS_ERR(remote) && seninf->mipi_sel) {
+			struct v4l2_subdev *src =
+				media_entity_to_v4l2_subdev(remote->entity);
+			u32 level = 0;
+
+			if (src->dev && src->dev->of_node)
+				of_property_read_u32(src->dev->of_node, "mipi-sel-level",
+						     &level);
+
+			gpiod_set_value_cansleep(seninf->mipi_sel, level);
+			dev_info(seninf->dev, "mipi switch: %s -> %u, reads %d\n",
+				 src->name, level,
+				 gpiod_get_value_cansleep(seninf->mipi_sel));
+		}
+	}
+
 	/* And once more half a second later, when the sensor has really been transmitting. */
 	schedule_delayed_work(&seninf->late_counters, msecs_to_jiffies(500));
 
@@ -379,6 +407,14 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(seninf->clks), seninf->clks);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get the receiver clocks\n");
+
+	/*
+	 * Some boards route two sensors onto one receiver port through a switch: the vendor's
+	 * platform sequence drives this line per sensor index (SUB high, MAIN2 low,
+	 * imgsensor_cfg_table.c:101-145), and on rosemary it is GPIO21 (stock DT: the pinctrl states
+	 * camera1_mipisel_off/on at gpio21). Optional, so a board without one still works.
+	 */
+	seninf->mipi_sel = devm_gpiod_get_optional(dev, "mipi-sel", GPIOD_OUT_LOW);
 
 	platform_set_drvdata(pdev, seninf);
 	INIT_DELAYED_WORK(&seninf->late_counters, mtk_seninf_late_counters);
