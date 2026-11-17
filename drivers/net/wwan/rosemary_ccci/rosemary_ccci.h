@@ -458,6 +458,7 @@ struct ccci_md {
 	bool snap_valid;
 	struct dentry *debugfs;	/* the read-only state dumps */
 	void __iomem *toprgu;	/* read-back of the MD reset bit */
+	int vmodem_uv;		/* the voltage this driver asked for (0: it did not) */
 	u64 vendor_on_ns;	/* when the vendor power-on wrote its clears */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;

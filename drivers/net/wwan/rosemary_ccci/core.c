@@ -200,6 +200,7 @@ static int md_rails_prepare(struct ccci_md *md)
 	ret = regulator_enable(md->vsram_md);
 	if (ret)
 		return dev_err_probe(md->dev, ret, "vsram_md\n");
+	md->vmodem_uv = regulator_get_voltage(md->vmodem);
 	ret = regulator_enable(md->vmodem);
 	if (ret) {
 		regulator_disable(md->vsram_md);
@@ -815,6 +816,36 @@ static void md_vendor_power_on(struct ccci_md *md)
 		 readl(md->infra + INFRA_TOPAXI_PROTECTEN_1));
 }
 
+/*
+ * md_rails_state() - what the modem's two supplies actually are
+ * @md: the modem
+ * @when: a short tag
+ *
+ * The only physical precondition of the modem we have never checked. The vendor's own PMIC
+ * code fixes one of the two numbers: vmd1_pmic_setting_on() writes VSRAM_MD = 0x4F, i.e.
+ * 993750 uV (drivers/misc/mediatek/pmic/mt6359/v1/pmic.c:25, :31-32), and re-applies VMODEM's
+ * own VOSEL as the PMIC already holds it (:28-30). A modem whose SRAM or 1.8 V rail sits at
+ * the wrong voltage can run and still never reach its idle loop, which is exactly the shape
+ * of what the trials measure: alive, holding its 26 MHz request, never quiescing.
+ *
+ * Read-only: two regulator_get_voltage() calls and the difference from what this driver
+ * asked for.
+ */
+static void md_rails_state(struct ccci_md *md, const char *when)
+{
+	int vm, vs;
+
+	if (!md->vmodem || !md->vsram_md)
+		return;
+	vm = regulator_get_voltage(md->vmodem);
+	vs = regulator_get_voltage(md->vsram_md);
+	dev_info(md->dev,
+		 "%s: rails vmodem %d uV (%s), vsram_md %d uV (driver asks %d, vendor writes 993750)\n",
+		 when, vm,
+		 md->vmodem_uv ? "set by this driver" : "never set by this driver",
+		 vs, VSRAM_MD_UV);
+}
+
 static void md_ap_snapshot(struct ccci_md *md, const char *when)
 {
 	unsigned int sta = 0, sta2 = 0, con = 0, r13 = 0, iso = 0, prot = 0, prot_sta = 0;
@@ -1157,6 +1188,7 @@ static int md_power_cycle(struct ccci_md *md)
 	 */
 	md_loader_state(md, "clamp");
 	md_ap_snapshot(md, "before clamp");
+	md_rails_state(md, "before clamp");
 	if (!md_park(md))
 		dev_info(md->dev,
 			 "the modem did not park: trying the clamp first, as the vendor does\n");
@@ -1925,6 +1957,7 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	 * already happened.
 	 */
 	md_ap_snapshot(md, "probe");
+	md_rails_state(md, "probe");
 	md_spm_firmware_state(md);
 	ret = rosemary_ccci_tags_init(md);
 	if (ret) {
