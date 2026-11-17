@@ -276,6 +276,22 @@ struct ap_query_md_feature_v2_1 {
  * 1575-1580) -- so it lives in the infracfg window this driver already maps.
  */
 #define INFRA_BUS_DBG_CON	0x2fc
+
+/*
+ * TOPRGU, the watchdog block that also holds the per-peripheral software reset bits.
+ * The MD's bit is MT6785_TOPRGU_MD_RST = 7 (include/dt-bindings/reset/
+ * mediatek,mt6785-resets.h:22) and mainline's mtk_wdt writes it as
+ * "SWSYSRST |= BIT(id) | WDT_SWSYS_RST_KEY" (drivers/watchdog/mtk_wdt.c:155-183),
+ * with WDT_SWSYSRST at 0x18 (:60), the key 0x88000000 (:61) and WDT_SWSYSRST_EN at 0xfc
+ * (:63). The MT6785 wdt data has no has_swsysrst_en (mtk_wdt.c:96-98), so that enable
+ * register is not written on this SoC -- which is exactly why the read-back below prints
+ * it too.
+ */
+#define TOPRGU_PHYS		0x10007000
+#define TOPRGU_SWSYSRST		0x18
+#define TOPRGU_SWSYSRST_EN	0xfc
+#define TOPRGU_SWSYS_RST_KEY	0x88000000
+#define TOPRGU_MD_RST_BIT	7
 #define INFRA_RST0_AO		0x140
 #define INFRA_RST1_AO		0x144
 /* the MD bus protection: step1 BIT(7), step2 BIT(3)|BIT(4) (vendor clk-mt6785-pg.c) */
@@ -419,6 +435,7 @@ struct ccci_md {
 	u32 snap_pwr_status_2nd;
 	bool snap_valid;
 	struct dentry *debugfs;	/* the read-only state dumps */
+	void __iomem *toprgu;	/* read-back of the MD reset bit */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;
 	enum ccci_state state;

@@ -718,6 +718,38 @@ static bool md_domain_is_on(struct ccci_md *md)
  */
 static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1);
 
+/*
+ * md_reset_state() - what the MD's TOPRGU reset bit really reads
+ * @md: the modem
+ * @when: a short tag
+ *
+ * A master held in reset must acknowledge a protect, so if the acknowledgement does not
+ * come while we hold the reset asserted, the first thing to know is whether the reset is
+ * actually asserted. The vendor's own sequence says it is (mtk_wdt.c:155-183 writes
+ * SWSYSRST |= BIT(id) | key), but a write that does not take -- wrong key, a locked
+ * register, or a layout that differs on this SoC -- would look exactly like a modem that
+ * refuses. Reading the register back after the write and again after the retried clamp is
+ * the difference between those two stories.
+ */
+static void md_reset_state(struct ccci_md *md, const char *when)
+{
+	u32 rst, en;
+	bool has_line = md->md_reset != NULL;
+
+	if (!md->toprgu) {
+		dev_info(md->dev, "toprgu %s: not mapped, cannot read the reset bit back\n", when);
+		return;
+	}
+	rst = readl(md->toprgu + TOPRGU_SWSYSRST);
+	en = readl(md->toprgu + TOPRGU_SWSYSRST_EN);
+	dev_info(md->dev,
+		 "toprgu %s: SWSYSRST %#x (MD bit %u %s, key %#x), SWSYSRST_EN %#x (MD bit %u), reset line %s\n",
+		 when, rst, TOPRGU_MD_RST_BIT,
+		 (rst & BIT(TOPRGU_MD_RST_BIT)) ? "SET" : "clear",
+		 (u32)(rst & GENMASK(31, 28)), en, (u32)!!(en & BIT(TOPRGU_MD_RST_BIT)),
+		 has_line ? "present" : "ABSENT");
+}
+
 static void md_ap_snapshot(struct ccci_md *md, const char *when)
 {
 	unsigned int sta = 0, sta2 = 0, con = 0, r13 = 0, iso = 0, prot = 0, prot_sta = 0;
@@ -1087,6 +1119,7 @@ static int md_power_cycle(struct ccci_md *md)
 				 prot, sta);
 			reset_control_assert(md->md_reset);
 			reset_held = true;
+			md_reset_state(md, "after assert");
 			if (readl_poll_timeout(md->infra + INFRA_TOPAXI_PROTECT_STA1,
 					       sta, sta & BIT(7), 100, 200000))
 				dev_warn(md->dev,
@@ -1101,6 +1134,7 @@ static int md_power_cycle(struct ccci_md *md)
 			 */
 			md_pm_get(md);
 			md_pm_put(md);
+			md_reset_state(md, "after the second clamp");
 			if (md_domain_is_on(md)) {
 				dev_err(md->dev,
 					"the domain is still on after the clamp and the reset (PROTECTEN %#x, PROTECT_STA %#x)\n",
@@ -1133,8 +1167,10 @@ static int md_power_cycle(struct ccci_md *md)
 	 * Release the line only after the domain is back, so the modem starts from the
 	 * state a loader-started one would rather than half-started.
 	 */
-	if (reset_held)
+	if (reset_held) {
 		reset_control_deassert(md->md_reset);
+		md_reset_state(md, "after deassert");
+	}
 	if (!md_domain_is_on(md)) {
 		dev_err(md->dev, "the md domain did not come back on after the cycle\n");
 		return -EIO;
@@ -1654,6 +1690,7 @@ static int md_map_regs(struct ccci_md *md)
 	md->infra = devm_ioremap(md->dev, INFRA_PHYS, 0x1000);
 	md->spm = devm_ioremap(md->dev, SPM_PHYS, 0x1000);
 	md->sec_ao = devm_ioremap(md->dev, SEC_AO_PHYS, 0x1000);
+	md->toprgu = devm_ioremap(md->dev, TOPRGU_PHYS, 0x1000);
 	md->pll = devm_ioremap(md->dev, MD_PLL_PHYS, 0x1000);
 	md->boot_vector = devm_ioremap(md->dev, MD_BOOT_VECTOR_PHYS, 4);
 	if (!md->infra || !md->spm || !md->sec_ao || !md->pll || !md->boot_vector)
