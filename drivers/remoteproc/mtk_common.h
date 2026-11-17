@@ -95,6 +95,10 @@
 /* a free cfg scratch word (GENERAL_REG0, cfg + 0x50, scp_reg.h:39-42) and the value put in it */
 #define MT6785_SCP_PROBE_REG		0x50
 #define MT6785_SCP_PROBE_VALUE		0x5a5a1234
+/* the SSPM's reserved buffer, and the platform-init magic its control block starts with */
+#define MT6785_SSPM_RESERVED_PHYS	0x7f8c0000
+#define MT6785_SSPM_RESERVED_SIZE	0x100000
+#define MT6785_SSPM_PLT_INIT		0x504C5401
 /* the SCP's request word for the SPM and the status it polls (scp_reg.h:17, firmware 0x2c328) */
 #define MT6785_SCP_TO_SPM_REG		0x20
 #define MT6785_SCP_SPM_STATUS		0x1c

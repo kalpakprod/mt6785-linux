@@ -549,6 +549,7 @@ static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
 static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_log_sspm(struct mtk_scp *scp);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -632,6 +633,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	mt6785_scp_log_ulposc(scp, "before the release");
 	mt6785_scp_log_fmeter(scp, "before the release");
 	mt6785_scp_log_spm_handshake(scp, "before the release");
+	mt6785_scp_log_sspm(scp);
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -2513,6 +2515,45 @@ static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when)
 
 	dev_info(scp->dev, "%s: SCP->SPM request %#x, status %#x\n", when,
 		 readl(cfg + MT6785_SCP_TO_SPM_REG), readl(cfg + MT6785_SCP_SPM_STATUS));
+}
+
+/*
+ * The SSPM's platform handshake, read from its reserved buffer (0x7f8c0000, 1 MiB: LK's own
+ * mblock_alloc_range line and "SSPM: set reserved mem status=okay", pl_lk.txt:533, :2730).
+ *
+ * LK starts the SSPM itself - "[BLDR] SSPM Start without ddr reserved mode" after loading
+ * tinysys-sspm (pl_lk.txt:540-548) - so unlike the SPM it needs no kick. What it does need is the
+ * AP's platform init: the kernel writes the magic 0x504C5401 (PLT_INIT) at the start of that buffer
+ * and again at its last word, fills the control block and sends PLT_INIT over the IPI channel
+ * IPIS_C_PLATFORM, waiting for the acknowledgment (sspm/v2/sspm_plt.c:163-175 and :198-212). The
+ * idle and screen-off decisions - where this SoC's ULPOSC state is a condition - are handed to the
+ * SSPM through IPI_ID_SPM_SUSPEND (mt6785/mtk_sspm.c:27-49).
+ *
+ * Read only: the two magic words say whether any AP-side init ever happened, which no mainline
+ * driver does on this SoC.
+ */
+static void mt6785_scp_log_sspm(struct mtk_scp *scp)
+{
+	void __iomem *head, *tail;
+	u32 magic_head, magic_tail, ctl_magic, ctl_size;
+
+	head = ioremap(MT6785_SSPM_RESERVED_PHYS, SZ_4K);
+	if (!head) {
+		dev_info(scp->dev, "SSPM buffer not mappable, nothing to report\n");
+		return;
+	}
+	tail = ioremap(MT6785_SSPM_RESERVED_PHYS + MT6785_SSPM_RESERVED_SIZE - SZ_4K, SZ_4K);
+	magic_head = readl(head);
+	ctl_magic = readl(head + 0x10);
+	ctl_size = readl(head + 0x14);
+	magic_tail = tail ? readl(tail + SZ_4K - 4) : 0;
+
+	dev_info(scp->dev,
+		 "SSPM buffer: head %#x (PLT_INIT is %#x), tail %#x, ctrl magic %#x size %u\n",
+		 magic_head, MT6785_SSPM_PLT_INIT, magic_tail, ctl_magic, ctl_size);
+	if (tail)
+		iounmap(tail);
+	iounmap(head);
 }
 
 /* is this run of characters already in the loaded image? */
