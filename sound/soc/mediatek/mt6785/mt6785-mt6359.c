@@ -133,6 +133,20 @@ static const struct snd_soc_dapm_widget mt6785_mt6359_widgets[] = {
 };
 
 static const struct snd_soc_dapm_route mt6785_mt6359_routes[] = {
+	/*
+	 * The DPCM link between each front end and the codec back end, stated explicitly.
+	 * soc-pcm's dpcm_add_paths() connects a front end to a back end only when the back
+	 * end's DAI widget shows up in the front end's connected-widget list
+	 * (sound/soc/soc-pcm.c:1685-1730, dpcm_get_be() at :1610-1640), and on this card the
+	 * two live in the same component (the MTK AFE), so the walk had no route to follow
+	 * from the front end's UL1 widget to the back end's "ADDA Capture": a capture ran on
+	 * UL1 alone, the codec's capture side never powered (audio21: 0x238e 0, 0x23e8
+	 * 0x3000, ADC and mic bias 0), and the AFE's own generator was the only thing the
+	 * memif could have carried. These two routes are that link.
+	 */
+	{ "UL1", NULL, "ADDA Capture" },
+	{ "DL1", NULL, "ADDA Playback" },
+
 	/* the codec's analog outputs feed the two side paths */
 	{ "Headphone Jack", NULL, "Headphone L" },
 	{ "Headphone Jack", NULL, "Headphone R" },
