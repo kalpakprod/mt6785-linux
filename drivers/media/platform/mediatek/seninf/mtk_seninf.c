@@ -119,6 +119,9 @@ struct mtk_seninf {
 	 * sees an LP->HS transition - which is what every port measuring zero packets and zero
 	 * errors means. The upstream driver for this block family is phy-mtk-mipi-csi-0-5. */
 	struct phy *phy[3];
+	phys_addr_t inst_pa;
+	/* The receiver instance this stream is on; every per-instance access uses it. */
+	void __iomem *inst;
 	/* The block's physical base, so logs can name absolute addresses. */
 	phys_addr_t base_pa;
 	struct dentry *debugfs;
@@ -147,13 +150,19 @@ static int mtk_seninf_runtime_suspend(struct device *dev)
 static DEFINE_RUNTIME_DEV_PM_OPS(mtk_seninf_pm_ops, mtk_seninf_runtime_suspend,
 				 mtk_seninf_runtime_resume, NULL);
 
+/* The instance in use, or the block's first instance before the first stream. */
+static void __iomem *seninf_inst(struct mtk_seninf *seninf)
+{
+	return seninf->inst ? seninf->inst : seninf->base;
+}
+
 static int mtk_seninf_packet_cnt_show(struct seq_file *s, void *unused)
 {
 	struct mtk_seninf *seninf = s->private;
 	u32 val;
 
 	pm_runtime_get_sync(seninf->dev);
-	val = readl(seninf->base + SENINF_CSI2_PACKET_CNT);
+	val = readl(seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT);
 	pm_runtime_put_autosuspend(seninf->dev);
 
 	seq_printf(s, "%u\n", val);
@@ -168,7 +177,7 @@ static int mtk_seninf_err_cnt_show(struct seq_file *s, void *unused)
 	u32 val;
 
 	pm_runtime_get_sync(seninf->dev);
-	val = readl(seninf->base + SENINF_CSI2_ERR_CNT);
+	val = readl(seninf_inst(seninf) + SENINF_CSI2_ERR_CNT);
 	pm_runtime_put_autosuspend(seninf->dev);
 
 	seq_printf(s, "%u\n", val);
@@ -185,8 +194,8 @@ static int mtk_seninf_clear_write(void *data, u64 val)
 		return 0;
 
 	pm_runtime_get_sync(seninf->dev);
-	writel(~0U, seninf->base + SENINF_CSI2_PACKET_CNT);
-	writel(~0U, seninf->base + SENINF_CSI2_ERR_CNT);
+	writel(~0U, seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT);
+	writel(~0U, seninf_inst(seninf) + SENINF_CSI2_ERR_CNT);
 	writel(~0U, seninf->base + SENINF_MUX_IRQ_STATUS);
 	pm_runtime_put_autosuspend(seninf->dev);
 
@@ -252,16 +261,16 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 	unsigned int port;
 
 	dev_info(seninf->dev, "lane state: DGB_PORT 0x%08x LNRD_FSM 0x%08x (0x%08llx)\n",
-		 readl(seninf->base + 0x0a1c), readl(seninf->base + 0x0a2c),
-		 (unsigned long long)seninf->base_pa + 0x0a1c);
+		 readl(seninf_inst(seninf) + 0x0a1c), readl(seninf_inst(seninf) + 0x0a2c),
+		 (unsigned long long)seninf->inst_pa + 0x0a1c);
 
 	/* This instance first, then one line per receiver port of the block. */
 	dev_info(seninf->dev,
 		 "500 ms in: CSI2_EN 0x%08x, packet cnt %u, err cnt %u, INTSTA 0x%08x\n",
-		 readl(seninf->base + SENINF_CSI2_EN),
-		 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
-		 readl(seninf->base + SENINF_CSI2_ERR_CNT),
-		 readl(seninf->base + 0x0ac8));
+		 readl(seninf_inst(seninf) + SENINF_CSI2_EN),
+		 readl(seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT),
+		 readl(seninf_inst(seninf) + SENINF_CSI2_ERR_CNT),
+		 readl(seninf_inst(seninf) + 0x0ac8));
 
 	/*
 	 * Measured, not guessed: the per-index port assignment lives in the closed HAL, so the port
@@ -289,6 +298,11 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	int port = clamp(csi_port, 0, 2);
 	unsigned int seninf_idx = csi_ports[port].seninf_index;
 	unsigned int phy_idx = csi_ports[port].phy_index;
+	/* Every per-instance access goes through this base: the sensor is on SENINF5, not SENINF1. */
+	void __iomem *inst = seninf->base + 0x1000 * seninf_idx;
+
+	seninf->inst = inst;
+	seninf->inst_pa = seninf->base_pa + 0x1000 * seninf_idx;
 	int ret;
 
 	if (!enable) {
@@ -307,7 +321,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		}
 
 		cancel_delayed_work_sync(&seninf->late_counters);
-		writel(0, seninf->base + SENINF_CSI2_EN);
+		writel(0, inst + SENINF_CSI2_EN);
 			if (seninf->phy[phy_idx])
 			phy_power_off(seninf->phy[phy_idx]);
 		pm_runtime_put_autosuspend(seninf->dev);
@@ -409,9 +423,8 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	 * sensors this port carries. The values are written once per stream start; the receiver's
 	 * own mux programming (which engine reads which port) follows with the replay tables.
 	 */
-	writel(SENINF_CSI2_CTRL_LANES(4) | SENINF_CSI2_CTRL_DT(0x2b),
-	       seninf->base + SENINF_CSI2_CTRL);
-	writel(SENINF_CSI2_EN_ON, seninf->base + SENINF_CSI2_EN);
+	writel(SENINF_CSI2_CTRL_LANES(4) | SENINF_CSI2_CTRL_DT(0x2b), inst + SENINF_CSI2_CTRL);
+	writel(SENINF_CSI2_EN_ON, inst + SENINF_CSI2_EN);
 
 	dev_info(seninf->dev,
 		 "stream on: CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, packet cnt %u, err cnt %u\n",
