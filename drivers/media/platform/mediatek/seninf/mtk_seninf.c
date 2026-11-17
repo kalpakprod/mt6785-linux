@@ -46,11 +46,15 @@
 #define SENINF_MUX_SIZE			0x0D30
 
 /*
- * CSI2_CTRL packing, from the vendor's dump (seninf.c:212) and the receiver documentation of
- * the same generation (§2.2 of the camera research): the lane count sits in bits 3:0 encoded as
- * 0x10 | ((1 << lanes) - 1), and the data type in bits 21:16. The exact bit positions are from
- * the ChromeOS isp_50 driver for this register generation; they are the part of this driver
- * that still wants the stock-phone replay tables.
+ * CSI2_CTRL packing. What the vendor drop gives is the register's *address* and nothing else:
+ * `git grep SENINF_CSI2_CTRL` and `git grep set_csi_mipi` over the MT6785 4.19 tree return no
+ * hit at all - its receiver code is clock plumbing (`imgsensor/src/mt6785/seninf/seninf_clk.c`)
+ * plus the register dump in `imgsensor/src/common/v1_1/seninf.c` (`CSI2_CTRL` at 0x0210, :212;
+ * `CSI2_EN` at 0x0A00, :219). The field layout below is therefore the one the camera research
+ * documents for this register generation from the ChromeOS isp_50 driver (§2.2): lane count in
+ * bits 3:0 as 0x10 | ((1 << lanes) - 1), data type in bits 21:16. It is the part of this driver
+ * that still wants the stock-phone replay tables, and the register dump below exists so the
+ * phone can show what the closed HAL would have written.
  */
 #define SENINF_CSI2_CTRL_LANES(lanes)	(0x10 | ((1 << (lanes)) - 1))
 #define SENINF_CSI2_CTRL_DT(dt)		((dt) << 16)
@@ -152,6 +156,15 @@ static int mtk_seninf_regs_show(struct seq_file *s, void *unused)
 		{ "SENINF_CSI2_ERR_CNT", SENINF_CSI2_ERR_CNT },
 		{ "SENINF_MUX_IRQ_STATUS", SENINF_MUX_IRQ_STATUS },
 		{ "SENINF_MUX_SIZE", SENINF_MUX_SIZE },
+		/* The routing the HAL would program: top mux, cam mux and the cam mux checkers. */
+		{ "SENINF_TOP_MUX_CTRL0", 0x0010 },
+		{ "SENINF_TOP_MUX_CTRL1", 0x0014 },
+		{ "SENINF_CAM_MUX_CTRL1", 0x0404 },
+		{ "SENINF_CAM_MUX_CTRL2", 0x0408 },
+		{ "SENINF_CAM_MUX_IRQ_EN", 0x04A0 },
+		{ "SENINF_CAM_MUX_IRQ_STATUS", 0x04A8 },
+		{ "SENINF_CAM_MUX0_CHK_RES", 0x0508 },
+		{ "SENINF_MUX_CTRL0", 0x0D00 },
 	};
 	struct mtk_seninf *seninf = s->private;
 	unsigned int i;
