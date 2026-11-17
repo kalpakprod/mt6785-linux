@@ -48,6 +48,8 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/byteorder/generic.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/debugfs.h>
 #include <linux/pm_runtime.h>
@@ -340,6 +342,78 @@ static int md_state_open(struct inode *inode, struct file *file)
 	return single_open(file, md_state_show, inode->i_private);
 }
 
+/*
+ * The loader's tag block, exactly as the stock kernel reads it
+ *
+ * /chosen/ccci,modem_info_v2 names a 64 KiB block of tag records; the vendor kernel walks them with
+ * find_ccci_tag_inf() (ccci_util/ccci_util_lib_fo.c:127-200) and asks for these names: opt_using_lk_val,
+ * nc_smem_info_ext_num, nc_smem_info_ext, md1_bank4_cache_info, md1_bank4_cache_layout, smem_layout,
+ * ccb_info, udc_layout, md1_sib_info, md1_phy_cap, smem_dfd_size, smem_amms_pos_size,
+ * smem_align_padding_size, md1_smem_cahce_offset, mtee_support, hdr_count, hdr_tbl_inf, md1_chk,
+ * md1img, md3_chk, md3img, md_mpu_num, md_mpu_inf. Every one of them feeds memory layout, image type
+ * or a status string -- which is why the block is dumped here and nothing branches on it: the question
+ * was whether the kernel has a branch that skips the clamp for a modem the loader already started, and
+ * reading the source says it does not.
+ */
+static int md_tags_show(struct seq_file *s, void *unused)
+{
+	struct ccci_md *md = s->private;
+	u32 off = 0, n = 0;
+
+	if (!md->tags) {
+		seq_puts(s, "no tag block mapped (the loader gave none this boot)\n");
+		return 0;
+	}
+	seq_printf(s, "block %#llx + %#x, version %u, %u tags\n",
+		   (unsigned long long)md->lk_base, md->lk_size, md->lk_version,
+		   md->lk_tag_num);
+	for (n = 0; n < md->lk_tag_num && off + 76 < md->lk_size; n++) {
+		char name[65] = { };
+		char *d = kmalloc(512, GFP_KERNEL);
+		u32 doff, dsize, next;
+
+		memcpy_fromio(name, md->tags + off, 64);
+		{
+			u32 v[3];
+
+			memcpy_fromio(v, md->tags + off + 64, sizeof(v));
+			doff = le32_to_cpu(v[0]);
+			dsize = le32_to_cpu(v[1]);
+			next = le32_to_cpu(v[2]);
+		}
+		seq_printf(s, "  %2u %-32s data %#x + %-6u (%u bytes)\n",
+			   n, name, doff, dsize, dsize);
+		if (d && doff < md->lk_size && dsize <= 512 && !(doff & 3)) {
+			memcpy_fromio(d, md->tags + doff, dsize);
+			for (u32 i = 0; i < dsize && i < 64; i += 4) {
+				u32 w;
+
+				memcpy(&w, d + i, 4);
+				seq_printf(s, "        +%02x %08x\n", i,
+					   le32_to_cpu(w));
+			}
+		}
+		kfree(d);
+		if (!next)
+			break;
+		off += next;
+	}
+	return 0;
+}
+
+static int md_tags_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, md_tags_show, inode->i_private);
+}
+
+static const struct file_operations md_tags_fops = {
+	.owner = THIS_MODULE,
+	.open = md_tags_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int md_regs_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, md_regs_show, inode->i_private);
@@ -370,6 +444,7 @@ void rosemary_ccci_debugfs_add(struct ccci_md *md)
 	}
 	debugfs_create_file("state", 0444, md->debugfs, md, &md_state_fops);
 	debugfs_create_file("md_regs", 0444, md->debugfs, md, &md_regs_fops);
+	debugfs_create_file("tags", 0444, md->debugfs, md, &md_tags_fops);
 }
 
 void rosemary_ccci_debugfs_remove(struct ccci_md *md)
