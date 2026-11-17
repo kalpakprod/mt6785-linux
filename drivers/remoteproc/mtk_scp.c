@@ -2424,7 +2424,7 @@ static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when)
 {
 	static const u16 ofs[] = { 0x10c, 0x110, 0x220, 0x224 };
 	struct regmap *topckgen = scp->topckgen_regmap;
-	u32 meter[4], ck_cfg_6;
+	u32 meter[4], ck_cfg_0, ck_cfg_6;
 	unsigned int i;
 
 	if (IS_ERR_OR_NULL(topckgen))
@@ -2435,9 +2435,20 @@ static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when)
 			return;
 	if (regmap_read(topckgen, MT6785_TOP_CK_CFG_6, &ck_cfg_6))
 		return;
+	if (regmap_read(topckgen, MT6785_TOP_CK_CFG_0, &ck_cfg_0))
+		return;
 
-	dev_info(scp->dev, "%s: meter dbg %#x misc %#x cali0 %#x cali1 %#x ck_cfg_6 %#x\n",
-		 when, meter[0], meter[1], meter[2], meter[3], ck_cfg_6);
+	dev_info(scp->dev, "%s: meter dbg %#x misc %#x cali0 %#x cali1 %#x\n",
+		 when, meter[0], meter[1], meter[2], meter[3]);
+	/*
+	 * CK_CFG_0 (0x20) holds the SCP's own mux - select bits 16-18, power-down bit 23
+	 * (clk-mt6785-top.c:473) - so it decides whether the SCP mux is on and what it selects.
+	 * CK_CFG_6 (0x80) holds four others: msdc30_1 (0-2, pdn 7), top_audio (8-9, pdn 15),
+	 * top_audio_intbus (16-17, pdn 23) and pwrap_ulposc (24-26, pdn 31) (:503-508) - none of
+	 * them the SCP.
+	 */
+	dev_info(scp->dev, "%s: top ck_cfg_0 %#x (scp sel %u, scp pdn %u), ck_cfg_6 %#x\n",
+		 when, ck_cfg_0, (ck_cfg_0 >> 16) & 0x7, (ck_cfg_0 >> 23) & 0x1, ck_cfg_6);
 }
 
 /* a firmware log line: it holds a space and a lowercase letter */

@@ -99,6 +99,8 @@
 #define MT6785_SPM_ULPOSC_CON		0x440
 /* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
 #define MT6785_TOP_CK_CFG_6		0x80
+/* the SCP's own mux: select bits 16-18, power-down bit 23 (clk-mt6785-top.c:473) */
+#define MT6785_TOP_CK_CFG_0		0x20
 /* the reserved DRAM pool the SCP may use, and where its logger ring can live */
 #define MT6785_SCP_DRAM_PHYS		0x50000000
 #define MT6785_SCP_WDT_REG		0x84
