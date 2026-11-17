@@ -1891,26 +1891,46 @@ err_irq:
  * the MTKAIF receive side; silence means the fault is the memif side. Silent by construction: no
  * playback is involved and no output stage is powered.
  */
+static bool mt6785_afe_sinegen_held;
+
 static int mt6785_afe_sinegen_set(struct mtk_base_afe *afe, u32 con0, u32 loopback)
 {
+	bool on = con0 || loopback != INNER_LOOP_BACK_MODE_MASK;
+	u32 rd0 = 0, rd2 = 0;
 	int ret;
 
-	ret = pm_runtime_resume_and_get(afe->dev);
-	if (ret)
-		return ret;
+	/*
+	 * The generator must survive the AFE going idle: mt6785_afe_runtime_suspend() resets
+	 * AFE_SINEGEN_CON0 and writes INNER_LOOP_BACK_MODE = 0x3f, so a one-shot write followed by
+	 * pm_runtime_put() is undone before the next capture (that is exactly what trial 20 saw:
+	 * 0x1f0 and 0x1f4 read 0 while the switch was on). A reference is held from "on" until
+	 * "off", which keeps the whole AFE awake and the generator programmed.
+	 */
+	if (on) {
+		ret = pm_runtime_resume_and_get(afe->dev);
+		if (ret)
+			return ret;
+		mt6785_afe_sinegen_held = true;
+	}
 
 	regmap_write(afe->regmap, AFE_SINEGEN_CON0, con0);
 	regmap_update_bits(afe->regmap, AFE_SINEGEN_CON2,
 			   INNER_LOOP_BACK_MODE_MASK_SFT,
 			   (loopback & INNER_LOOP_BACK_MODE_MASK) <<
 			   INNER_LOOP_BACK_MODE_SFT);
-	if (!con0 && loopback == INNER_LOOP_BACK_MODE_MASK)
-		dev_info(afe->dev, "sine generator off again\n");
-	else
-		dev_info(afe->dev, "sine generator con0 %#x, inner loopback %u\n",
-			 con0, loopback);
 
-	pm_runtime_put(afe->dev);
+	/* prove on the dump that it took: the values read back are the ones that matter */
+	regmap_read(afe->regmap, AFE_SINEGEN_CON0, &rd0);
+	regmap_read(afe->regmap, AFE_SINEGEN_CON2, &rd2);
+	dev_info(afe->dev, "sine generator %s: con0 wrote %#x reads %#x, inner loopback wrote %u reads %u\n",
+		 on ? "on" : "off", con0, rd0, loopback,
+		 (rd2 & INNER_LOOP_BACK_MODE_MASK_SFT) >> INNER_LOOP_BACK_MODE_SFT);
+
+	if (!on && mt6785_afe_sinegen_held) {
+		mt6785_afe_sinegen_held = false;
+		pm_runtime_put(afe->dev);
+	}
+
 	return 0;
 }
 
