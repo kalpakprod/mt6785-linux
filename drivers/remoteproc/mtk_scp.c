@@ -572,6 +572,7 @@ static void mt6785_scp_ipi_ack(struct mtk_scp *scp)
 static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 {
 	void __iomem *cfg = scp->cluster->reg_base;
+	u32 rstn, tcm0, tcm1;
 
 	dev_err(scp->dev, "core PC %#x LR %#x SP %#x PSP %#x\n",
 		readl(cfg + MT8183_SCP_DEBUG_PC), readl(cfg + MT8183_SCP_DEBUG_LR),
@@ -579,6 +580,24 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
 		readl(cfg + MT8183_SCP_SLEEP_STATUS),
 		readl(cfg + MT8183_SCP_TO_HOST), readl(cfg + MT8183_HOST_TO_SCP));
+
+	/*
+	 * The two questions the core's own state cannot answer by itself: is the block out of
+	 * reset, and did the loader reach TCM at all. All-zero PC/LR/SP/PSP means either "the core
+	 * never ran" or "it ran and read a zero vector table", and these two reads separate them:
+	 * SW_RSTN bit 0 is what this driver writes to release the core, and TCM word 0 is the
+	 * vector's initial stack pointer (0x538 for the vendor's loader record at TCM 0 - while a
+	 * zero there means the ELF segment never landed or the TCM is not powered).
+	 */
+	rstn = readl(cfg + MT8183_SW_RSTN);
+	tcm0 = readl(scp->sram_base);
+	tcm1 = readl(scp->sram_base + 4);
+	dev_err(scp->dev, "sw_rstn %#x (bit0 released), TCM[0] %#x TCM[4] %#x\n",
+		rstn, tcm0, tcm1);
+	if (!(tcm0 | tcm1))
+		dev_err(scp->dev, "TCM holds no vector table: the load or the TCM power is the fault, not the core\n");
+	else if (tcm0 >= scp->sram_size)
+		dev_err(scp->dev, "TCM[0] = %#x is not a stack pointer inside the TCM\n", tcm0);
 }
 
 static int mt6785_scp_after_load(struct mtk_scp *scp,
