@@ -110,6 +110,9 @@
  * (mt6785/mtk_spm_resource_req_console.c:54-67, fields at mtk_spm_reg.h:825-827).
  */
 #define MT6785_SPM_SRC_REQ		0xb8
+/* the SCP's own voltage-level word for the SPM, and its lowest-OPP value (scp_reg.h:51) */
+#define MT6785_SCP_VOL_LV		0x94
+#define MT6785_SCP_VOL_LV_OPP0		0x0
 #define MT6785_SPM_SCP_SRC_REQ		(BIT(4) | BIT(3) | BIT(1))
 /* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
 #define MT6785_TOP_CK_CFG_6		0x80
