@@ -609,12 +609,36 @@ static int md_power_cycle(struct ccci_md *md)
 	int ret;
 
 	if (!md_wait_sleep(md)) {
-		dev_err(md->dev,
-			"the modem did not go to sleep (PCM_REG13_DATA %#x still asks for its clock): it cannot acknowledge the bus protection, so the power cycle is not attempted\n",
-			readl(md->spm + SPM_PCM_REG13_DATA));
-		return -EAGAIN;
+		unsigned int v = readl(md->spm + SPM_PCM_REG13_DATA);
+
+		/*
+		 * The modem is neither parking nor answering, so it cannot acknowledge
+		 * the bus protection and the clamp would time out -- which is the state
+		 * trials 16 to 22 kept meeting. Take it down without its cooperation: the
+		 * TOPRGU MD reset line stops it issuing transactions, and with the modem
+		 * held in reset the clamp's acknowledgement is no longer the modem's to
+		 * give.
+		 *
+		 * The vendor never does this (its ccci tree has no MD reset at all; its
+		 * only hard reset is the whole-SoC one at reboot), so the order here is
+		 * this driver's and is stated as such: assert, power off, power on,
+		 * deassert -- the line is held across the whole cycle so the modem cannot
+		 * come back half-started.
+		 */
+		if (!md->md_reset) {
+			dev_err(md->dev,
+				"the modem did not go to sleep (PCM_REG13_DATA %#x still asks for its clock) and there is no reset line to take it down\n",
+				v);
+			return -EAGAIN;
+		}
+		dev_info(md->dev,
+			 "the modem did not go to sleep (PCM_REG13_DATA %#x still asks for its clock): asserting the MD reset to take it down without its cooperation\n",
+			 v);
+		reset_control_assert(md->md_reset);
+		msleep(20);
+	} else {
+		md_step(md, "cycle: modem asleep");
 	}
-	md_step(md, "cycle: modem asleep");
 
 	pm_runtime_put_sync(md->dev);
 	if (md_domain_is_on(md)) {
@@ -660,6 +684,13 @@ static int md_power_cycle(struct ccci_md *md)
 	if (ret)
 		return ret;
 	md_step(md, "cycle: gate on");
+	/*
+	 * Deassert only now: the modem has been held in reset across the power-off, so
+	 * it starts from the same point a loader-started one would -- boot ROM waiting
+	 * for the release.
+	 */
+	if (md->md_reset)
+		reset_control_deassert(md->md_reset);
 	if (!md_domain_is_on(md)) {
 		dev_err(md->dev, "the md domain did not come back on after the cycle\n");
 		return -EIO;
@@ -1267,6 +1298,17 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	md->vsram_md = devm_regulator_get(dev, "vsram-md");
 	if (IS_ERR(md->vsram_md))
 		return dev_err_probe(dev, PTR_ERR(md->vsram_md), "vsram-md\n");
+
+	/*
+	 * The modem's reset line, from the SoC's TOPRGU: the only way to take down a
+	 * modem that neither answers nor parks. Optional, because a board that does
+	 * not describe it loses the recovery and not the driver.
+	 */
+	md->md_reset = devm_reset_control_get_optional_exclusive(dev, NULL);
+	if (IS_ERR(md->md_reset))
+		return dev_err_probe(dev, PTR_ERR(md->md_reset), "md reset line\n");
+	if (!md->md_reset)
+		dev_info(dev, "no md reset line in the device tree: a modem that will not park cannot be reset\n");
 
 	ret = md_request_irqs(md);
 	if (ret)

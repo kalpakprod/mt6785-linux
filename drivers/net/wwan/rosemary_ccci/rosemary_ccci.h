@@ -25,6 +25,7 @@
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/reset.h>
 #include <linux/regulator/consumer.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
@@ -387,6 +388,7 @@ struct ccci_md {
 	/* boot */
 	struct work_struct boot_work;
 	bool rails_on;		/* this driver enabled vmodem and vsram_md */
+	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;
 	enum ccci_state state;
 	bool first_boot;
