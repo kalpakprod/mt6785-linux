@@ -555,10 +555,28 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 		int ocv = 0, pct;
 		long long cur_raw = 0, ocv_uv = 0;
 
-		if (!mt6359_gauge_chosen_ocv_uV(&pdev->dev, &ocv_uv)) {
+		ret = mt6359_gauge_chosen_ocv_uV(&pdev->dev, &ocv_uv);
+		if (ret)
+			dev_info(&pdev->dev,
+				 "OCV: no usable value from /chosen (%d), trying the live voltage\n",
+				 ret);
+		else
+			dev_info(&pdev->dev, "OCV: %lld uV, table %d..%d uV (%d entries)\n",
+				 ocv_uv, g->batt->ocv_table[0][0].ocv,
+				 g->batt->ocv_table[0][g->batt->ocv_table_size[0] - 1].ocv,
+				 g->batt->ocv_table_size[0]);
+
+		if (!ret) {
 			pct = power_supply_batinfo_ocv2cap(g->batt, (int)ocv_uv,
 							   g->batt->ocv_temp[0]);
-			if (pct > 0) {
+			/*
+			 * 0 % is a valid answer for an empty battery; only a negative return is
+			 * the helper refusing. The first version treated 0 as failure, which hid
+			 * the branch entirely when the table and the voltage disagreed.
+			 */
+			dev_info(&pdev->dev, "OCV: ocv2cap(%lld uV, %d C) = %d %%\n",
+				 ocv_uv, g->batt->ocv_temp[0], pct);
+			if (pct >= 0) {
 				g->base_uah = g->charge_full_uah * pct / 100;
 				g->base_car = mt6359_car_to_uah(g->last_car,
 								MT6359_R_FG_NOMINAL);
@@ -639,7 +657,12 @@ ntc_log:
 	} else {
 		int raw = 0, rret = iio_read_channel_raw(g->ntc, &raw);
 
-		if (rret)
+		/*
+		 * IIO returns the *type* of the value on success - IIO_VAL_INT is 1 - and a
+		 * negative errno on failure. Testing "non-zero" made every good read look
+		 * broken: that is why conn33 logged "channel read failed (1)".
+		 */
+		if (rret < 0)
 			dev_info(&pdev->dev, "NTC: channel read failed (%d)\n", rret);
 		else
 			dev_info(&pdev->dev,
