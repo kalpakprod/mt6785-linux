@@ -268,6 +268,14 @@ struct ap_query_md_feature_v2_1 {
 #define SPM_PROJECT_KEY		0xb1600000
 
 #define INFRA_MD_SRCCLKENA	0xf0c	/* low byte 0x21 on, 0 off */
+/*
+ * BUS_DBG_CON, the infra bus-debug block's control/status register. The offset is not
+ * guessed: the vendor's own device tree states it for this SoC --
+ * bus_dbg@10208000, compatible "mediatek,bus_dbg-v2", regs 0x10208000 and 0x10001000,
+ * "mediatek,bus_dbg_con_offset = <0x2fc>" (arch/arm64/boot/dts/mediatek/mt6785.dts:
+ * 1575-1580) -- so it lives in the infracfg window this driver already maps.
+ */
+#define INFRA_BUS_DBG_CON	0x2fc
 #define INFRA_RST0_AO		0x140
 #define INFRA_RST1_AO		0x144
 /* the MD bus protection: step1 BIT(7), step2 BIT(3)|BIT(4) (vendor clk-mt6785-pg.c) */
@@ -407,6 +415,9 @@ struct ccci_md {
 	u32 clk_on_count;	/* how often they have been enabled */
 	u32 clk_off_count;	/* ... and disabled, so a trial can see both */
 	unsigned int clamp_wait_ms;	/* how long the last clamp waited for its ack */
+	u32 snap_pwr_status;		/* the previous AP-state snapshot, for the diff */
+	u32 snap_pwr_status_2nd;
+	bool snap_valid;
 	struct dentry *debugfs;	/* the read-only state dumps */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;

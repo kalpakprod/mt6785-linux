@@ -682,7 +682,74 @@ static bool md_domain_is_on(struct ccci_md *md)
  * So this prints the ROM words, the domain bit, the two request bits and the boot
  * stats together, once at probe and once at the clamp.
  */
+/*
+ * md_ap_snapshot() - the AP-side state at one moment, with the domains that changed
+ * @md: the modem
+ * @when: a short tag for the log line
+ *
+ * Trial 33 left one hypothesis standing: the modem's bus master may have a transaction
+ * stuck toward a target the AP took away -- a slave inside a power domain that the
+ * forced genpd sync powered off (PWR_STATUS went 0x83f7ffff -> 0x27dffd there, and the
+ * modem's own boot stats moved 0x2c04000a -> 0x2c04010a at the same moment). A master
+ * with an outstanding transaction cannot acknowledge the bus protect, which is exactly
+ * what we measure.
+ *
+ * So the snapshot is taken three times -- at probe, just before the clamp and just
+ * after the timeout -- and the important column is the diff: which domain bits were on
+ * at the previous moment and are off now.
+ *
+ * Everything printed here is AP-side and citable:
+ *  - PWR_STATUS 0x160 and PWR_STATUS_2ND 0x164 (base/power/spm/mt6785/mtk_spm_reg.h;
+ *    mt6785-pm-domains.h:13-14), bit 0 being the modem's own domain
+ *    (clk-mt6785-pg.c:488);
+ *  - MD1_PWR_CON 0x318, PCM_REG13_DATA 0x110 with bits 2 and 30 named
+ *    (pcm_def.h:148, :177), MD_EXT_BUCK_ISO_CON 0x3b0;
+ *  - the three bus-protect windows and their statuses (0x220/0x228, 0x250/0x258);
+ *  - BUS_DBG_CON at infracfg 0x2fc, whose offset the vendor's own device tree states
+ *    (mt6785.dts:1575-1580).
+ *
+ * Deliberately not read, and named here so the gap is visible: the EMI MPU violation
+ * registers (emi_mpu@10226000, mt6785.dts:1842-1844) and the DEVAPC violation registers
+ * (devapc@10207000 with its AO windows, mt6785.dts:1565-1572; devapc_ao_md@10019000,
+ * :1067-1070). Their register layouts live in the vendor's emi_mpu and devapc drivers,
+ * which are in none of the sources we have -- the whole project was searched -- and
+ * reading undocumented offsets in those blocks is the same class of risk that hung the
+ * phone in trial 31. They go in when the layout can be cited.
+ */
 static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1);
+
+static void md_ap_snapshot(struct ccci_md *md, const char *when)
+{
+	unsigned int sta = 0, sta2 = 0, con = 0, r13 = 0, iso = 0, prot = 0, prot_sta = 0;
+	unsigned int prot1 = 0, prot_sta1 = 0, dbg = 0, changed = 0;
+	bool had = md->snap_valid;
+
+	if (!md->spm)
+		return;
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+	regmap_read(md->spm_map, SPM_PWR_STATUS_2ND, &sta2);
+	regmap_read(md->spm_map, SPM_MD1_PWR_CON, &con);
+	regmap_read(md->spm_map, SPM_MD_EXT_BUCK_ISO_CON, &iso);
+	r13 = readl(md->spm + SPM_PCM_REG13_DATA);
+	if (md->infra) {
+		prot = readl(md->infra + INFRA_TOPAXI_PROTECTEN);
+		prot_sta = readl(md->infra + INFRA_TOPAXI_PROTECT_STA1);
+		prot1 = readl(md->infra + INFRA_TOPAXI_PROTECTEN_1);
+		prot_sta1 = readl(md->infra + INFRA_TOPAXI_PROTECT_STA1_1);
+		dbg = readl(md->infra + INFRA_BUS_DBG_CON);
+	}
+	if (had)
+		changed = md->snap_pwr_status ^ sta;
+	dev_info(md->dev,
+		 "%s: PWR_STATUS %#x (was %#x, domains that changed %#x)%s, 2ND %#x, PCM_REG13_DATA %#x (1.8V %u, 26MHz %u), MD1_PWR_CON %#x, ISO %#x, PROTECTEN %#x STA1 %#x, PROTECTEN_1 %#x STA1_1 %#x, BUS_DBG_CON %#x\n",
+		 when, sta, md->snap_pwr_status, changed,
+		 had ? "" : " (first snapshot)", sta2, r13,
+		 (u32)!!(r13 & SPM_R13_MD_VRF18_REQ), (u32)!!(r13 & SPM_R13_MD_SRCCLKENA_0),
+		 con, iso, prot, prot_sta, prot1, prot_sta1, dbg);
+	md->snap_pwr_status = sta;
+	md->snap_pwr_status_2nd = sta2;
+	md->snap_valid = true;
+}
 
 static void md_loader_state(struct ccci_md *md, const char *when)
 {
@@ -939,6 +1006,7 @@ static int md_power_cycle(struct ccci_md *md)
 	 * a preparation for it.
 	 */
 	md_loader_state(md, "clamp");
+	md_ap_snapshot(md, "before clamp");
 	if (!md_park(md))
 		dev_info(md->dev,
 			 "the modem did not park: trying the clamp first, as the vendor does\n");
@@ -975,6 +1043,7 @@ static int md_power_cycle(struct ccci_md *md)
 	}
 	prot = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0;
 	sta = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0;
+	md_ap_snapshot(md, "after clamp");
 	dev_info(md->dev,
 		 "clamp: waited %u ms, PROTECTEN %#x, PROTECT_STA1 %#x (bit 7 %u), md domain %s\n",
 		 md->clamp_wait_ms, prot, sta, (u32)!!(sta & BIT(7)),
