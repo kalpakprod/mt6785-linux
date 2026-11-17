@@ -462,6 +462,7 @@ struct ccci_md {
 	u64 vendor_on_ns;	/* when the vendor power-on wrote its clears */
 	u8 page_win;		/* debugfs page view: 0 NC, 1 C, 2 none selected */
 	u32 page_off;
+	unsigned int first_ccif_ms;	/* kernel start -> the first CCIF read */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;
 	enum ccci_state state;

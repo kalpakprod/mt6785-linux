@@ -1478,10 +1478,12 @@ static int md_boot(struct ccci_md *md)
 				md_boot_stage(md, &s0, &s1);
 			if (md->boot_vector)
 				bv = readl(md->boot_vector);
+			md->first_ccif_ms = ktime_ms_delta(ktime_get_boottime(),
+							  ktime_set(0, 0));
 			dev_info(md->dev,
-				 "CCIF before the reset: RCHNUM %#x BUSY %#x, SRAM header %08x %08x ch %u seq %u assert %u reserved %08x; MD_BOOT_VECTOR_EN %#x, boot stats %#x/%#x\n",
-				 rchnum, busy, h.data[0], h.data[1], h.channel, h.seq_num,
-				 h.assert_bit, h.reserved, bv, s0, s1);
+				 "CCIF before the reset (first read %u ms after kernel start): RCHNUM %#x BUSY %#x, SRAM header %08x %08x ch %u seq %u assert %u reserved %08x; MD_BOOT_VECTOR_EN %#x, boot stats %#x/%#x\n",
+				 md->first_ccif_ms, rchnum, busy, h.data[0], h.data[1],
+				 h.channel, h.seq_num, h.assert_bit, h.reserved, bv, s0, s1);
 		}
 		if (md->first_boot)
 			hs1_pending = ccci_ccif_pending_hs1(md, &hs1_query);
@@ -1812,13 +1814,43 @@ static int md_boot(struct ccci_md *md)
 	ccci_set_state(md, MD_STATE_HS1);
 	dev_info(md->dev, "MD released, waiting for the first handshake\n");
 
-	if (!wait_for_completion_timeout(&md->hs1, HS1_TIMEOUT)) {
+	/*
+	 * Once a second for the whole HS1 budget, record what the modem is doing: the two stage
+	 * words, PWR_STATUS and the CCIF channel registers. If the handshake never comes -- the
+	 * cold boot is the one run where it may not -- this is the only trace of the thirty
+	 * seconds that decides the next step.
+	 */
+	for (int i = 0; i < HS1_TIMEOUT / HZ; i++) {
+		u32 s0 = 0, s1 = 0;
+
+		if (wait_for_completion_timeout(&md->hs1, HZ))
+			goto hs1_got;
+		if (md->pll)
+			md_boot_stage(md, &s0, &s1);
+		dev_info(md->dev,
+			 "hs1 wait %2d/%d s: stages %#x/%#x, PWR_STATUS %#x, RCHNUM %#x BUSY %#x ACK %#x\n",
+			 i + 1, (int)(HS1_TIMEOUT / HZ), s0, s1,
+			 readl(md->spm + SPM_PWR_STATUS),
+			 readl(md->ccif_ap + APCCIF_RCHNUM),
+			 readl(md->ccif_ap + APCCIF_BUSY),
+			 readl(md->ccif_ap + APCCIF_ACK));
+	}
+	{
+		/* the modem's own shared rings, first words, to see whether it is still writing */
+		u32 m0 = md->nc ? readl(md->nc + NC_CCISM_MCU) : 0;
+		u32 m1 = md->nc ? readl(md->nc + NC_CCISM_MCU + 4) : 0;
+
 		md_dump_state(md, "at HS1 timeout");
-		dev_err(md->dev, "HS1 timeout: power status %#x, exception channels %#lx\n",
-			readl(md->spm + SPM_PWR_STATUS), md->ex_channels);
+		dev_err(md->dev,
+			"HS1 timeout: PWR_STATUS %#x, exception channels %#lx, stage words %#x/%#x, CCISM_MCU first words %#x %#x, first CCIF read was %u ms after boot\n",
+			readl(md->spm + SPM_PWR_STATUS), md->ex_channels,
+			({ u32 a, b; md_boot_stage(md, &a, &b); a; }),
+			({ u32 a, b; md_boot_stage(md, &a, &b); b; }), m0, m1,
+			md->first_ccif_ms);
 		ccci_set_state(md, MD_STATE_EXCEPTION);
 		return 0;
 	}
+hs1_got:
 hs1_done:
 	if (limit < 3) {
 		dev_info(md->dev, "stop_after m2: the modem stays at the first handshake\n");
@@ -2145,8 +2177,22 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	 */
 	rosemary_ccci_debugfs_add(md);
 
-	dev_info(dev, "probed: stop_after %s, the modem stays %s until userspace boots it\n",
-		 stop_after ?: "?", ccci_state_name(md->state));
+	/*
+	 * Start the modem from here, as stock does: in the shipping kernel the FSM's start
+	 * command comes from userspace's ccci_mdinit and the kernel itself does the work of
+	 * attaching (modem_sys1.c:436-487). A driver that waits for someone to write into
+	 * sysfs misses the modem's own handshake window entirely, which is what every trial so
+	 * far did. stop_after still decides how far the boot goes (m2 by default, m4 for a
+	 * full run to "ready").
+	 */
+	if (stage_limit() >= 2) {
+		dev_info(dev, "probed: starting the modem now (stop_after %s), as stock does at probe\n",
+			 stop_after ?: "?");
+		queue_work(system_long_wq, &md->boot_work);
+	} else {
+		dev_info(dev, "probed: stop_after %s, the modem stays %s until a boot request\n",
+			 stop_after ?: "?", ccci_state_name(md->state));
+	}
 	return 0;
 }
 
