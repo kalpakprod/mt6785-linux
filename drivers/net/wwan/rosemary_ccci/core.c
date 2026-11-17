@@ -629,6 +629,17 @@ static int md_power_cycle(struct ccci_md *md)
 	else
 		md_step(md, "cycle: modem asleep");
 
+	/*
+	 * The cycle owns its runtime-PM reference instead of borrowing the caller's.
+	 * Only one get is taken per boot request (either this function or the
+	 * caller's else-branch), so a put that assumed one was held underflowed on
+	 * the second request of a boot -- trial 24 printed
+	 * "Runtime PM usage count underflow!" exactly there. A resume on a domain
+	 * that is already on costs nothing and is answered from genpd's own state.
+	 */
+	ret = pm_runtime_resume_and_get(md->dev);
+	if (ret)
+		return ret;
 	pm_runtime_put_sync(md->dev);
 	if (md_domain_is_on(md)) {
 		prot = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0;
@@ -837,19 +848,8 @@ static int md_boot(struct ccci_md *md)
 				ex &= ex - 1;
 			}
 			modem_in_ee = true;
-		} else {
-			ccci_ccif_reset(md);
 		}
 	}
-	md_step(md, hs1_pending ? "ccif_reset (skipped)" : "ccif_reset");
-	/*
-	 * The data path starts before the modem (the vendor is in
-	 * BOOT_WAITING_FOR_HS1 here), and a modem without one never reaches its
-	 * second handshake -- so a failure is reported and the boot goes on.
-	 */
-	if (ccci_dpmaif_start(md))
-		dev_warn(md->dev, "no packet data path\n");
-	md_step(md, "dpmaif_start");
 	/*
 	 * The order here is the vendor's, and it matters.
 	 *
@@ -1002,6 +1002,39 @@ static int md_boot(struct ccci_md *md)
 		dev_info(md->dev, "HS1 answered from the query the loader's modem left behind\n");
 		goto hs1_done;
 	}
+	/*
+	 * The CCIF is reset only NOW, after the modem has been brought to a known
+	 * power state -- and that is the vendor's order, not a detail.
+	 *
+	 * On stock the AP never touches the CCIF before it clamps the modem the
+	 * loader released: md_start_platform() (mt6785/md_sys1_platform.c:591-653)
+	 * polls the boot ROM and powers the modem off, and the CCIF is only brought
+	 * up afterwards, in md_cd_start()'s hif start, where ccif_start() turns the
+	 * clocks on and resets the block (ccci_hif_ccif.c:2075-2087). This driver
+	 * used to reset the CCIF first and clamp second, i.e. it reset the block and
+	 * wiped the SRAM header under a modem that was live in its boot ROM and
+	 * polling that very SRAM.
+	 *
+	 * What that costs is visible in trial 24: the SRAM header read all zeros in
+	 * the second request while the modem's stage words had not moved, and the
+	 * clamp then timed out on step 1 with every other bit acknowledged. A master
+	 * left with an outstanding transaction cannot go idle, and nothing the AP can
+	 * write will make it -- so the hypothesis this fixes is that we were
+	 * creating that transaction ourselves. With the order below a modem that has
+	 * never been touched is clamped, and the block is reset on a modem that is
+	 * either fresh or dead, in both cases with nothing outstanding.
+	 */
+	ccci_ccif_reset(md);
+	md_step(md, "ccif_reset");
+	/*
+	 * The data path starts after the block is reset and before the release (the
+	 * vendor is in BOOT_WAITING_FOR_HS1 here), and a modem without one never
+	 * reaches its second handshake -- so a failure is reported and the boot goes
+	 * on.
+	 */
+	if (ccci_dpmaif_start(md))
+		dev_warn(md->dev, "no packet data path\n");
+	md_step(md, "dpmaif_start");
 	md_dump_state(md, "before release");
 
 	/*
