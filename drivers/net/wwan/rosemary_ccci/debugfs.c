@@ -582,6 +582,95 @@ static int md_shmem_map_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
+/*
+ * One named page, on demand
+ *
+ * The map says which pages hold something; this says what is in one of them, and only one per
+ * read: echo the window and the offset into the file, then read it back. Bounded to a single
+ * 4 KiB page on purpose -- a bulk dump is how trial 31 hung the phone.
+ *
+ *	echo "nc 0x28000" > /sys/kernel/debug/rosemary_ccci/page
+ *	cat /sys/kernel/debug/rosemary_ccci/page
+ */
+static ssize_t md_page_write(struct file *file, const char __user *buf, size_t len,
+			     loff_t *ppos)
+{
+	struct seq_file *m = file->private_data;
+	struct ccci_md *md = m->private;
+	char tmp[32], win[8];
+	unsigned int off;
+
+	if (len >= sizeof(tmp))
+		return -EINVAL;
+	if (copy_from_user(tmp, buf, len))
+		return -EFAULT;
+	tmp[len] = 0;
+	if (sscanf(tmp, "%7s %x", win, &off) != 2)
+		return -EINVAL;
+	if (sysfs_streq(win, "nc")) {
+		if (off + 4096 > md->nc_size)
+			return -ERANGE;
+		md->page_win = 0;
+	} else if (sysfs_streq(win, "c")) {
+		if (off + 4096 > md->c_size)
+			return -ERANGE;
+		md->page_win = 1;
+	} else {
+		return -EINVAL;
+	}
+	md->page_off = off;
+	return len;
+}
+
+static int md_page_show(struct seq_file *s, void *unused)
+{
+	struct ccci_md *md = s->private;
+	void __iomem *base;
+	u32 off = md->page_off;
+
+	if (md->page_win == 2) {
+		seq_puts(s, "no page selected: echo \"nc 0x28000\" or \"c 0x34000\" first\n");
+		return 0;
+	}
+	base = md->page_win ? md->c : md->nc;
+	if (!base) {
+		seq_puts(s, "share memory not mapped\n");
+		return 0;
+	}
+	seq_printf(s, "[%s + %#x]\n", md->page_win ? "C" : "NC", off);
+	for (u32 i = 0; i < 4096; i += 16) {
+		char txt[17];
+
+		seq_printf(s, "  %05x:", off + i);
+		for (u32 k = 0; k < 16; k += 4) {
+			u32 w = readl(base + off + i + k);
+
+			seq_printf(s, " %08x", w);
+			txt[k + 0] = (w & 0xff) >= 0x20 && (w & 0xff) < 0x7f ? (w & 0xff) : '.';
+			txt[k + 1] = ((w >> 8) & 0xff) >= 0x20 && ((w >> 8) & 0xff) < 0x7f ? ((w >> 8) & 0xff) : '.';
+			txt[k + 2] = ((w >> 16) & 0xff) >= 0x20 && ((w >> 16) & 0xff) < 0x7f ? ((w >> 16) & 0xff) : '.';
+			txt[k + 3] = ((w >> 24) & 0xff) >= 0x20 && ((w >> 24) & 0xff) < 0x7f ? ((w >> 24) & 0xff) : '.';
+			txt[k + 4] = '\0';
+		}
+		seq_printf(s, "  |%s|\n", txt);
+	}
+	return 0;
+}
+
+static int md_page_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, md_page_show, inode->i_private);
+}
+
+static const struct file_operations md_page_fops = {
+	.owner = THIS_MODULE,
+	.open = md_page_open,
+	.write = md_page_write,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int md_shmem_map_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, md_shmem_map_show, inode->i_private);
@@ -644,6 +733,7 @@ static const struct file_operations md_regs_fops = {
 
 void rosemary_ccci_debugfs_add(struct ccci_md *md)
 {
+	md->page_win = 2;	/* nothing selected yet */
 	md->debugfs = debugfs_create_dir("rosemary_ccci", NULL);
 	if (IS_ERR_OR_NULL(md->debugfs)) {
 		md->debugfs = NULL;
@@ -655,6 +745,7 @@ void rosemary_ccci_debugfs_add(struct ccci_md *md)
 	debugfs_create_file("bus_dbg", 0444, md->debugfs, md, &md_bus_dbg_fops);
 	debugfs_create_file("md_shmem", 0444, md->debugfs, md, &md_shmem_fops);
 	debugfs_create_file("md_shmem_map", 0444, md->debugfs, md, &md_shmem_map_fops);
+	debugfs_create_file("page", 0644, md->debugfs, md, &md_page_fops);
 }
 
 void rosemary_ccci_debugfs_remove(struct ccci_md *md)
