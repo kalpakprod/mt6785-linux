@@ -104,6 +104,13 @@
 #define MT6785_SCP_SPM_STATUS		0x1c
 /* the two candidates for a core that loses its bus, and the probe's timing (scp_reg.h) */
 #define MT6785_SPM_ULPOSC_CON		0x440
+/*
+ * SPM_SRC_REQ and the SCP's three request fields: VRF18 (mainpll, bit 4), INFRA (axi_bus, bit 3)
+ * and F26M (26m, bit 1), per the vendor's own resource translation
+ * (mt6785/mtk_spm_resource_req_console.c:54-67, fields at mtk_spm_reg.h:825-827).
+ */
+#define MT6785_SPM_SRC_REQ		0xb8
+#define MT6785_SPM_SCP_SRC_REQ		(BIT(4) | BIT(3) | BIT(1))
 /* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
 #define MT6785_TOP_CK_CFG_6		0x80
 /* the SCP's own mux: select bits 16-18, power-down bit 23 (clk-mt6785-top.c:473) */
