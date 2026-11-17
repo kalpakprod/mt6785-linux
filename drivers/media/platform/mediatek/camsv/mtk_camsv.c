@@ -111,6 +111,7 @@ struct mtk_camsv {
 
 	struct vb2_queue queue;
 	struct media_pipeline pipeline;
+	phys_addr_t base_pa;
 	unsigned int irq_count;
 	struct v4l2_format cur_fmt;
 	struct v4l2_mbus_framefmt mbus_fmt;
@@ -307,9 +308,15 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	camsv->cur_buf = NULL;
 	camsv_hw_reset(camsv);
 
-	dev_info(camsv->dev, "stream on: %u buffers, %ux%u, INT_EN 0x%08x\n", count,
+	/* The vendor mask is written here, not only when a buffer happens to be armed first
+	 * (cezanne map, 5-cameras.md §3.2: INT_EN 0x0018 = 0x31871), so the engine can report a
+	 * frame even if userspace queues late. */
+	writel(CAMSV_INT_EN_VENDOR, camsv->base + CAMSV_INT_EN);
+
+	dev_info(camsv->dev, "stream on: %u buffers, %ux%u, INT_EN 0x%08x (0x%08llx)\n", count,
 		 camsv->cur_fmt.fmt.pix.width, camsv->cur_fmt.fmt.pix.height,
-		 readl(camsv->base + CAMSV_INT_EN));
+		 readl(camsv->base + CAMSV_INT_EN),
+		 (unsigned long long)camsv->base_pa + CAMSV_INT_EN);
 
 	/* A buffer queued before streamon starts the engine, the rest follow one per frame. */
 	if (camsv->cur_buf) {
@@ -553,6 +560,7 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	if (IS_ERR(camsv->base))
 		return PTR_ERR(camsv->base);
 
+	camsv->base_pa = platform_get_resource(pdev, IORESOURCE_MEM, 0)->start;
 	camsv->irq = platform_get_irq(pdev, 0);
 	if (camsv->irq < 0)
 		return camsv->irq;

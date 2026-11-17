@@ -92,6 +92,8 @@ struct mtk_seninf {
 	 * sees an LP->HS transition - which is what every port measuring zero packets and zero
 	 * errors means. The upstream driver for this block family is phy-mtk-mipi-csi-0-5. */
 	struct phy *phy;
+	/* The block's physical base, so logs can name absolute addresses. */
+	phys_addr_t base_pa;
 	struct dentry *debugfs;
 
 	struct v4l2_subdev sd;
@@ -240,8 +242,10 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 		void __iomem *p = seninf->base + 0x1000 * port;
 
 		dev_info(seninf->dev,
-			 "port %u: CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, pkt %u, err %u, INTSTA 0x%08x\n",
-			 port + 1, readl(p + SENINF_CSI2_CTRL), readl(p + SENINF_CSI2_EN),
+			 "port %u (0x%08llx): CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, pkt %u, err %u, INTSTA 0x%08x\n",
+			 port + 1,
+			 (unsigned long long)seninf->base_pa + 0x1000 * port,
+			 readl(p + SENINF_CSI2_CTRL), readl(p + SENINF_CSI2_EN),
 			 readl(p + SENINF_CSI2_PACKET_CNT), readl(p + SENINF_CSI2_ERR_CNT),
 			 readl(p + 0x0ac8));
 	}
@@ -343,23 +347,20 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 		for (i = 0; i < ARRAY_SIZE(seq); i++) {
 			writel(seq[i].val, in + seq[i].off);
-			dev_info(seninf->dev, "prog %s: +0x%03x = 0x%08x -> 0x%08x\n",
-				 seq[i].what, seq[i].off, seq[i].val, readl(in + seq[i].off));
+			dev_info(seninf->dev,
+				 "prog %s: 0x%08llx = 0x%08x -> 0x%08x\n", seq[i].what,
+				 (unsigned long long)seninf->base_pa + seq[i].off,
+				 seq[i].val, readl(in + seq[i].off));
 		}
 	}
 
-	/* The port select first: which analog port this receiver instance is tied to. */
-	{
-		u32 before = readl(seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
-		u32 after;
-
-		writel((before & SENINF_TOP_PHY_CSI0_MASK) | SENINF_TOP_PHY_CSI0_4D1C,
-		       seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
-		after = readl(seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
-		dev_info(seninf->dev,
-			 "top phy select CSI0: 0x%08x -> 0x%08x (4D1C on CSI0)\n", before,
-			 after);
-	}
+	/*
+	 * The CrOS port-select register (SENINF_TOP_PHY_SENINF_CTL_CSI0, 0x001c by its header) is
+	 * NOT programmed: it reads back zero on this SoC and the vendor's own register dump does not
+	 * list it at all - its top-level registers are 0x0010/0x0014 (imgsensor/src/common/v1_1/
+	 * seninf.c:177-178). Writing an address the vendor does not know is what "nothing sticks"
+	 * looked like, so it is dropped rather than guessed at again.
+	 */
 
 	/* The receiver's D-PHY first: without it no port can see anything on the wire. */
 	if (seninf->phy) {
@@ -498,6 +499,9 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	seninf->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(seninf->base))
 		return PTR_ERR(seninf->base);
+
+	/* Every register log names this base plus the offset, never a bare "+0x..." . */
+	seninf->base_pa = platform_get_resource(pdev, IORESOURCE_MEM, 0)->start;
 
 	seninf->clks[0].id = "seninf";
 	seninf->clks[1].id = "mux";
