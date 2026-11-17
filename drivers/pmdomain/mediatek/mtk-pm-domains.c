@@ -692,16 +692,23 @@ static int scpsys_modem_pwrseq_off(struct scpsys_domain *pd)
 	bool tmp;
 	int ret;
 
+	/* 1. PWR_ON = 0 (clk-mt6785-pg.c:1044-1045) */
 	regmap_clear_bits(scpsys->base, pd->data->ctl_offs, PWR_ON_BIT);
 
-	if (!MTK_SCPD_CAPS(pd, MTK_SCPD_SKIP_RESET_B))
-		regmap_clear_bits(scpsys->base, pd->data->ctl_offs, PWR_RST_B_BIT);
-
-	/* wait until PWR_ACK = 0 */
+	/* 2. wait until PWR_STATUS says the domain is dead (:1046-1053) */
 	ret = readx_poll_timeout(scpsys_domain_is_on, pd, tmp, !tmp, MTK_POLL_DELAY_US,
 				 MTK_POLL_TIMEOUT);
 	if (ret < 0)
 		return ret;
+
+	/* 3. isolate the external buck, bit 0 then bit 1 (:1055-1060) */
+	if (pd->data->ext_buck_iso_offs && MTK_SCPD_CAPS(pd, MTK_SCPD_EXT_BUCK_ISO))
+		regmap_set_bits(scpsys->base, pd->data->ext_buck_iso_offs,
+				pd->data->ext_buck_iso_mask);
+
+	/* 4. drop PWR_RST_B last (:1062-1063) */
+	if (!MTK_SCPD_CAPS(pd, MTK_SCPD_SKIP_RESET_B))
+		regmap_clear_bits(scpsys->base, pd->data->ctl_offs, PWR_RST_B_BIT);
 
 	return 0;
 }
@@ -844,7 +851,16 @@ static int scpsys_power_off_internal(struct scpsys_domain *pd)
 			return ret;
 	}
 
-	if (pd->data->ext_buck_iso_offs && MTK_SCPD_CAPS(pd, MTK_SCPD_EXT_BUCK_ISO))
+	/*
+	 * The vendor's order for the modem domain is not this one. spm_mtcmos_ctrl_md1()
+	 * takes PWR_ON to 0, waits for PWR_STATUS to say the domain is dead, and only
+	 * then isolates the external buck and drops PWR_RST_B, each as its own write
+	 * (clk-mt6785-pg.c:1044-1063). Every other domain here isolates first and clears
+	 * both bits together. So for MTK_SCPD_MODEM_PWRSEQ the isolation moves into
+	 * scpsys_modem_pwrseq_off(), after the wait.
+	 */
+	if (!MTK_SCPD_CAPS(pd, MTK_SCPD_MODEM_PWRSEQ) &&
+	    pd->data->ext_buck_iso_offs && MTK_SCPD_CAPS(pd, MTK_SCPD_EXT_BUCK_ISO))
 		regmap_set_bits(scpsys->base, pd->data->ext_buck_iso_offs,
 				pd->data->ext_buck_iso_mask);
 

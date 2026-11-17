@@ -750,6 +750,56 @@ static void md_reset_state(struct ccci_md *md, const char *when)
 		 has_line ? "present" : "ABSENT");
 }
 
+/*
+ * md_vendor_power_on() - the vendor's MD1 power-on, run immediately before the clamp
+ *
+ * This is the one ordering difference the trials have left (plan doc §2r, O1). On stock
+ * the AP does not clamp a domain that has been up for minutes: md_start_platform()
+ * enables the MTCMOS gate clock one statement before it disables it again
+ * (mt6785/md_sys1_platform.c:629 then :636 via md_cd_power_off() at :809), and enabling
+ * that gate runs spm_mtcmos_ctrl_md1(STA_POWER_ON), which clears all three MD protect
+ * bits and only then leaves the domain to be clamped microseconds later
+ * (clk-mt6785-pg.c:1069-1098).
+ *
+ * So this performs the same eight writes in the same order, from the driver, at the same
+ * point in the chain. It is a deliberate exception to "the domain belongs to genpd": the
+ * point of the experiment is to reproduce the vendor's sequence exactly, and genpd has no
+ * way to run its power-on for a domain that is already on.
+ *
+ * The writes, in vendor order (clk-mt6785-pg.c):
+ *   1069-1071  MD_EXT_BUCK_ISO_CON bit 0 = 0
+ *   1072-1074  MD_EXT_BUCK_ISO_CON bit 1 = 0
+ *   1075-1077  MD1_PWR_CON |= PWR_RST_B
+ *   1079-1081  MD1_PWR_CON |= PWR_ON
+ *   1082-1090  wait, PWR_STATUS bit 0 == 1
+ *   1093-1094  PROTECTEN_CLR = MD1_PROT_STEP2_0_MASK   (bits 3|4)
+ *   1095-1096  PROTECTEN_1_CLR = MD1_PROT_STEP2_1_MASK (bit 6)
+ *   1097-1098  PROTECTEN_CLR = MD1_PROT_STEP1_0_MASK   (bit 7)
+ */
+static void md_vendor_power_on(struct ccci_md *md)
+{
+	unsigned int v;
+	int ret;
+
+	regmap_clear_bits(md->spm_map, SPM_MD_EXT_BUCK_ISO_CON, BIT(0));
+	regmap_clear_bits(md->spm_map, SPM_MD_EXT_BUCK_ISO_CON, BIT(1));
+	regmap_set_bits(md->spm_map, SPM_MD1_PWR_CON, BIT(1));	/* PWR_RST_B */
+	regmap_set_bits(md->spm_map, SPM_MD1_PWR_CON, BIT(2));	/* PWR_ON */
+	ret = regmap_read_poll_timeout(md->spm_map, SPM_PWR_STATUS, v, v & BIT(0),
+				       10, 1000 * 1000);
+	dev_info(md->dev,
+		 "vendor power-on: ISO cleared, PWR_RST_B and PWR_ON set, PWR_STATUS %#x (%s), MD1_PWR_CON %#x\n",
+		 v, ret ? "the domain did not come back" : "domain on",
+		 ({ unsigned int c = 0; regmap_read(md->spm_map, SPM_MD1_PWR_CON, &c); c; }));
+	writel(BIT(3) | BIT(4), md->infra + INFRA_TOPAXI_PROTECTEN_CLR);
+	writel(BIT(6), md->infra + INFRA_TOPAXI_PROTECTEN_1_CLR);
+	writel(BIT(7), md->infra + INFRA_TOPAXI_PROTECTEN_CLR);
+	dev_info(md->dev,
+		 "vendor power-on: the three protect clears written (PROTECTEN %#x, PROTECTEN_1 %#x), now the clamp\n",
+		 readl(md->infra + INFRA_TOPAXI_PROTECTEN),
+		 readl(md->infra + INFRA_TOPAXI_PROTECTEN_1));
+}
+
 static void md_ap_snapshot(struct ccci_md *md, const char *when)
 {
 	unsigned int sta = 0, sta2 = 0, con = 0, r13 = 0, iso = 0, prot = 0, prot_sta = 0;
@@ -1039,6 +1089,11 @@ static int md_power_cycle(struct ccci_md *md)
 	 */
 	md_loader_state(md, "clamp");
 	md_ap_snapshot(md, "before clamp");
+	/*
+	 * O1: the vendor's power-on, microseconds before its own power-off, in the same
+	 * chain (md_sys1_platform.c:629 then :636).
+	 */
+	md_vendor_power_on(md);
 	if (!md_park(md))
 		dev_info(md->dev,
 			 "the modem did not park: trying the clamp first, as the vendor does\n");
@@ -1187,8 +1242,11 @@ restore:
 	 * a count that is one too low (the underflow of trial 24) or one too high (the
 	 * clamp that never ran in trial 25).
 	 */
-	if (reset_held)
+	if (reset_held) {
 		reset_control_deassert(md->md_reset);
+		/* on the failure path too, so a reset that will not clear is visible */
+		md_reset_state(md, "after deassert (failure path)");
+	}
 	md_pm_get(md);
 	if (!md->pm_held)
 		dev_err(md->dev, "the md domain's reference could not be taken back\n");
