@@ -120,16 +120,22 @@ static struct snd_soc_jack_pin mt6785_mt6359_jack_pins[] = {
 static struct snd_soc_component *mt6785_mt6359_accdet;
 
 /*
- * The board's own jacks and microphones. The codec has the electrical ends of
- * these paths ("Headphone L"/"Headphone R", "AIN0"/"AIN1"/"AIN2", "LINEOUT L",
- * "Receiver"); these widgets are the physical connectors the board's
- * audio-routing hangs those ends on.
+ * The board's jack. The codec has the electrical ends of these paths
+ * ("Headphone L"/"Headphone R", "AIN0"/"AIN1"/"AIN2", "LINEOUT L", "Receiver");
+ * the jack is the one connector the board hangs an end on.
+ *
+ * The microphones are deliberately *not* here: they are the codec's own input pins
+ * (SND_SOC_DAPM_INPUT("AIN0"/"AIN1"/"AIN2"), mt6359.c:2402-2404), which are DAPM source
+ * endpoints, and a card-level microphone widget wired to them turned each of them into the
+ * *sink* of a route instead - after which DAPM found no connected source behind the codec's
+ * upstream chain and powered only the digital half of a capture (audio23: UL_SRC on,
+ * 0x238e = 1, while the ADC clock, MIC_BIAS_0 and the MTKAIF transmitter stayed off and the
+ * analog block sat at 0x4340 instead of the vendor's 0x5343). The vendor's own machine
+ * driver has no microphone widgets or routes at all (vendor mt6785-mt6359.c:422-448): its
+ * capture path is powered inside the codec.
  */
 static const struct snd_soc_dapm_widget mt6785_mt6359_widgets[] = {
 	SND_SOC_DAPM_HP("Headphone Jack", NULL),
-	SND_SOC_DAPM_MIC("Headset Mic", NULL),
-	SND_SOC_DAPM_MIC("Main Mic", NULL),
-	SND_SOC_DAPM_MIC("Second Mic", NULL),
 };
 
 static const struct snd_soc_dapm_route mt6785_mt6359_routes[] = {
@@ -150,10 +156,6 @@ static const struct snd_soc_dapm_route mt6785_mt6359_routes[] = {
 	/* the codec's analog outputs feed the two side paths */
 	{ "Headphone Jack", NULL, "Headphone L" },
 	{ "Headphone Jack", NULL, "Headphone R" },
-	/* and the three microphones feed the codec's analog inputs */
-	{ "AIN1", NULL, "Headset Mic" },
-	{ "AIN0", NULL, "Main Mic" },
-	{ "AIN2", NULL, "Second Mic" },
 };
 
 static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
