@@ -625,8 +625,14 @@ static void md_step(struct ccci_md *md, const char *step)
 
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
 	regmap_read(md->spm_map, SPM_MD1_PWR_CON, &con);
-	dev_dbg(md->dev, "step %-22s: md_bit=%u STA=%#x CON=%#x\n",
-		step, (u32)(sta & BIT(0)), sta, con);
+	/*
+	 * dev_info, not dev_dbg: the step trace is what a trial reads to know which
+	 * branch ran, and four trials were read without it because dynamic debug is
+	 * not on by default (trial 28 asked "did the pre-stop run?" -- the answer was
+	 * in a line nobody could see).
+	 */
+	dev_info(md->dev, "step %-22s: md_bit=%u STA=%#x CON=%#x\n",
+		 step, (u32)(sta & BIT(0)), sta, con);
 }
 
 
