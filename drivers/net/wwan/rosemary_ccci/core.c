@@ -38,6 +38,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_domain.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sysfs.h>
@@ -179,6 +180,40 @@ static int md_rails_prepare(struct ccci_md *md)
 	}
 	md->rails_on = true;
 	return 0;
+}
+
+/*
+ * The runtime-PM reference the driver owns.
+ *
+ * The modem's domain must stay on between probe and stop -- the vendor holds the
+ * same thing with clk_prepare_enable(clk_table[0]) and gives it back only in
+ * md_cd_power_off() (mt6785/md_sys1_platform.c:744-745, :809) -- and genpd will
+ * not power a domain off while one of its devices is in use. So exactly one
+ * reference is held for the driver's lifetime, and this flag is what makes that
+ * exact: a bare put that assumed one was held underflowed (trial 24), while a
+ * get/put pair meant to drop the domain left the count at one and the clamp never
+ * ran at all (trial 25: power_off reported dev_count=1 and did nothing).
+ */
+static void md_pm_get(struct ccci_md *md)
+{
+	int ret;
+
+	if (md->pm_held)
+		return;
+	ret = pm_runtime_resume_and_get(md->dev);
+	if (ret) {
+		dev_err(md->dev, "cannot take the md domain's reference: %d\n", ret);
+		return;
+	}
+	md->pm_held = true;
+}
+
+static void md_pm_put(struct ccci_md *md)
+{
+	if (!md->pm_held)
+		return;
+	md->pm_held = false;
+	pm_runtime_put_sync(md->dev);
 }
 
 static void md_clock_request(struct ccci_md *md, bool on)
@@ -548,6 +583,54 @@ static void md_step(struct ccci_md *md, const char *step)
 }
 
 
+/*
+ * md_dump_pm_state() - why genpd did or did not power the domain off, from the
+ * real state rather than from a guess
+ * @md: the modem
+ * @when: a short tag for the log line
+ *
+ * Three facts decide it, and each is read, not inferred:
+ *
+ *  - the device's runtime-PM usage count. genpd does not power a domain off while
+ *    one of its devices is in use, so a count above zero means the power-off was
+ *    never attempted -- and the driver's own reference is the usual suspect
+ *    (trial 25: "power_off ... dev_count=1", the reference the probe holds);
+ *  - the domain's stay_on. A genpd keeps a domain powered until its provider has
+ *    run sync_state (of_genpd_sync_state(), drivers/pmdomain/core.c), so a set
+ *    stay_on means "the provider has not synced" and nothing the driver does will
+ *    move the domain;
+ *  - PWR_STATUS bit 0, the hardware's own answer, for when genpd and the hardware
+ *    disagree.
+ *
+ * Printing all three is what turns "the clamp was never attempted" into a named
+ * cause; the earlier text guessed "provider unsynced" and was wrong twice.
+ */
+static void md_dump_pm_state(struct ccci_md *md, const char *when)
+{
+#if IS_ENABLED(CONFIG_PM_GENERIC_DOMAINS)
+	struct generic_pm_domain *genpd = NULL;
+	const char *genpd_name = "none";
+	bool stay_on = false;
+#endif
+	unsigned int sta = 0;
+
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+#if IS_ENABLED(CONFIG_PM_GENERIC_DOMAINS)
+	if (md->dev->pm_domain) {
+		genpd = container_of(md->dev->pm_domain, struct generic_pm_domain,
+				     domain);
+		genpd_name = genpd->name;
+		stay_on = genpd->stay_on;
+	}
+#endif
+	dev_info(md->dev,
+		 "%s: runtime PM %s, usage %d, driver holds %u, genpd %s%s, PWR_STATUS md bit %u\n",
+		 when, pm_runtime_active(md->dev) ? "active" : "suspended",
+		 atomic_read(&md->dev->power.usage_count), (u32)md->pm_held,
+		 genpd_name, stay_on ? " (stay_on: provider not synced)" : "",
+		 (u32)(sta & BIT(0)));
+}
+
 /**
  * md_power_cycle() - the vendor's restart, for a modem the loader already released
  * @md: the modem
@@ -630,36 +713,36 @@ static int md_power_cycle(struct ccci_md *md)
 		md_step(md, "cycle: modem asleep");
 
 	/*
-	 * The cycle owns its runtime-PM reference instead of borrowing the caller's.
-	 * Only one get is taken per boot request (either this function or the
-	 * caller's else-branch), so a put that assumed one was held underflowed on
-	 * the second request of a boot -- trial 24 printed
-	 * "Runtime PM usage count underflow!" exactly there. A resume on a domain
-	 * that is already on costs nothing and is answered from genpd's own state.
+	 * Give up the driver's own reference: that is the request for genpd to power
+	 * the domain off, and it is the only reference in the count at this point
+	 * (md_pm_get() is idempotent, so no path can hold a second one). A get/put
+	 * pair here instead would leave the count at one -- trial 25: power_off at
+	 * 17.59 s reported dev_count=1 and did nothing.
 	 */
-	ret = pm_runtime_resume_and_get(md->dev);
-	if (ret)
-		return ret;
-	pm_runtime_put_sync(md->dev);
+	md_pm_put(md);
 	if (md_domain_is_on(md)) {
 		prot = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0;
 		sta = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0;
 
 		/*
-		 * Three different failures end here, and the registers say which:
-		 *  - bit 7 clear in PROTECTEN: genpd never attempted the power-off (the
-		 *    domain's stay_on is still set, i.e. the provider has not synced);
-		 *  - bit 7 set, STA1 bit 7 clear: the clamp was attempted and not
-		 *    acknowledged inside the driver's second (MTK_POLL_TIMEOUT,
-		 *    mtk-pm-domains.c:38). The vendor waits for this without any timeout;
-		 *  - bit 7 set and acknowledged but the domain still on: the clamp was fine
-		 *    and something later in the power-off failed.
+		 * Two different failures end here, and the registers tell them apart --
+		 * guessing "the provider is unsynced" was wrong twice already (trial 19:
+		 * stay_on was 0 and the power-off ran into the bus protect; trial 25: the
+		 * driver's own reference was still held, so genpd returned without
+		 * trying):
+		 *
+		 *  - PROTECTEN bit 7 clear: genpd never attempted the power-off, and
+		 *    md_dump_pm_state() names why (usage count, stay_on, hardware bit);
+		 *  - PROTECTEN bit 7 set with PROTECT_STA bit 7 clear: the clamp was
+		 *    attempted and not acknowledged inside the driver's second
+		 *    (MTK_POLL_TIMEOUT, mtk-pm-domains.c:38).
 		 */
 		if (!(prot & BIT(7))) {
 			dev_err(md->dev,
-				"genpd did not power the domain off: the clamp was never attempted (PROTECTEN %#x), which is the power controller still being unsynced\n",
+				"genpd did not power the domain off: the clamp was never attempted (PROTECTEN %#x)\n",
 				prot);
-			return -EAGAIN;
+			md_dump_pm_state(md, "clamp not attempted");
+			goto restore;
 		}
 		if (!(sta & BIT(7))) {
 			/*
@@ -671,7 +754,7 @@ static int md_power_cycle(struct ccci_md *md)
 				dev_err(md->dev,
 					"the bus protect was not acknowledged within a second (PROTECTEN %#x, PROTECT_STA %#x) and there is no reset line to quieten the modem\n",
 					prot, sta);
-				return -EAGAIN;
+				goto restore;
 			}
 			dev_info(md->dev,
 				 "the clamp timed out (PROTECTEN %#x, PROTECT_STA %#x): asserting the MD reset as the last resort\n",
@@ -687,38 +770,37 @@ static int md_power_cycle(struct ccci_md *md)
 				dev_info(md->dev, "the bus protect is acknowledged now (PROTECT_STA %#x)\n", sta);
 			/*
 			 * Ask genpd to try again: with the acknowledgement in place the
-			 * power-off sequence can finish. A resume on a domain that is already
-			 * on costs nothing and is answered from genpd's own state.
+			 * power-off sequence can finish. Take the reference and give it
+			 * straight back, which is a real request for the power-off.
 			 */
-			ret = pm_runtime_resume_and_get(md->dev);
-			if (ret)
-				return ret;
-			pm_runtime_put_sync(md->dev);
+			md_pm_get(md);
+			md_pm_put(md);
 			if (md_domain_is_on(md)) {
 				dev_err(md->dev,
 					"the domain is still on after the clamp and the reset (PROTECTEN %#x, PROTECT_STA %#x)\n",
 					readl(md->infra + INFRA_TOPAXI_PROTECTEN), sta);
-				if (reset_held)
-					reset_control_deassert(md->md_reset);
-				return -EAGAIN;
+				goto restore;
 			}
 		} else {
 			dev_err(md->dev,
 				"the bus protect was acknowledged but the domain is still on (PROTECTEN %#x, PROTECT_STA %#x)\n",
 				prot, sta);
-			return -EAGAIN;
+			goto restore;
 		}
 	}
 	md_step(md, "cycle: gate off");
 	md_power_seq_release(md);
 	md_step(md, "cycle: supplies off");
 
+	/*
+	 * Bring the rails back and take the driver's reference again, in that order:
+	 * the vendor's power-on is the PMIC, then the gate
+	 * (mt6785/md_sys1_platform.c:713-745).
+	 */
 	ret = md_power_seq_prepare(md);
 	if (ret)
-		return ret;
-	ret = pm_runtime_resume_and_get(md->dev);
-	if (ret)
-		return ret;
+		goto restore;
+	md_pm_get(md);
 	md_step(md, "cycle: gate on");
 	/*
 	 * Release the line only after the domain is back, so the modem starts from the
@@ -732,6 +814,20 @@ static int md_power_cycle(struct ccci_md *md)
 	}
 	dev_info(md->dev, "power cycle done: the modem is freshly powered and waiting for the release\n");
 	return 0;
+
+restore:
+	/*
+	 * Every failing branch comes here. The domain is left exactly as it was found,
+	 * with the driver's one reference held again, or the next attempt starts from
+	 * a count that is one too low (the underflow of trial 24) or one too high (the
+	 * clamp that never ran in trial 25).
+	 */
+	if (reset_held)
+		reset_control_deassert(md->md_reset);
+	md_pm_get(md);
+	if (!md->pm_held)
+		dev_err(md->dev, "the md domain's reference could not be taken back\n");
+	return -EAGAIN;
 }
 
 static int md_boot(struct ccci_md *md)
@@ -978,11 +1074,14 @@ static int md_boot(struct ccci_md *md)
 		ret = md_power_seq_prepare(md);
 		if (ret)
 			goto err_clk;
-		ret = pm_runtime_resume_and_get(md->dev);
-		if (ret) {
-			dev_err(md->dev, "cannot power the md domain: %d\n", ret);
+		/*
+		 * The driver's reference is already held, so this only makes sure the
+		 * domain is on (md_pm_get() is idempotent); a second reference here is
+		 * one the cycle would later have to drop twice.
+		 */
+		md_pm_get(md);
+		if (!md->pm_held)
 			goto err_seq;
-		}
 	}
 	if (hs1_pending) {
 		/*
@@ -1283,6 +1382,7 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "cannot power the md domain\n");
+	md->pm_held = true;
 	md_domain_trace(md, "probe after get");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	/*
@@ -1408,10 +1508,23 @@ MODULE_DEVICE_TABLE(of, rosemary_ccci_of_match);
  */
 void ccci_md_stop(struct ccci_md *md)
 {
-	pm_runtime_put_sync(md->dev);
+	/*
+	 * The one put that gives the driver's reference back. The rails and the clock
+	 * request follow, in the vendor's order (md_cd_power_off(),
+	 * mt6785/md_sys1_platform.c:809-828), which leaves the modem in the state a
+	 * cold boot presents to the loader: MTCMOS off, PWR_ON 0, the external buck
+	 * isolated, PWR_RST_B low -- the state the loader powers up from itself on
+	 * every boot ("MD1 MTCMOS power on done!" in our own LK log). Whether the gate
+	 * really moved is printed, because it is the one fact the next boot depends on.
+	 */
+	md_pm_put(md);
 	md_power_seq_release(md);
 	ccci_dpmaif_stop(md);
 	clk_bulk_disable_unprepare(md->num_clks, md->clks);
+	dev_info(md->dev,
+		 "stop: the md domain is %s, so the loader %s on the next boot\n",
+		 md_domain_is_on(md) ? "STILL ON (the clamp did not acknowledge)" : "off",
+		 md_domain_is_on(md) ? "will find a running modem" : "starts a fresh one");
 	ccci_set_state(md, MD_STATE_OFF);
 }
 

@@ -388,6 +388,7 @@ struct ccci_md {
 	/* boot */
 	struct work_struct boot_work;
 	bool rails_on;		/* this driver enabled vmodem and vsram_md */
+	bool pm_held;		/* the runtime-PM reference this driver owns */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;
 	enum ccci_state state;
