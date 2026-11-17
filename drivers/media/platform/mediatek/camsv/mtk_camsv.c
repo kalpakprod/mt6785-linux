@@ -99,6 +99,7 @@ struct mtk_camsv {
 	void __iomem *base;
 	struct clk_bulk_data clks[1];
 	struct clk *main_clk;
+	struct clk *tg_clk;
 	int irq;
 
 	struct video_device vdev;
@@ -265,6 +266,11 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 		dev_info(camsv->dev, "cam main clock: %d, %lu Hz\n", ret,
 			 clk_get_rate(camsv->main_clk));
 	}
+	if (camsv->tg_clk) {
+		ret = clk_prepare_enable(camsv->tg_clk);
+		dev_info(camsv->dev, "cam tg clock: %d, %lu Hz\n", ret,
+			 clk_get_rate(camsv->tg_clk));
+	}
 
 	/*
 	 * Start the chain from the source end: the receiver's s_stream() programs the CSI-2 side and
@@ -330,6 +336,8 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 	}
 
 	camsv_hw_stop(camsv);
+	if (camsv->tg_clk)
+		clk_disable_unprepare(camsv->tg_clk);
 	if (camsv->main_clk)
 		clk_disable_unprepare(camsv->main_clk);
 	media_pipeline_stop(&camsv->subdev.entity.pads[0]);
@@ -545,8 +553,13 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get the engine clock\n");
 
-	/* The camera subsystem's own gate, if the board describes it: the engine needs it to run. */
+	/*
+	 * The engine runs on the camera subsystem's gates: `main` for the block and `tg` for the
+	 * timing generator (the vendor's CAMSV path enables both; without them its SW_CTL reset never
+	 * reports idle, which is what the phone measured as "reset did not settle").
+	 */
 	camsv->main_clk = devm_clk_get_optional(dev, "main");
+	camsv->tg_clk = devm_clk_get_optional(dev, "tg");
 
 	mutex_init(&camsv->vdev_lock);
 	platform_set_drvdata(pdev, camsv);

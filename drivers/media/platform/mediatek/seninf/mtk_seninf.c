@@ -71,6 +71,8 @@ struct mtk_seninf {
 	struct device *dev;
 	void __iomem *base;
 	struct clk_bulk_data clks[2];
+	/* The analog MIPI RX block lives outside this node's window but is part of the receiver. */
+	void __iomem *ana;
 	struct dentry *debugfs;
 
 	struct v4l2_subdev sd;
@@ -197,6 +199,7 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct mtk_seninf *seninf = container_of(sd, struct mtk_seninf, sd);
+	int ret;
 
 	if (!enable) {
 		/* Stop the upstream first, then the receiver, the reverse of the start order. */
@@ -213,16 +216,23 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			}
 		}
 
-		pm_runtime_get_sync(seninf->dev);
 		writel(0, seninf->base + SENINF_CSI2_EN);
+		pm_runtime_put_autosuspend(seninf->dev);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
 			 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
 			 readl(seninf->base + SENINF_CSI2_ERR_CNT));
-		pm_runtime_put_autosuspend(seninf->dev);
 		return 0;
 	}
 
-	pm_runtime_get_sync(seninf->dev);
+	/*
+	 * The receiver has to stay powered and clocked for as long as the stream runs: without this
+	 * reference its runtime PM suspends it seconds into streaming - the phone measured exactly
+	 * that (`cam_seninf` enable 0, `top_seninf0` off, the device "suspended" 3 s into a stream) -
+	 * and every write and read below lands in a dead window.
+	 */
+	ret = pm_runtime_resume_and_get(seninf->dev);
+	if (ret)
+		return ret;
 
 	/*
 	 * Lane count from the sensor's bus configuration, data type 0x2b (RAW10) for the Bayer
@@ -247,6 +257,13 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	 * not routed give zero, so the numbers belong next to each other. The analog MIPI block
 	 * (0x11c80000) is outside this node window and is not mapped here yet.
 	 */
+	if (!IS_ERR_OR_NULL(seninf->ana))
+		dev_info(seninf->dev,
+			 "analog MIPI RX: 0x00 0x%08x, 0x04 0x%08x, 0x08 0x%08x, 0x0c 0x%08x, 0x10 0x%08x\n",
+			 readl(seninf->ana + 0x00), readl(seninf->ana + 0x04),
+			 readl(seninf->ana + 0x08), readl(seninf->ana + 0x0c),
+			 readl(seninf->ana + 0x10));
+
 	dev_info(seninf->dev,
 		 "routing: TOP_MUX0 0x%08x, TOP_MUX1 0x%08x, CAM_MUX1 0x%08x, CAM_MUX2 0x%08x, MUX0 0x%08x\n",
 		 readl(seninf->base + 0x0010), readl(seninf->base + 0x0014),
@@ -322,6 +339,18 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 
 	seninf->clks[0].id = "seninf";
 	seninf->clks[1].id = "mux";
+
+	/*
+	 * Second resource: the analog MIPI RX block (0x11c80000 area on this SoC, the size the vendor
+	 * device tree gives it). Optional, so a board that does not describe it still probes.
+	 */
+	{
+		struct resource *res;
+
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+		if (res)
+			seninf->ana = devm_ioremap_resource(dev, res);
+	}
 
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(seninf->clks), seninf->clks);
 	if (ret)
