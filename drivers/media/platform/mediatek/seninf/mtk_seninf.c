@@ -201,6 +201,9 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	if (!enable) {
 		pm_runtime_get_sync(seninf->dev);
 		writel(0, seninf->base + SENINF_CSI2_EN);
+		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
+			 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
+			 readl(seninf->base + SENINF_CSI2_ERR_CNT));
 		pm_runtime_put_autosuspend(seninf->dev);
 		return 0;
 	}
@@ -215,6 +218,13 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	writel(SENINF_CSI2_CTRL_LANES(4) | SENINF_CSI2_CTRL_DT(0x2b),
 	       seninf->base + SENINF_CSI2_CTRL);
 	writel(SENINF_CSI2_EN_ON, seninf->base + SENINF_CSI2_EN);
+
+	dev_info(seninf->dev,
+		 "stream on: CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, packet cnt %u, err cnt %u\n",
+		 readl(seninf->base + SENINF_CSI2_CTRL),
+		 readl(seninf->base + SENINF_CSI2_EN),
+		 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
+		 readl(seninf->base + SENINF_CSI2_ERR_CNT));
 
 	pm_runtime_put_autosuspend(seninf->dev);
 

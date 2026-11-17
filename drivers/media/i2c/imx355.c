@@ -898,7 +898,11 @@ static int imx355_set_stream(struct v4l2_subdev *sd, int enable)
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(imx355->dev);
+		dev_info(imx355->dev, "stream %s: %u lanes, link freq %lld Hz\n",
+		 enable ? "on" : "off", imx355->hwcfg->num_lanes,
+		 imx355->hwcfg->link_freq_menu);
+
+	ret = pm_runtime_resume_and_get(imx355->dev);
 		if (ret < 0)
 			goto err_unlock;
 

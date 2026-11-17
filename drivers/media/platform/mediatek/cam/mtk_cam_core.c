@@ -129,7 +129,8 @@ static void mtk_cam_core_make_links(struct mtk_cam_core *cam)
 			struct media_pad *pad = &sd->entity.pads[p];
 			struct device_node *remote_np;
 			struct v4l2_subdev *src;
-			int ret;
+			struct device_node *remote_np_cache;
+			int ret, src_pad;
 
 			if (!(pad->flags & MEDIA_PAD_FL_SINK))
 				continue;
@@ -142,17 +143,28 @@ static void mtk_cam_core_make_links(struct mtk_cam_core *cam)
 			}
 
 			src = cam_subdev_by_node(cam, remote_np);
+			remote_np_cache = remote_np;
 			if (!src) {
 				dev_info(cam->dev, "link try %s:%u: remote %pOF not bound yet\n",
 					 sd->name, p, remote_np);
 				of_node_put(remote_np);
 				continue;
 			}
-			of_node_put(remote_np);
+			src_pad = media_entity_get_fwnode_pad(&src->entity,
+							      of_fwnode_handle(remote_np_cache),
+							      MEDIA_PAD_FL_SOURCE);
+			if (src_pad < 0)
+				src_pad = 0;
 
-			ret = v4l2_create_fwnode_links_to_pad(src, pad, 0);
-			dev_info(cam->dev, "link try %s:0 -> %s:%u: %d\n", src->name,
-				 sd->name, p, ret);
+			ret = media_create_pad_link(&src->entity, src_pad, &sd->entity, p,
+						    MEDIA_LNK_FL_ENABLED);
+			if (ret == -EEXIST) {
+				dev_info(cam->dev, "link %s:%d -> %s:%u already there\n",
+					 src->name, src_pad, sd->name, p);
+				continue;
+			}
+			dev_info(cam->dev, "link try %s:%d -> %s:%u: %d\n", src->name,
+				 src_pad, sd->name, p, ret);
 		}
 	}
 }

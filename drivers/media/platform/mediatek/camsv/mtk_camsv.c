@@ -102,6 +102,8 @@ struct mtk_camsv {
 	struct mutex vdev_lock;
 
 	struct vb2_queue queue;
+	struct media_pipeline pipeline;
+	unsigned int irq_count;
 	struct v4l2_format cur_fmt;
 	struct v4l2_mbus_framefmt mbus_fmt;
 	struct vb2_v4l2_buffer *cur_buf;
@@ -209,6 +211,8 @@ static void camsv_buf_queue(struct vb2_buffer *vb)
 	if (vb2_is_streaming(vb->vb2_queue)) {
 		dma_addr_t addr = vb2_dma_contig_plane_dma_addr(vb, 0);
 
+		dev_info(camsv->dev, "arm buffer %u at %pad, size %zu\n", vb->index,
+			 &addr, vb2_plane_size(vb, 0));
 		camsv_hw_start(camsv, addr, camsv->cur_fmt.fmt.pix.width,
 			       camsv->cur_fmt.fmt.pix.height);
 	}
@@ -219,13 +223,24 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct mtk_camsv *camsv = vb2_get_drv_priv(q);
 	int ret;
 
+	ret = media_pipeline_start(&camsv->subdev.entity.pads[0], &camsv->pipeline);
+	if (ret) {
+		dev_err(camsv->dev, "pipeline start failed: %d\n", ret);
+		return ret;
+	}
+
 	ret = pm_runtime_resume_and_get(camsv->dev);
 	if (ret)
-		return ret;
+		goto err_pipeline;
 
 	camsv->sequence = 0;
+	camsv->irq_count = 0;
 	camsv->cur_buf = NULL;
 	camsv_hw_reset(camsv);
+
+	dev_info(camsv->dev, "stream on: %u buffers, %ux%u, INT_EN 0x%08x\n", count,
+		 camsv->cur_fmt.fmt.pix.width, camsv->cur_fmt.fmt.pix.height,
+		 readl(camsv->base + CAMSV_INT_EN));
 
 	/* A buffer queued before streamon starts the engine, the rest follow one per frame. */
 	if (camsv->cur_buf) {
@@ -235,27 +250,39 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 			       camsv->cur_fmt.fmt.pix.height);
 	}
 
-	dev_dbg(camsv->dev, "streaming on, %u buffers\n", count);
-
 	return 0;
+
+err_pipeline:
+	media_pipeline_stop(&camsv->subdev.entity.pads[0]);
+
+	return ret;
 }
 
 static void camsv_stop_streaming(struct vb2_queue *q)
 {
 	struct mtk_camsv *camsv = vb2_get_drv_priv(q);
 
-	struct vb2_v4l2_buffer *buf;
+	struct vb2_v4l2_buffer *buf, *tmp;
 
 	camsv_hw_stop(camsv);
+	media_pipeline_stop(&camsv->subdev.entity.pads[0]);
 
-	/* Hand every buffer still owned by the queue or the engine back to userspace. */
+	/*
+	 * Hand every buffer the queue still owns back exactly once. `vb2_buffer_done()` removes the
+	 * buffer from queued_list, so this walk terminates; an index-based accessor would not (it
+	 * returns the same buffer for ever, which is what made a killed stream spin in the kernel).
+	 */
+	list_for_each_entry_safe(buf, tmp, &camsv->queue.queued_list,
+				 vb2_buf.queued_entry)
+		vb2_buffer_done(&buf->vb2_buf, VB2_BUF_STATE_ERROR);
+
 	buf = camsv->cur_buf;
 	camsv->cur_buf = NULL;
 	if (buf)
 		vb2_buffer_done(&buf->vb2_buf, VB2_BUF_STATE_ERROR);
 
-	while ((buf = to_vb2_v4l2_buffer(vb2_get_buffer(&camsv->queue, 0))))
-		vb2_buffer_done(&buf->vb2_buf, VB2_BUF_STATE_ERROR);
+	dev_info(camsv->dev, "stream off, %u frames, %u interrupts\n", camsv->sequence,
+		 camsv->irq_count);
 
 	pm_runtime_put_autosuspend(camsv->dev);
 }
@@ -368,6 +395,8 @@ static irqreturn_t mtk_camsv_irq(int irq, void *data)
 {
 	struct mtk_camsv *camsv = data;
 	u32 status;
+
+	camsv->irq_count++;
 
 	status = readl(camsv->base + CAMSV_INT_STATUS);
 	if (!status)
