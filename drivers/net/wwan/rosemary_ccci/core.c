@@ -597,6 +597,51 @@ static bool md_domain_is_on(struct ccci_md *md)
  * value"). Both are AP-side registers, so they answer whether the loader has
  * already run the modem even when nothing else about it is reachable.
  */
+/*
+ * md_loader_state() - what the loader left, in the four numbers a trial needs
+ * @md: the modem
+ * @when: a short tag for the log line
+ *
+ * The vendor's first-boot path decides everything from the boot ROM's four
+ * completion words: md_start_platform() polls security_ao 0x824, 0x828, 0x82C and
+ * 0x830 for 1 each, and calls that "BROM Pass" (mt6785/md_sys1_platform.c:615-623).
+ * Two things about that check are worth having in the log at the earliest moment,
+ * because they are what separates "the loader left a modem in its ROM" from "the
+ * loader started a modem that has since run":
+ *
+ *  - those four words are latched once the ROM hands off, so they read 1 on every
+ *    boot of ours even when the modem is minutes past the ROM (trial 24 read them
+ *    at 26.9 s);
+ *  - PCM_REG13_DATA bit 30 (R13_MD_VRF18_REQ_0, base/power/spm/mt6785/pcm_def.h:177)
+ *    says the modem holds its 1.8 V request and bit 2 (R13_MD_SRCCLKENA_0, :148) that
+ *    it holds its 26 MHz request -- i.e. that it is powered and running, not parked.
+ *
+ * So this prints the ROM words, the domain bit, the two request bits and the boot
+ * stats together, once at probe and once at the clamp.
+ */
+static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1);
+
+static void md_loader_state(struct ccci_md *md, const char *when)
+{
+	unsigned int r13, sta = 0;
+	u32 s0 = 0, s1 = 0;
+
+	if (!md->sec_ao || !md->spm)
+		return;
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+	r13 = readl(md->spm + SPM_PCM_REG13_DATA);
+	if (md->pll)
+		md_boot_stage(md, &s0, &s1);
+	dev_info(md->dev,
+		 "%s: loader left brom %#x %#x %#x %#x, PWR_STATUS md bit %u, PCM_REG13_DATA %#x (1.8V request %u, 26MHz request %u), boot stats %#x/%#x\n",
+		 when,
+		 readl(md->sec_ao + SEC_AO_BROM0), readl(md->sec_ao + SEC_AO_BROM1),
+		 readl(md->sec_ao + SEC_AO_BROM2), readl(md->sec_ao + SEC_AO_BROM3),
+		 (u32)(sta & BIT(0)), r13,
+		 (u32)!!(r13 & SPM_R13_MD_VRF18_REQ),
+		 (u32)!!(r13 & SPM_R13_MD_SRCCLKENA_0), s0, s1);
+}
+
 static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1)
 {
 	writel(0, md->pll + MD1_BOOT_STATS_SELECT);
@@ -815,6 +860,7 @@ static int md_power_cycle(struct ccci_md *md)
 	 * never came. So the reset is the last resort AFTER a clamp that timed out, not
 	 * a preparation for it.
 	 */
+	md_loader_state(md, "clamp");
 	if (!md_park(md))
 		dev_info(md->dev,
 			 "the modem did not park: trying the clamp first, as the vendor does\n");
@@ -1493,6 +1539,7 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret, "cannot power the md domain\n");
 	md->pm_held = true;
 	md_domain_trace(md, "probe after get");
+	md_loader_state(md, "probe");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	/*
 	 * The reference is HELD from here until the modem is stopped, on purpose.

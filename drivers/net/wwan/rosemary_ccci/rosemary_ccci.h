@@ -244,6 +244,8 @@ struct ap_query_md_feature_v2_1 {
  */
 #define SPM_PCM_REG13_DATA	0x110
 #define SPM_R13_MD_SRCCLKENA_0	BIT(2)
+/* bit 30: the modem's 1.8 V rail request, base/power/spm/mt6785/pcm_def.h:177 */
+#define SPM_R13_MD_VRF18_REQ	BIT(30)
 #define SPM_R13_MD_APSRC_REQ_0	BIT(3)
 /* the buck isolation the vendor's MD1 sequence clears before power-on */
 #define SPM_MD_EXT_BUCK_ISO_CON	0x3b0
