@@ -2927,6 +2927,49 @@ static int mt6359_sgen_ul_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+/*
+ * DIAGNOSTIC, NOT FOR UPSTREAM: see mt6359_sgen_ul_put(). The codec's MTKAIF receiver monitors
+ * loopback: AUDIO_DIG_CFG bit 7 (DAT_MISO_LOOPBACK) and bit 15 (DAT_MISO2_LOOPBACK) are the bits
+ * the MTKAIF calibration itself switches on to hear its own transmitter (mt6359.c:203-212), and
+ * they are cleared again when the calibration ends (:216-230). Switching them on by hand while a
+ * capture runs is the one measurement that separates "the codec transmits digital silence" from
+ * "the AFE drops what it receives": with the loopback on, the codec's uplink carries its own
+ * transmitted audio back into itself, so a capture that is nonzero proves codec, MTKAIF link and
+ * AFE receiver all work. Nothing here drives a speaker: the loopback is inside the codec's
+ * digital block, and no output stage is powered.
+ */
+static int mt6359_mtkaif_loopback_get(struct snd_kcontrol *kcontrol,
+				      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	unsigned int val = 0;
+
+	regmap_read(priv->regmap, MT6359_AUDIO_DIG_CFG, &val);
+	ucontrol->value.integer.value[0] =
+		!!(val & (1 << RG_AUD_PAD_TOP_DAT_MISO_LOOPBACK_SFT));
+	return 0;
+}
+
+static int mt6359_mtkaif_loopback_put(struct snd_kcontrol *kcontrol,
+				      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	bool on = ucontrol->value.integer.value[0];
+
+	regmap_update_bits(priv->regmap, MT6359_AUDIO_DIG_CFG,
+			   RG_AUD_PAD_TOP_DAT_MISO_LOOPBACK_MASK_SFT,
+			   on << RG_AUD_PAD_TOP_DAT_MISO_LOOPBACK_SFT);
+	regmap_update_bits(priv->regmap, MT6359_AUDIO_DIG_CFG,
+			   RG_AUD_PAD_TOP_DAT_MISO2_LOOPBACK_MASK_SFT,
+			   on << RG_AUD_PAD_TOP_DAT_MISO2_LOOPBACK_SFT);
+
+	dev_info(priv->dev, "%s(), MTKAIF loopback %s\n", __func__,
+		 on ? "on" : "off");
+	return 0;
+}
+
 static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 	/* dl pga gain */
 	SOC_DOUBLE_EXT_TLV("Headset Volume",
@@ -2956,6 +2999,14 @@ static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 	 */
 	SOC_SINGLE_EXT("Sgen UL Diagnostic Switch", SND_SOC_NOPM, 0, 1, 0,
 		       mt6359_sgen_ul_get, mt6359_sgen_ul_put),
+
+	/*
+	 * DIAGNOSTIC, NOT FOR UPSTREAM: the codec's MTKAIF loopback, so one capture can
+	 * tell whether the uplink carries anything at all. Goes away with the Sgen
+	 * switch above.
+	 */
+	SOC_SINGLE_EXT("MTKAIF Loopback Diagnostic Switch", SND_SOC_NOPM, 0, 1, 0,
+		       mt6359_mtkaif_loopback_get, mt6359_mtkaif_loopback_put),
 
 	SOC_SINGLE_EXT_TLV("PGA3 Volume",
 			   MT6359_AUDENC_ANA_CON2, RG_AUDPREAMP3GAIN_SFT, 4, 0,
