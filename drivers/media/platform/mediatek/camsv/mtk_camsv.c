@@ -486,7 +486,14 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/*
+	 * The video device needs the pipeline's v4l2_device: video_register_device() warns and fails
+	 * on a NULL one (drivers/media/v4l2-core/v4l2-dev.c:929). The core is a separate driver, so
+	 * before it has probed this one defers rather than registers without it.
+	 */
 	camsv->cam = mtk_cam_core_get(dev);
+	if (!camsv->cam)
+		return -EPROBE_DEFER;
 
 	strscpy(camsv->vdev.name, "mtk-camsv", sizeof(camsv->vdev.name));
 	camsv->vdev.v4l2_dev = NULL;
@@ -499,18 +506,16 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	camsv->vdev.queue = &camsv->queue;
 	video_set_drvdata(&camsv->vdev, camsv);
 
-	camsv->vdev.v4l2_dev = camsv->cam ? &camsv->cam->v4l2_dev : NULL;
+	camsv->vdev.v4l2_dev = &camsv->cam->v4l2_dev;
 
 	ret = video_register_device(&camsv->vdev, VFL_TYPE_VIDEO, -1);
 	if (ret)
 		goto err_subdev;
 
-	if (camsv->cam) {
-		ret = v4l2_device_register_subdev(&camsv->cam->v4l2_dev, &camsv->subdev);
-		if (ret)
-			goto err_video;
-		mtk_cam_core_link(camsv->cam);
-	}
+	ret = v4l2_device_register_subdev(&camsv->cam->v4l2_dev, &camsv->subdev);
+	if (ret)
+		goto err_video;
+	mtk_cam_core_link(camsv->cam);
 
 	ret = devm_request_irq(dev, camsv->irq, mtk_camsv_irq, 0, dev_name(dev), camsv);
 	if (ret)
@@ -539,8 +544,7 @@ static void mtk_camsv_remove(struct platform_device *pdev)
 	struct mtk_camsv *camsv = platform_get_drvdata(pdev);
 
 	video_unregister_device(&camsv->vdev);
-	if (camsv->cam)
-		v4l2_device_unregister_subdev(&camsv->subdev);
+	v4l2_device_unregister_subdev(&camsv->subdev);
 	media_entity_cleanup(&camsv->subdev.entity);
 }
 

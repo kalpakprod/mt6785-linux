@@ -212,51 +212,48 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
          * is what the provider does when no node is given - makes every lookup miss, and the
          * sensors then defer for ever with "could not get regulators".
          */
-        let parent = dev.of_node().ok_or(EINVAL)?;
-        let node = |name: &kernel::str::CStr| {
-            // SAFETY: the child belongs to this device's own node, so it lives as long as the
-            // registration, and the four names are the ones the binding documents.
-            unsafe { kernel::bindings::of_get_child_by_name(parent, name.as_char_ptr()) }
+        // The rails are the children of the controller's "regulators" node; naming the child in
+        // of_match lets the regulator core find and install each node itself (of_regulator.c
+        // :475-520). Handing the core a node pointer does not work - it records only what that
+        // lookup returns.
+        let rail = |params: Params, child: &'static kernel::str::CStr| {
+            params.child_of(c"regulators", child)
         };
 
         Ok(Wl2866d {
             _dvdd1: Registration::new(
                 dev,
-                unsafe {
-                    params(c"wl2866d_dvdd1", &VTABLE_0)
-                        .linear_ranges(Ldo::<0>::RANGES)
-                        .of_node(node(c"dvdd1"))
-                },
+                rail(
+                    params(c"wl2866d_dvdd1", &VTABLE_0).linear_ranges(Ldo::<0>::RANGES),
+                    c"dvdd1",
+                ),
                 module,
                 Ldo::<0> { client },
             )?,
             _dvdd2: Registration::new(
                 dev,
-                unsafe {
-                    params(c"wl2866d_dvdd2", &VTABLE_1)
-                        .linear_ranges(Ldo::<1>::RANGES)
-                        .of_node(node(c"dvdd2"))
-                },
+                rail(
+                    params(c"wl2866d_dvdd2", &VTABLE_1).linear_ranges(Ldo::<1>::RANGES),
+                    c"dvdd2",
+                ),
                 module,
                 Ldo::<1> { client },
             )?,
             _avdd1: Registration::new(
                 dev,
-                unsafe {
-                    params(c"wl2866d_avdd1", &VTABLE_2)
-                        .linear_ranges(Ldo::<2>::RANGES)
-                        .of_node(node(c"avdd1"))
-                },
+                rail(
+                    params(c"wl2866d_avdd1", &VTABLE_2).linear_ranges(Ldo::<2>::RANGES),
+                    c"avdd1",
+                ),
                 module,
                 Ldo::<2> { client },
             )?,
             _avdd2: Registration::new(
                 dev,
-                unsafe {
-                    params(c"wl2866d_avdd2", &VTABLE_3)
-                        .linear_ranges(Ldo::<3>::RANGES)
-                        .of_node(node(c"avdd2"))
-                },
+                rail(
+                    params(c"wl2866d_avdd2", &VTABLE_3).linear_ranges(Ldo::<3>::RANGES),
+                    c"avdd2",
+                ),
                 module,
                 Ldo::<3> { client },
             )?,

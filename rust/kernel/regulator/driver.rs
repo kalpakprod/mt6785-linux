@@ -257,7 +257,7 @@ pub struct Params {
     n_voltages: u32,
     ranges: Option<&'static [LinearRange]>,
     of_match: Option<&'static CStr>,
-    of_node: Option<*mut bindings::device_node>,
+    regulators_node: Option<&'static CStr>,
 }
 
 impl Params {
@@ -271,7 +271,7 @@ impl Params {
             n_voltages: 0,
             ranges: None,
             of_match: None,
-            of_node: None,
+            regulators_node: None,
         }
     }
 
@@ -289,16 +289,17 @@ impl Params {
         self
     }
 
-    /// The device tree node of *this* regulator - the child of the controller node that a
-    /// board's `<name>-supply` phandle points at. Without it the regulator core records the
-    /// controller's node on every rail, and no board can look any of them up.
+    /// The name of the regulator's own node, and of the container the core should search.
     ///
-    /// # Safety
-    ///
-    /// The node must stay valid for as long as the registration lives, which a node of the
-    /// device's own tree does.
-    pub const unsafe fn of_node(mut self, node: *mut bindings::device_node) -> Self {
-        self.of_node = Some(node);
+    /// This is the standard MediaTek-style way of describing a controller with several rails:
+    /// the core walks `regulators_node`'s children and matches `of_match` against each child's
+    /// name, then installs that child as the regulator's node
+    /// (`regulator_of_get_init_node()`, drivers/regulator/of_regulator.c:475-520, called from
+    /// `regulator_register()` with `&rdev->dev.of_node`, core.c:6083-6084). Giving the core the
+    /// child's pointer directly does not work: the core only records what this lookup returns.
+    pub const fn child_of(mut self, regulators_node: &'static CStr, of_match: &'static CStr) -> Self {
+        self.regulators_node = Some(regulators_node);
+        self.of_match = Some(of_match);
         self
     }
 
@@ -351,6 +352,10 @@ impl<T: Ops> Registration<T> {
             desc.of_match = of_match.as_char_ptr();
         }
 
+        if let Some(regulators_node) = params.regulators_node {
+            desc.regulators_node = regulators_node.as_char_ptr();
+        }
+
         if let Some(ranges) = params.ranges {
             // `LinearRange` is a transparent wrapper, and a static array does not move.
             desc.linear_ranges = ranges.as_ptr().cast();
@@ -362,11 +367,6 @@ impl<T: Ops> Registration<T> {
         let mut config: bindings::regulator_config = pin_init::zeroed();
 
         config.dev = dev.as_raw();
-        // SAFETY: `dev` is valid, so reading its `of_node` field is sound. A rail described as a
-        // child node registers with that child, which is what a board's supply phandle names.
-        config.of_node = params
-            .of_node
-            .unwrap_or_else(|| unsafe { (*dev.as_raw()).of_node });
         config.driver_data = (&*data as *const T).cast_mut().cast();
 
         // SAFETY: `desc` and `data` live in `Self` below and never move (a `KBox` keeps its
@@ -447,6 +447,22 @@ mod tests {
         assert_eq!(r.0.step, 6_000);
         assert_eq!(r.0.min_sel, 0);
         assert_eq!(r.0.max_sel, 255);
+    }
+
+    /// Naming a child node hands the core the two strings it searches with: the container
+    /// (`regulators`) and the rail's own node name (`dvdd1`). What the core then does with them -
+    /// install the child as `rdev->dev.of_node` - is its own code path
+    /// (`regulator_of_get_init_node()`, drivers/regulator/of_regulator.c:475-520), and the proof
+    /// for a board is its own tree: `readlink /sys/class/regulator/regulator.N/of_node`.
+    #[test]
+    fn child_of_sets_the_search_names() {
+        let params = Params::new(c"rail", Kind::Voltage).child_of(c"regulators", c"dvdd1");
+
+        assert_eq!(params.of_match.map(|c| c.to_bytes()), Some(&b"dvdd1"[..]));
+        assert_eq!(
+            params.regulators_node.map(|c| c.to_bytes()),
+            Some(&b"regulators"[..])
+        );
     }
 
     /// The selector mapping the WL2866D will use: 600 mV + 6 mV * selector.
