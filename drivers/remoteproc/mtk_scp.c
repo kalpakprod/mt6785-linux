@@ -533,6 +533,21 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	 */
 
 	/*
+	 * The cache geometry has to be set before the firmware is loaded: "SCP SRAM logical
+	 * address may change when cache size setting differs" is upstream's own comment on the
+	 * mt8183 path (mt8183_scp_before_load(), this file), and LK passes the same geometry to
+	 * the firmware in the region information it writes - Il1c_con and Dl1c_con 0x10d
+	 * (pl_lk.txt:2409-2410). audio24 released a core with this left at its reset value and
+	 * the core stalled on its first instruction fetch at 0x1e0, holding the bus so that the
+	 * AP read back 0x1e1 (the last word the core fetched) for every register and every TCM
+	 * word.
+	 */
+	writel(MT8183_SCP_CACHE_CON_WAYEN | MT8183_SCP_CACHESIZE_8KB,
+	       cluster->reg_base + MT8183_SCP_CACHE_CON);
+	writel(MT8183_SCP_CACHESIZE_8KB,
+	       cluster->reg_base + MT8183_SCP_DCACHE_CON);
+
+	/*
 	 * The SRAM: 0xffffffff is "all banks powered down" (the base kernel reads exactly that
 	 * at cfg + 0x402c/0x4080/0x4094), so the PD bits are active high. The vendor's
 	 * scp_enable_sram() releases the banks one at a time and only then the L1/TCM-tail bits
