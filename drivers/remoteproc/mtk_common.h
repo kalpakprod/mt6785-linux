@@ -152,6 +152,11 @@ struct mtk_scp_of_data {
 	 * what the hardware really holds instead of what a cleanup wrote.
 	 */
 	bool scp_keep_state_on_error;
+	/*
+	 * The loader on this SoC brings the SCP up itself, so a block that answers is a
+	 * running subsystem: it is adopted instead of being reset and reloaded.
+	 */
+	bool scp_maybe_preloaded;
 	void *(*scp_da_to_va)(struct mtk_scp *scp, u64 da, size_t len);
 
 	u32 host_to_scp_reg;
@@ -202,6 +207,9 @@ struct mtk_scp {
 
 	void *cpu_addr;
 	dma_addr_t dma_addr;
+
+	/* the loader started this SCP and the driver adopted it instead of loading its own image */
+	bool preloaded;
 
 	struct rproc_subdev *rpmsg_subdev;
 

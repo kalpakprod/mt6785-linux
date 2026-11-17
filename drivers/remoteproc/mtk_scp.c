@@ -469,6 +469,20 @@ struct mt6785_scp_region_info {
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
+/*
+ * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
+ * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
+ * without any SCP driver) and the region information at TCM + 0x400 is the loader's, not ours.
+ * Resetting and reloading a subsystem in that state is what audio20 did - and the block stopped
+ * answering the AP as soon as the core ran (every register read 0x1e1, the stale last value).
+ */
+static bool mt6785_scp_is_up(struct mtk_scp *scp)
+{
+	u32 clk_sw = readl(scp->cluster->reg_base + MT8183_SCP_CLK_SW_SEL);
+
+	return clk_sw && clk_sw != ~0U;
+}
+
 static void mt6785_scp_state(struct mtk_scp *scp, const char *when);
 
 static int mt6785_scp_before_load(struct mtk_scp *scp)
@@ -967,6 +981,22 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 		return ret;
 	}
 
+	/*
+	 * On MT6785 the loader brings the SCP up from the scp_a partition, so a block that
+	 * answers is a running subsystem with its own firmware and its own region
+	 * information. Resetting it and loading our image over it is a second bring-up of a
+	 * live subsystem: audio20 did exactly that and the block stopped answering the AP the
+	 * moment the core ran (every register read 0x1e1 - the last value the AP had read).
+	 * So a live block is adopted: no reset, no load, no region-info overwrite.
+	 */
+	if (scp->data->scp_maybe_preloaded && mt6785_scp_is_up(scp)) {
+		dev_info(dev, "the loader's SCP is already up: adopting it, no reset and no load\n");
+		mt6785_scp_state(scp, "adopted");
+		scp->preloaded = true;
+		ret = 0;
+		goto leave;
+	}
+
 	/* Hold SCP in reset while loading FW. */
 	scp->data->scp_reset_assert(scp);
 
@@ -1017,6 +1047,18 @@ static int scp_start(struct rproc *rproc)
 	}
 
 	run->signaled = false;
+
+	if (scp->preloaded) {
+		/*
+		 * Its ready IPI was sent when the loader started it, long before this driver probe:
+		 * waiting for another one would time out. Attach and say so.
+		 */
+		dev_info(dev, "attached to the SCP the loader started\n");
+		mt6785_scp_state(scp, "attached");
+		run->signaled = true;
+		clk_disable(scp->clk);
+		return 0;
+	}
 
 	scp->data->scp_reset_deassert(scp);
 
@@ -2013,6 +2055,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_stop = mt8183_scp_stop,
 	.scp_dump_regs = mt6785_scp_dump_regs,
 	.scp_keep_state_on_error = true,
+	.scp_maybe_preloaded = true,
 	.scp_ipi_ack = mt6785_scp_ipi_ack,
 	.scp_clocks_on = mt6785_scp_clocks_on,
 	.scp_da_to_va = mt8192_scp_da_to_va,
