@@ -553,6 +553,7 @@ static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_sspm(struct mtk_scp *scp);
 static void mt6785_scp_log_rails(struct mtk_scp *scp);
 static void mt6785_scp_spm_request(struct mtk_scp *scp, bool on);
+static void mt6785_scp_vol_lv(struct mtk_scp *scp);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -1309,6 +1310,7 @@ static int scp_start(struct rproc *rproc)
 	 * out in the tree we hold, so no bit is invented here: the register is reported with the
 	 * rest of the SPM block and the request stays open until that mapping is established.
 	 */
+	mt6785_scp_vol_lv(scp);
 	mt6785_scp_spm_request(scp, true);
 	scp->data->scp_reset_deassert(scp);
 
@@ -2652,6 +2654,30 @@ static void mt6785_scp_spm_request(struct mtk_scp *scp, bool on)
 	dev_info(scp->dev, "SPM src_req %s: %#x -> %#x (want %#x)%s\n",
 		 on ? "request" : "release", before, after, want,
 		 after == want ? "" : " - the write did not take");
+}
+
+/*
+ * The SCP's own voltage-level word, which its firmware hands to the SPM: SCP_SCP2SPM_VOL_LV
+ * (vendor scp_reg.h:51), the SCP's register 0xC0094 as the vendor comments it. The vendor writes it
+ * from its DVFS path as one of three steps before a frequency change
+ * (scp_dvfs.c:426-462 scp_vcore_request): set the PMIC's VCORE, ask DVFSRC through
+ * mtk_pm_qos_update_request(&dvfsrc_scp_vcore_req, ...), and store the OPP's spm_opp
+ * here - 0x0 for the lowest OPP, 0x1 for 0.625 V, 0x12 for 0.7 V, 0x28 for 0.8 V
+ * (:457-462).
+ *
+ * This writes the lowest OPP's value, exactly as the vendor's own table has it for 110/196 MHz
+ * (vendor mt6785.dts, dvfs-opp rows: <575000 800000 0xff 0x0 0x0 110 1>), and reads it
+ * back; the SPM side of the same channel, SCP_VCORE_LEVEL (SPM 0x4f8), is reported with
+ * the rest of the SPM block, so a value that never arrives there says the channel is not
+ * being read by the PCM.
+ */
+static void mt6785_scp_vol_lv(struct mtk_scp *scp)
+{
+	void __iomem *cfg = scp->cluster->reg_base;
+
+	writel(MT6785_SCP_VOL_LV_OPP0, cfg + MT6785_SCP_VOL_LV);
+	dev_info(scp->dev, "SCP voltage level %#x written, reads back %#x\n",
+		 MT6785_SCP_VOL_LV_OPP0, readl(cfg + MT6785_SCP_VOL_LV));
 }
 
 /* is this run of characters already in the loaded image? */
