@@ -257,6 +257,7 @@ pub struct Params {
     n_voltages: u32,
     ranges: Option<&'static [LinearRange]>,
     of_match: Option<&'static CStr>,
+    of_node: Option<*mut bindings::device_node>,
 }
 
 impl Params {
@@ -270,6 +271,7 @@ impl Params {
             n_voltages: 0,
             ranges: None,
             of_match: None,
+            of_node: None,
         }
     }
 
@@ -284,6 +286,19 @@ impl Params {
     /// array guarantees (the same way C drivers pass `static const struct linear_range[]`).
     pub const fn linear_ranges(mut self, ranges: &'static [LinearRange]) -> Self {
         self.ranges = Some(ranges);
+        self
+    }
+
+    /// The device tree node of *this* regulator - the child of the controller node that a
+    /// board's `<name>-supply` phandle points at. Without it the regulator core records the
+    /// controller's node on every rail, and no board can look any of them up.
+    ///
+    /// # Safety
+    ///
+    /// The node must stay valid for as long as the registration lives, which a node of the
+    /// device's own tree does.
+    pub const unsafe fn of_node(mut self, node: *mut bindings::device_node) -> Self {
+        self.of_node = Some(node);
         self
     }
 
@@ -347,8 +362,11 @@ impl<T: Ops> Registration<T> {
         let mut config: bindings::regulator_config = pin_init::zeroed();
 
         config.dev = dev.as_raw();
-        // SAFETY: `dev` is valid, so reading its `of_node` field is sound.
-        config.of_node = unsafe { (*dev.as_raw()).of_node };
+        // SAFETY: `dev` is valid, so reading its `of_node` field is sound. A rail described as a
+        // child node registers with that child, which is what a board's supply phandle names.
+        config.of_node = params
+            .of_node
+            .unwrap_or_else(|| unsafe { (*dev.as_raw()).of_node });
         config.driver_data = (&*data as *const T).cast_mut().cast();
 
         // SAFETY: `desc` and `data` live in `Self` below and never move (a `KBox` keeps its

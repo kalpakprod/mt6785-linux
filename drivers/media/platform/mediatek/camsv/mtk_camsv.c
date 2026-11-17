@@ -457,6 +457,14 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 
 	camsv->queue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	camsv->queue.io_modes = VB2_MMAP | VB2_DMABUF;
+	/*
+	 * vb2_queue_init() warns when the timestamp flavour is left UNKNOWN
+	 * (videobuf2-v4l2.c:909-911) and fails the probe with -EINVAL: a capture queue has to say
+	 * where its timestamps come from. The engine's frame-done interrupt takes ktime_get_ns(),
+	 * so they are monotonic and start-of-frame.
+	 */
+	camsv->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC |
+				       V4L2_BUF_FLAG_TSTAMP_SRC_SOE;
 	camsv->queue.drv_priv = camsv;
 	camsv->queue.buf_struct_size = sizeof(struct vb2_v4l2_buffer);
 	camsv->queue.ops = &camsv_queue_ops;

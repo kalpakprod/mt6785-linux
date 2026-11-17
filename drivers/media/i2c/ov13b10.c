@@ -576,6 +576,7 @@ static const char * const ov13b10_test_pattern_menu[] = {
 #define OV13B10_LINK_FREQ_INDEX_0	0
 
 #define OV13B10_EXT_CLK			19200000
+#define OV13B10_EXT_CLK_24M		24000000
 #define OV13B10_4_DATA_LANES		4
 #define OV13B10_2_DATA_LANES		2
 
@@ -717,6 +718,7 @@ struct ov13b10 {
 	struct v4l2_ctrl_handler ctrl_handler;
 
 	struct clk *img_clk;
+	unsigned long ext_clk;
 	struct regulator_bulk_data supplies[ARRAY_SIZE(ov13b10_supply_names)];
 	struct gpio_desc *reset;
 
@@ -833,6 +835,20 @@ static int ov13b10_write_regs(struct ov13b10 *ov13b,
 
 	return 0;
 }
+
+/*
+ * The PLL registers for a 24 MHz memory clock. The mode tables above are written for the 19.2 MHz
+ * the driver has seen so far; the vendor's own driver runs this part at 24 MHz and programs these
+ * five registers before its init table (ov13b10mipiraw_Sensor.c, the ov13b10_open() sequence:
+ * 0x0300 = 0x02, 0x0301 = 0x00, 0x0302 = 0x5a, 0x0304 = 0x00, 0x0305 = 0x01).
+ */
+static const struct ov13b10_reg ov13b10_pll_24mhz[] = {
+	{ 0x0300, 0x02 },
+	{ 0x0301, 0x00 },
+	{ 0x0302, 0x5a },
+	{ 0x0304, 0x00 },
+	{ 0x0305, 0x01 },
+};
 
 static int ov13b10_write_reg_list(struct ov13b10 *ov13b,
 				  const struct ov13b10_reg_list *r_list)
@@ -1255,6 +1271,17 @@ static int ov13b10_start_streaming(struct ov13b10 *ov13b)
 		return ret;
 	}
 
+	/* A 24 MHz clock needs its own PLL programming, see ov13b10_pll_24mhz. */
+	if (ov13b->ext_clk == OV13B10_EXT_CLK_24M) {
+		ret = ov13b10_write_regs(ov13b, ov13b10_pll_24mhz,
+					 ARRAY_SIZE(ov13b10_pll_24mhz));
+		if (ret) {
+			dev_err(ov13b->dev, "%s failed to set the 24 MHz plls\n",
+				__func__);
+			return ret;
+		}
+	}
+
 	link_freq_index = ov13b->cur_mode->link_freq_index;
 	reg_list = &link_freq_configs[link_freq_index].reg_list;
 	ret = ov13b10_write_reg_list(ov13b, reg_list);
@@ -1493,10 +1520,12 @@ static int ov13b10_get_pm_resources(struct ov13b10 *ov13b)
 				     "failed to get imaging clock\n");
 
 	freq = clk_get_rate(ov13b->img_clk);
-	if (freq != OV13B10_EXT_CLK)
+	if (freq != OV13B10_EXT_CLK && freq != OV13B10_EXT_CLK_24M)
 		return dev_err_probe(ov13b->dev, -EINVAL,
 				     "external clock %lu is not supported\n",
 				     freq);
+
+	ov13b->ext_clk = freq;
 
 	for (unsigned int i = 0; i < ARRAY_SIZE(ov13b10_supply_names); i++)
 		ov13b->supplies[i].supply = ov13b10_supply_names[i];

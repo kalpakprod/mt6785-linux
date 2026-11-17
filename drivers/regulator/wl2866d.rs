@@ -208,25 +208,41 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
         Ok(Wl2866d {
             _dvdd1: Registration::new(
                 dev,
-                params(c"wl2866d_dvdd1", &VTABLE_0).linear_ranges(Ldo::<0>::RANGES),
+                unsafe {
+                    params(c"wl2866d_dvdd1", &VTABLE_0)
+                        .linear_ranges(Ldo::<0>::RANGES)
+                        .of_node(node(c"dvdd1"))
+                },
                 module,
                 Ldo::<0> { client },
             )?,
             _dvdd2: Registration::new(
                 dev,
-                params(c"wl2866d_dvdd2", &VTABLE_1).linear_ranges(Ldo::<1>::RANGES),
+                unsafe {
+                    params(c"wl2866d_dvdd2", &VTABLE_1)
+                        .linear_ranges(Ldo::<1>::RANGES)
+                        .of_node(node(c"dvdd2"))
+                },
                 module,
                 Ldo::<1> { client },
             )?,
             _avdd1: Registration::new(
                 dev,
-                params(c"wl2866d_avdd1", &VTABLE_2).linear_ranges(Ldo::<2>::RANGES),
+                unsafe {
+                    params(c"wl2866d_avdd1", &VTABLE_2)
+                        .linear_ranges(Ldo::<2>::RANGES)
+                        .of_node(node(c"avdd1"))
+                },
                 module,
                 Ldo::<2> { client },
             )?,
             _avdd2: Registration::new(
                 dev,
-                params(c"wl2866d_avdd2", &VTABLE_3).linear_ranges(Ldo::<3>::RANGES),
+                unsafe {
+                    params(c"wl2866d_avdd2", &VTABLE_3)
+                        .linear_ranges(Ldo::<3>::RANGES)
+                        .of_node(node(c"avdd2"))
+                },
                 module,
                 Ldo::<3> { client },
             )?,
