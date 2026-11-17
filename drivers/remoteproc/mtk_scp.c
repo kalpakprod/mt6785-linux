@@ -440,6 +440,16 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_SCP_DRAM_OFS		0x200000
 /* the L1 cache configuration LK puts in the region info it leaves (pl_lk.txt:2409-2410) */
 #define MT6785_SCP_L1C_CON		0x10d
+
+/*
+ * LK's own layout inside its "SCP-reserved" region (pl_lk.txt:2305-2306, :2406-2411): the
+ * loader image at its start (its vector table in the first words), the staged firmware 0x800
+ * bytes in, the DRAM part 1 MiB in, and the backup copy 2 MiB in.
+ */
+#define MT6785_LK_LOADER_SP		0x0
+#define MT6785_LK_LOADER_PC		0x4
+#define MT6785_LK_FIRMWARE_OFS		0x800
+#define MT6785_LK_DRAM_OFS		0x100000
 #define MT6785_SCP_IPI_BUF_OFS		0x5c0
 #define MT6785_SCP_IPI_BUF_DATA_OFS	16
 #define MT6785_SCP_IPI_BUF_SIZE		272
@@ -480,6 +490,7 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
  */
 static struct regmap *mt6785_infracfg(struct mtk_scp *scp);
 static int mt6785_scp_check_windows(struct mtk_scp *scp);
+static void mt6785_scp_probe_lk_images(struct mtk_scp *scp);
 
 /*
  * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
@@ -506,6 +517,9 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	struct mtk_scp_of_cluster *cluster = scp->cluster;
 	u32 val;
 	int ret;
+
+	/* what LK left in its own region, read where it is, not through the SCP */
+	mt6785_scp_probe_lk_images(scp);
 
 	/* a wrong offset has to fail the probe, not the boot (audio25) */
 	ret = mt6785_scp_check_windows(scp);
@@ -2123,6 +2137,47 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp)
 	wmb();
 
 	return 0;
+}
+
+/*
+ * LK loads the SCP itself and leaves its work in a region of its own: "SCP-reserved" at
+ * 0x9fc00000 with 3 MiB (pl_lk.txt:2305-2306), the loader image at ap_loader_start (its own
+ * record, 0x438 bytes), the firmware staged at ap_firmware_start 0x9fc00800 with 0xbb800
+ * bytes, the DRAM part at 0x9fd00000 with 0x59968, and the region information it wrote into
+ * the SRAM (pl_lk.txt:2406-2414). That region is reserved in this board's device tree, so the
+ * copies are still there when this driver probes - and they can be read without touching the
+ * SCP at all, which is what this does: it validates and reports them, so a trial says whether
+ * the loader's work survived instead of inferring it from SCP register reads that a running
+ * core may not answer.
+ */
+static void mt6785_scp_probe_lk_images(struct mtk_scp *scp)
+{
+	struct device_node *np = scp->dev->of_node;
+	struct resource res;
+	void __iomem *base;
+	u32 sp, pc;
+
+	if (of_address_to_resource(np, 2, &res)) {
+		dev_info(scp->dev, "no loader region named: nothing to probe\n");
+		return;
+	}
+
+	base = devm_ioremap(scp->dev, res.start, resource_size(&res));
+	if (!base) {
+		dev_warn(scp->dev, "the loader region %pR cannot be mapped\n", &res);
+		return;
+	}
+
+	sp = readl(base + MT6785_LK_LOADER_SP);
+	pc = readl(base + MT6785_LK_LOADER_PC);
+	dev_info(scp->dev, "loader region %pR: initial SP %#x reset vector %#x%s\n",
+		 &res, sp, pc,
+		 (sp && sp < 0x10000 && pc && pc < 0x10000) ?
+		 " (looks like the loader's vector table)" : " (not a vector table)");
+	dev_info(scp->dev, "loader copies: firmware at %#llx, dram at %#llx (base+%#x, base+%#x)\n",
+		 (u64)res.start + MT6785_LK_FIRMWARE_OFS,
+		 (u64)res.start + MT6785_LK_DRAM_OFS,
+		 MT6785_LK_FIRMWARE_OFS, MT6785_LK_DRAM_OFS);
 }
 
 /* one line of block state, for the steps that must be told apart */
