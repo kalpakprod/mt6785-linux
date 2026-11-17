@@ -1539,6 +1539,19 @@ static int md_boot(struct ccci_md *md)
 	 * modem it brought up itself. That also removes the last dependency on the
 	 * power-domain provider being synced: nothing here needs the domain switched.
 	 */
+	/*
+	 * The rings and the SRAM trailer are published HERE, before anything touches the
+	 * modem's power state -- which is where stock publishes them:
+	 * md_ccif_ring_buf_init() runs before md_start_platform() and md_cd_power_on()
+	 * (rosemary-r-oss modem_sys1.c:436-437), so a modem that starts looking finds them.
+	 * Trial 24's confusion about "the CCIF was reset under a live modem" is settled by the
+	 * same source: stock resets the block under a live, loader-released modem on purpose.
+	 */
+	if (!hs1_pending) {
+		ccci_ccif_reset(md);
+		md_step(md, "ccif_reset");
+	}
+
 	if (modem_in_ee) {
 		/*
 		 * It answered the stages it was waiting for and handed over, so it is
@@ -1588,12 +1601,32 @@ static int md_boot(struct ccci_md *md)
 		 * not: zero is a modem that has not run.
 		 */
 		if (stage0 || stage1) {
+			/*
+			 * The loader already released the modem, and this is the case the stock kernel
+			 * meets too -- every boot. What it does then is the whole answer, and it is not
+			 * a power cycle: in the kernel this phone actually ships
+			 * (Xiaomi_Kernel_OpenSource, branch rosemary-r-oss) md_start_platform() is a
+			 * weak stub that only logs "[ccci/dummy] md_start_platform is not supported!"
+			 * (modem_sys1.c:416-420), so md_cd_start() goes straight on to
+			 * ccci_md_hif_start(stage 1), md_cd_power_on() (modem_sys1.c:471) and
+			 * md_cd_let_md_go() (:486) -- a power-ON, then the release, then the handshake.
+			 *
+			 * md_cd_power_on() is step 1 PMIC, step 2 srcclkena 0x21, step 3 the gate
+			 * (mt6785/md_sys1_platform.c:613-643), and the CCIF rings were already
+			 * published before it by md_ccif_ring_buf_init() (modem_sys1.c:436-437), i.e.
+			 * before the AP touches the modem at all.
+			 *
+			 * So this path does the same: rails, a power-on the domain does not need but
+			 * that is harmless (it is already on), and no clamp. The modem is running; the
+			 * AP's job is to give it rings, the release and an answer.
+			 */
 			dev_info(md->dev,
-				 "the loader already released the modem (boot stage %#x/%#x): its boot-vector enable is spent, so this boot needs the vendor's power cycle\n",
+				 "the loader already released the modem (boot stage %#x/%#x): attaching as stock does (rosemary-r-oss modem_sys1.c:416-420, :436-437, :471, :486), no power cycle\n",
 				 stage0, stage1);
-			ret = md_power_cycle(md);
+			ret = md_power_seq_prepare(md);
 			if (ret)
-				goto err_seq;
+				goto err_clk;
+			md_pm_get(md);
 		}
 	} else {
 		/*
@@ -1653,8 +1686,7 @@ static int md_boot(struct ccci_md *md)
 	 * never been touched is clamped, and the block is reset on a modem that is
 	 * either fresh or dead, in both cases with nothing outstanding.
 	 */
-	ccci_ccif_reset(md);
-	md_step(md, "ccif_reset");
+
 	/*
 	 * The data path starts after the block is reset and before the release (the
 	 * vendor is in BOOT_WAITING_FOR_HS1 here), and a modem without one never
