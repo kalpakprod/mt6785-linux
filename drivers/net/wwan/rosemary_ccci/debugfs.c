@@ -367,6 +367,10 @@ static int md_tags_show(struct seq_file *s, void *unused)
 	seq_printf(s, "block %#llx + %#x, version %u, %u tags\n",
 		   (unsigned long long)md->lk_base, md->lk_size, md->lk_version,
 		   md->lk_tag_num);
+	if (md->lk_version < 2) {
+		seq_puts(s, "tag version 1: the record layout differs from v2 and is not decoded here\n");
+		return 0;
+	}
 	for (n = 0; n < md->lk_tag_num && off + 76 < md->lk_size; n++) {
 		char name[65] = { };
 		char *d = kmalloc(512, GFP_KERNEL);
@@ -387,16 +391,29 @@ static int md_tags_show(struct seq_file *s, void *unused)
 			memcpy_fromio(d, md->tags + doff, dsize);
 			for (u32 i = 0; i < dsize && i < 64; i += 4) {
 				u32 w;
+				char txt[5] = "    ";
 
 				memcpy(&w, d + i, 4);
-				seq_printf(s, "        +%02x %08x\n", i,
-					   le32_to_cpu(w));
+				for (int b = 0; b < 4; b++) {
+					u8 c = (w >> (8 * b)) & 0xff;
+
+					txt[b] = (c >= 0x20 && c < 0x7f) ? c : '.';
+				}
+				seq_printf(s, "        +%02x %08x  |%s|\n", i,
+					   le32_to_cpu(w), txt);
 			}
 		}
 		kfree(d);
-		if (!next)
+		/*
+		 * next_tag_offset is an ABSOLUTE offset from the block base, not a delta:
+		 * the vendor does curr = base + next_tag_offset (find_ccci_tag_inf(),
+		 * ccci_util/ccci_util_lib_fo.c:183-185). Trial 40's first dump added it
+		 * instead, which is why tag 2 came out with an empty name and a nonsense
+		 * size.
+		 */
+		if (!next || next == off)
 			break;
-		off += next;
+		off = next;
 	}
 	return 0;
 }
