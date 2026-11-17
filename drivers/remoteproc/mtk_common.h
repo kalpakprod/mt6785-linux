@@ -97,6 +97,10 @@
 #define MT6785_SCP_PROBE_VALUE		0x5a5a1234
 /* the two candidates for a core that loses its bus, and the probe's timing (scp_reg.h) */
 #define MT6785_SPM_ULPOSC_CON		0x440
+/* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
+#define MT6785_TOP_CK_CFG_6		0x80
+/* the reserved DRAM pool the SCP may use, and where its logger ring can live */
+#define MT6785_SCP_DRAM_PHYS		0x50000000
 #define MT6785_SCP_WDT_REG		0x84
 #define MT6785_SCP_WDT_CTRL		0x88
 #define MT6785_SCP_WDT_SP		0xb8

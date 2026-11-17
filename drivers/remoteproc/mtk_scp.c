@@ -2424,18 +2424,34 @@ static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when)
 {
 	static const u16 ofs[] = { 0x10c, 0x110, 0x220, 0x224 };
 	struct regmap *topckgen = scp->topckgen_regmap;
-	u32 v[ARRAY_SIZE(ofs)];
+	u32 meter[4], ck_cfg_6;
 	unsigned int i;
 
 	if (IS_ERR_OR_NULL(topckgen))
 		return;
 
 	for (i = 0; i < ARRAY_SIZE(ofs); i++)
-		if (regmap_read(topckgen, ofs[i], &v[i]))
+		if (regmap_read(topckgen, ofs[i], &meter[i]))
 			return;
+	if (regmap_read(topckgen, MT6785_TOP_CK_CFG_6, &ck_cfg_6))
+		return;
 
-	dev_info(scp->dev, "%s: topckgen meter dbg %#x misc %#x cali0 %#x cali1 %#x\n",
-		 when, v[0], v[1], v[2], v[3]);
+	dev_info(scp->dev, "%s: meter dbg %#x misc %#x cali0 %#x cali1 %#x ck_cfg_6 %#x\n",
+		 when, meter[0], meter[1], meter[2], meter[3], ck_cfg_6);
+}
+
+/* a firmware log line: it holds a space and a lowercase letter */
+static bool mt6785_scp_log_like(const char *s, size_t n)
+{
+	bool space = false, lower = false;
+	size_t i;
+
+	for (i = 0; i < n; i++) {
+		space |= s[i] == ' ';
+		lower |= s[i] >= 'a' && s[i] <= 'z';
+	}
+
+	return space && lower;
 }
 
 /* is this run of characters already in the loaded image? */
@@ -2462,8 +2478,10 @@ static bool mt6785_scp_in_image(const u8 *raw, size_t raw_len, const char *s, si
  */
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 {
-	const struct { void __iomem *base; size_t size; const char *what; } regions[] = {
-		{ scp->lk_base, SZ_1M, "loader region" },
+	/* DRAM only: the loader region the driver already maps, and the reserved pool */
+	struct { void __iomem *base; size_t size; const char *what; bool mapped; } regions[] = {
+		{ scp->lk_base, SZ_1M, "loader region", true },
+		{ NULL, 4 * SZ_1M, "scp-memory", false },
 	};
 	u8 *buf;
 	const u8 *raw = scp->image;
@@ -2475,8 +2493,12 @@ static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 	if (!buf)
 		return;
 
+	regions[1].base = ioremap(MT6785_SCP_DRAM_PHYS, regions[1].size);
+	if (!regions[1].base)
+		regions[1].size = 0;
+
 	for (r = 0; r < ARRAY_SIZE(regions); r++) {
-		if (!regions[r].base)
+		if (!regions[r].base || !regions[r].size)
 			continue;
 		memcpy_fromio(buf, regions[r].base, SZ_1M);
 		for (p = buf; p < buf + SZ_1M - 12 && found < 32; p++) {
@@ -2487,6 +2509,8 @@ static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 			if (n >= 12) {
 				const char *str = (const char *)p;
 
+				if (!regions[r].mapped && !mt6785_scp_log_like(str, n))
+					continue;
 				if (!mt6785_scp_in_image(raw, raw_len, str, n)) {
 					dev_err(scp->dev, "%s+%#zx: %.*s\n",
 						regions[r].what, (size_t)(p - buf),
@@ -2498,6 +2522,8 @@ static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 		}
 	}
 	dev_err(scp->dev, "DRAM text scan: %u line(s) not in the image\n", found);
+	if (regions[1].base)
+		iounmap(regions[1].base);
 	kfree(buf);
 }
 
