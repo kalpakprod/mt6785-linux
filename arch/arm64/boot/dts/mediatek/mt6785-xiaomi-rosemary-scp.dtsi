@@ -41,6 +41,19 @@
 		};
 
 		/*
+		 * The loader's own region, exactly as LK reserves it: mblock_reserve "SCP-reserved"
+		 * at 0x9fc00000 with 3 MiB (pl_lk.txt:2305-2306), holding the loader image at its
+		 * start (ap_loader_start, 0x438 bytes), the staged firmware at +0x800
+		 * (ap_firmware_start 0x9fc00800, size 0xbb800) and the DRAM part at 0x9fd00000
+		 * (pl_lk.txt:2406-2411). Linux must keep its hands off it or the images LK left are
+		 * gone by the time the SCP driver probes.
+		 */
+		scp_lk_mem: scp-lk-memory@9fc00000 {
+			reg = <0 0x9fc00000 0 0x300000>;
+			no-map;
+		};
+
+		/*
 		 * The hub's sample ring: the vendor splits this out of its
 		 * scp_share block as the sensor block (SENS_MEM_ID), 1 MiB
 		 * [L: mt6785.dts scp_mem_tbl = <1 0x100000>, the sensor entry;

@@ -438,6 +438,8 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_SCP_REGION_INFO_OFFSET	0x400
 #define MT6785_SCP_LOADER_SLOT		0x2000
 #define MT6785_SCP_DRAM_OFS		0x200000
+/* the L1 cache configuration LK puts in the region info it leaves (pl_lk.txt:2409-2410) */
+#define MT6785_SCP_L1C_CON		0x10d
 #define MT6785_SCP_IPI_BUF_OFS		0x5c0
 #define MT6785_SCP_IPI_BUF_DATA_OFS	16
 #define MT6785_SCP_IPI_BUF_SIZE		272
@@ -476,11 +478,24 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
  * Resetting and reloading a subsystem in that state is what audio20 did - and the block stopped
  * answering the AP as soon as the core ran (every register read 0x1e1, the stale last value).
  */
+static struct regmap *mt6785_infracfg(struct mtk_scp *scp);
+
+/*
+ * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
+ * that audio20 had just stopped, because cfg + 0x4000 still read 0x201 (the loader's clock
+ * select) while sw_rstn was 0 and the TCM was empty. The vendor's own test is the core's state,
+ * not the clock: reset_scp() reads SCP_SLEEP_STATUS_REG and GPR_CM4_A_REBOOT before touching the
+ * core (scp_helper.c:588-610). Here the equivalent pair is the release bit this driver writes
+ * and the vector table the core would fetch: released, and a stack pointer that lives inside
+ * the TCM.
+ */
 static bool mt6785_scp_is_up(struct mtk_scp *scp)
 {
-	u32 clk_sw = readl(scp->cluster->reg_base + MT8183_SCP_CLK_SW_SEL);
+	u32 rstn = readl(scp->cluster->reg_base + MT8183_SW_RSTN);
+	u32 sp = readl(scp->sram_base);
+	u32 pc = readl(scp->sram_base + 4);
 
-	return clk_sw && clk_sw != ~0U;
+	return (rstn & BIT(0)) && sp && sp < scp->sram_size && pc && pc < scp->sram_size;
 }
 
 static void mt6785_scp_state(struct mtk_scp *scp, const char *when);
@@ -694,6 +709,14 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 	ri.ap_firmware_size = fw_size;
 	ri.ap_dram_start = scp->dma_addr + MT6785_SCP_DRAM_OFS;
 	ri.ap_dram_size = dram_size;
+	/*
+	 * The two cache configurations LK writes into the region info it leaves behind
+	 * (pl_lk.txt:2409-2410: Il1c_con 0x10d, Dl1c_con 0x10d). They are part of the contract
+	 * with the loader, and leaving them zero - as this struct was - tells the firmware its
+	 * caches are configured in a way nobody chose.
+	 */
+	ri.il1c_con = MT6785_SCP_L1C_CON;
+	ri.dl1c_con = MT6785_SCP_L1C_CON;
 	ri.struct_size = sizeof(ri);
 
 	memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &ri,
@@ -981,22 +1004,6 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 		return ret;
 	}
 
-	/*
-	 * On MT6785 the loader brings the SCP up from the scp_a partition, so a block that
-	 * answers is a running subsystem with its own firmware and its own region
-	 * information. Resetting it and loading our image over it is a second bring-up of a
-	 * live subsystem: audio20 did exactly that and the block stopped answering the AP the
-	 * moment the core ran (every register read 0x1e1 - the last value the AP had read).
-	 * So a live block is adopted: no reset, no load, no region-info overwrite.
-	 */
-	if (scp->data->scp_maybe_preloaded && mt6785_scp_is_up(scp)) {
-		dev_info(dev, "the loader's SCP is already up: adopting it, no reset and no load\n");
-		mt6785_scp_state(scp, "adopted");
-		scp->preloaded = true;
-		ret = 0;
-		goto leave;
-	}
-
 	/* Hold SCP in reset while loading FW. */
 	scp->data->scp_reset_assert(scp);
 
@@ -1014,6 +1021,21 @@ leave:
 	clk_disable(scp->clk);
 
 	return ret;
+}
+
+/*
+ * The core was booted by the loader (RPROC_DETACHED): there is nothing to load and nothing to
+ * release, only the IPI side to have ready - and it already is, registered in scp_rproc_init().
+ * The firmware's own ready IPI was sent when the loader started it, so the run state is marked
+ * here rather than waited for.
+ */
+static int mtk_scp_attach(struct rproc *rproc)
+{
+	struct mtk_scp *scp = rproc->priv;
+
+	dev_info(scp->dev, "attached to the SCP the loader started\n");
+	scp->run.signaled = true;
+	return 0;
 }
 
 static int scp_parse_fw(struct rproc *rproc, const struct firmware *fw)
@@ -1047,18 +1069,6 @@ static int scp_start(struct rproc *rproc)
 	}
 
 	run->signaled = false;
-
-	if (scp->preloaded) {
-		/*
-		 * Its ready IPI was sent when the loader started it, long before this driver probe:
-		 * waiting for another one would time out. Attach and say so.
-		 */
-		dev_info(dev, "attached to the SCP the loader started\n");
-		mt6785_scp_state(scp, "attached");
-		run->signaled = true;
-		clk_disable(scp->clk);
-		return 0;
-	}
 
 	scp->data->scp_reset_deassert(scp);
 
@@ -1159,6 +1169,37 @@ static void *scp_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iome
 	struct mtk_scp *scp = rproc->priv;
 
 	return scp->data->scp_da_to_va(scp, da, len);
+}
+
+/*
+ * Stopping an SCP the loader started means stopping a firmware this driver does not own, so the
+ * subsystem is cycled the way the vendor's recovery does it (scp_sys_full_reset(), scp_awake.c:
+ * 222-283): the module reset in infracfg is taken and released again, and the core is held in
+ * reset through the AP-side bit. A later rproc_boot then loads the image from the firmware file,
+ * which is what a restart after a crash has to do.
+ */
+static void mt8183_scp_stop(struct mtk_scp *scp);
+
+static void mt6785_scp_stop_full(struct mtk_scp *scp)
+{
+	struct regmap *infracfg = mt6785_infracfg(scp);
+	u32 val;
+
+	mt8183_scp_stop(scp);
+
+	if (IS_ERR(infracfg))
+		return;
+
+	/* hold the subsystem in reset, then release the hold so a reload starts clean */
+	regmap_read(infracfg, MT6785_INFRACFG_MODULE_RESET_SET, &val);
+	regmap_write(infracfg, MT6785_INFRACFG_MODULE_RESET_SET,
+		     val | MT6785_SCP_RESET_BIT);
+	usleep_range(50, 60);
+	regmap_read(infracfg, MT6785_INFRACFG_MODULE_RESET_CLR, &val);
+	regmap_write(infracfg, MT6785_INFRACFG_MODULE_RESET_CLR,
+		     val | MT6785_SCP_RESET_BIT);
+
+	dev_info(scp->dev, "SCP stopped and its subsystem reset left released for a reload\n");
 }
 
 static void mt8183_scp_stop(struct mtk_scp *scp)
@@ -1301,6 +1342,7 @@ static const struct rproc_ops scp_ops = {
 	.unprepare	= scp_unprepare,
 	.start		= scp_start,
 	.stop		= scp_stop,
+	.attach		= mtk_scp_attach,
 	.load		= scp_load,
 	.da_to_va	= scp_da_to_va,
 	.parse_fw	= scp_parse_fw,
@@ -1644,6 +1686,31 @@ static int scp_add_single_core(struct platform_device *pdev,
 	scp = scp_rproc_init(pdev, scp_cluster, of_device_get_match_data(dev), -1);
 	if (IS_ERR(scp))
 		return PTR_ERR(scp);
+
+	if (scp->data->scp_maybe_preloaded) {
+		/*
+		 * The loader on this SoC loads the images and may or may not release the core.
+		 * A released core with a vector table in the TCM is a running firmware, and
+		 * remoteproc's own mechanism for that is RPROC_DETACHED plus an .attach op:
+		 * rproc_boot() then attaches instead of loading our image over it. Anything
+		 * else - and audio22's adopted-then-stopped core was anything else - takes
+		 * the staging path.
+		 */
+		ret = clk_enable(scp->clk);
+		if (ret) {
+			scp_free(scp);
+			return ret;
+		}
+		scp->preloaded = mt6785_scp_is_up(scp);
+		if (scp->preloaded)
+			scp->rproc->state = RPROC_DETACHED;
+		dev_info(dev, "%s (sw_rstn %#x, TCM %#x/%#x)\n",
+			 scp->preloaded ? "the loader left the SCP running: attaching" :
+					  "the loader left the SCP stopped: staging our image",
+			 readl(scp->cluster->reg_base + MT8183_SW_RSTN),
+			 readl(scp->sram_base), readl(scp->sram_base + 4));
+		clk_disable(scp->clk);
+	}
 
 	ret = rproc_add(scp->rproc);
 	if (ret) {
@@ -2052,7 +2119,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_irq_handler = mt8183_scp_irq_handler,
 	.scp_reset_assert = mt8183_scp_reset_assert,
 	.scp_reset_deassert = mt8183_scp_reset_deassert,
-	.scp_stop = mt8183_scp_stop,
+	.scp_stop = mt6785_scp_stop_full,
 	.scp_dump_regs = mt6785_scp_dump_regs,
 	.scp_keep_state_on_error = true,
 	.scp_maybe_preloaded = true,
