@@ -70,10 +70,26 @@ static void mtk_phy_csi_dphy_ana_eq_tune(void __iomem *base)
 	mtk_phy_update_field(base + CSIXB_OFFSET + MIPI_RX_ANA1C_CSIXA, RG_CSI1A_L2_EQ_BW, 1);
 }
 
+/*
+ * DIAG (not for upstream): the block's first eight registers of both halves, before and after the
+ * programming, so a log shows whether the writes landed in the halves the driver believes it has.
+ * Off by default; enable with `file phy-mtk-mipi-csi-0-5.c +p` in dynamic debug.
+ */
+static void mtk_mipi_phy_dump(struct device *dev, void __iomem *base, const char *when)
+{
+	dev_dbg(dev, "ana %s: A 0x00 %08x %08x %08x %08x | B 0x00 %08x %08x %08x %08x\n",
+		when,
+		readl(base + 0x00), readl(base + 0x04), readl(base + 0x08), readl(base + 0x0c),
+		readl(base + CSIXB_OFFSET + 0x00), readl(base + CSIXB_OFFSET + 0x04),
+		readl(base + CSIXB_OFFSET + 0x08), readl(base + CSIXB_OFFSET + 0x0c));
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
 	void __iomem *base = port->base;
+
+	mtk_mipi_phy_dump(&phy->dev, base, "before");
 
 	/*
 	 * The driver currently supports DPHY and CD-PHY phys,
@@ -145,6 +161,8 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	usleep_range(20, 40);
 	mtk_phy_update_field(base + MIPI_RX_ANA00_CSIXA, RG_CSIXA_BG_LPF_EN, 1);
 	mtk_phy_update_field(base + CSIXB_OFFSET + MIPI_RX_ANA00_CSIXA, RG_CSIXA_BG_LPF_EN, 1);
+
+		mtk_mipi_phy_dump(&phy->dev, base, "after");
 
 	return 0;
 }
