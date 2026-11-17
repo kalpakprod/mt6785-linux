@@ -673,6 +673,7 @@
 			 <&topckgen CLK_TOP_APLL12_DIV4>,
 			 <&topckgen CLK_TOP_APLL12_DIVB>,
 			 <&topckgen CLK_TOP_APLL12_DIV5>,
+			 <&infracfg CLK_INFRA_AUDIO_26M>,
 			 <&clk26m>;
 		clock-names = "aud_afe", "aud_tml", "aud_22m", "aud_24m",
 			      "aud_apll_tuner", "aud_apll2_tuner", "aud_nle",
@@ -689,7 +690,7 @@
 			      "top_apll12_div0", "top_apll12_div1",
 			      "top_apll12_div2", "top_apll12_div3",
 			      "top_apll12_div4", "top_apll12_divb",
-			      "top_apll12_div5", "clk26m";
+			      "top_apll12_div5", "mtkaif_26m_clk", "clk26m";
 	};
 };
 

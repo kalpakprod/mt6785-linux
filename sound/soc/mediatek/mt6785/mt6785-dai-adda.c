@@ -841,6 +841,16 @@ static const struct snd_soc_dapm_widget mtk_dai_adda_widgets[] = {
 			   mtk_adda_dl_ch4_mix,
 			   ARRAY_SIZE(mtk_adda_dl_ch4_mix)),
 
+	/*
+	 * The MTKAIF's 26 MHz clock, the vendor's own DAPM clock supply
+	 * (vendor mt6785-dai-adda.c:1072, routed to both playback and capture at :1275
+	 * and :1286). Without it the capture path powers the ADDA's own clock but not the
+	 * one that feeds the MTKAIF pad and therefore the codec's transmitter, which is
+	 * what every audio24-26 trial measured: registers identical to the vendor's and
+	 * digital silence on the link.
+	 */
+	SND_SOC_DAPM_CLOCK_SUPPLY("mtkaif_26m_clk"),
+
 	SND_SOC_DAPM_SUPPLY_S("ADDA Enable", SUPPLY_SEQ_ADDA_AFE_ON,
 			      AFE_ADDA_UL_DL_CON0, ADDA_AFE_ON_SFT, 0,
 			      NULL, 0),
@@ -1049,12 +1059,14 @@ static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
 
 	/* clk */
 	{"ADDA Playback", NULL, "aud_dac"},
+	{"ADDA Playback", NULL, "mtkaif_26m_clk"},
 	{"ADDA Playback", NULL, "aud_dac_predis"},
 
 	{"ADDA CH34 Playback", NULL, "aud_3rd_dac"},
 	{"ADDA CH34 Playback", NULL, "aud_3rd_dac_predis"},
 
 	{"ADDA Capture Enable", NULL, "aud_adc"},
+	{"ADDA Capture Enable", NULL, "mtkaif_26m_clk"},
 	{"ADDA CH34 Capture Enable", NULL, "aud_adda6_adc"},
 };
 
