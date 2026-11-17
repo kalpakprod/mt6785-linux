@@ -103,6 +103,7 @@ struct mt6359_gauge {
 	/* Charge at the resting point the OCV table gave us, and the counter then. */
 	long long base_uah;
 	long long base_car;
+	bool anchored;
 	struct power_supply_battery_info *batt;
 	long long last_car;
 	ktime_t last_time;
@@ -166,6 +167,50 @@ static int mt6359_gauge_read_reg(struct mt6359_gauge *g, unsigned int reg,
 	regmap_update_bits(g->regmap, MT6359_FGADC_CON1,
 			   MT6359_FGADC_CON1_SW_CLEAR, 0);
 	return 0;
+}
+
+/*
+ * LK measures the battery before Linux starts, and hands the result to the kernel as
+ * ASCII strings under /chosen. On the phone (conn32):
+ *
+ *   atag,boot_voltage = "3883"   atag,fg_swocv_v = "38517"   atag,fg_swocv_i = "36"
+ *
+ * so fg_swocv_v is the software open-circuit voltage in 0.1 mV (3851.7 mV), fg_swocv_i
+ * the current at that moment in 0.1 mA (3.6 mA - effectively a rest), and boot_voltage
+ * is millivolts. That is the anchor an OCV table wants, measured before any of our
+ * load exists - no rest is needed and nothing is compensated by guesswork. The vendor
+ * gauge parses the same atags; the sources in this repository do not include that
+ * parser, so the units above come from the values themselves (3851.7 mV reads as a
+ * rested 3.8 V cell, 38517 does not) and not from a file:line I can quote.
+ */
+static int mt6359_gauge_chosen_ocv_uV(struct device *dev, long long *ocv_uv)
+{
+	struct device_node *chosen;
+	const char *str;
+	long mv01 = 0, mv = 0;
+
+	chosen = of_find_node_by_path("/chosen");
+	if (!chosen)
+		return -ENODEV;
+
+	if (!of_property_read_string(chosen, "atag,fg_swocv_v", &str))
+		mv01 = simple_strtol(str, NULL, 10);
+	if (!of_property_read_string(chosen, "atag,boot_voltage", &str))
+		mv = simple_strtol(str, NULL, 10);
+	of_node_put(chosen);
+
+	if (mv01 > 30000) {		/* 3000.0 mV: a plausible rested cell */
+		*ocv_uv = mv01 * 100;	/* 0.1 mV -> uV */
+		dev_info(dev, "OCV from LK's fg_swocv_v: %lld.%01lld mV\n",
+			 *ocv_uv / 1000, (*ocv_uv / 100) % 10);
+		return 0;
+	}
+	if (mv > 3000) {
+		*ocv_uv = mv * 1000;	/* mV -> uV */
+		dev_info(dev, "OCV from LK's boot_voltage: %ld mV\n", mv);
+		return 0;
+	}
+	return -ENODATA;
 }
 
 static int mt6359_gauge_read_car(struct mt6359_gauge *g, long long *car)
@@ -237,7 +282,7 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 * later read adds the counter's movement since that point, so the number
 		 * follows the charge with the OCV table as its anchor.
 		 */
-		if (!g->batt || g->charge_full_uah <= 0)
+		if (!g->anchored || !g->batt || g->charge_full_uah <= 0)
 			return -ENODATA;
 		ret = mt6359_gauge_read_car(g, &car);
 		if (ret)
@@ -508,7 +553,23 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	 */
 	{
 		int ocv = 0, pct;
-		long long cur_raw = 0;
+		long long cur_raw = 0, ocv_uv = 0;
+
+		if (!mt6359_gauge_chosen_ocv_uV(&pdev->dev, &ocv_uv)) {
+			pct = power_supply_batinfo_ocv2cap(g->batt, (int)ocv_uv,
+							   g->batt->ocv_temp[0]);
+			if (pct > 0) {
+				g->base_uah = g->charge_full_uah * pct / 100;
+				g->base_car = mt6359_car_to_uah(g->last_car,
+								MT6359_R_FG_NOMINAL);
+				g->anchored = true;
+				dev_info(&pdev->dev,
+					 "capacity anchored at %d %% from LK's %lld uV (%d C)\n",
+					 pct, ocv_uv, g->batt->ocv_temp[0]);
+				goto ntc_log;
+			}
+		}
+
 
 		/*
 		 * The type matters: this was `int cur` read through a `(long long *)` cast,
@@ -544,11 +605,13 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 		}
 		g->base_uah = g->charge_full_uah * pct / 100;
 		g->base_car = mt6359_car_to_uah(g->last_car, MT6359_R_FG_NOMINAL);
+		g->anchored = true;
 		dev_info(&pdev->dev, "capacity anchored at %d %% (%d uV, %d C)\n",
 			 pct, ocv, g->batt->ocv_temp[0]);
 	}
 
 no_anchor:
+ntc_log:
 
 	/*
 	 * The hardware-latched power-on OCV, the vendor's own anchor source:
@@ -571,10 +634,14 @@ no_anchor:
 	}
 
 	/* Calibration data for the NTC divider: raw and the two candidates. */
-	if (g->ntc) {
-		int raw = 0;
+	if (!g->ntc) {
+		dev_info(&pdev->dev, "NTC: no ntc io-channel on this node\n");
+	} else {
+		int raw = 0, rret = iio_read_channel_raw(g->ntc, &raw);
 
-		if (!iio_read_channel_raw(g->ntc, &raw))
+		if (rret)
+			dev_info(&pdev->dev, "NTC: channel read failed (%d)\n", rret);
+		else
 			dev_info(&pdev->dev,
 				 "NTC raw %d (pull-up %d ohm -> %d C by the vendor table)\n",
 				 raw, MT6359_NTC_PULL_UP_OHM,
