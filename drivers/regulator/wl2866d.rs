@@ -201,9 +201,23 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
         client.smbus_io().try_write8(0x00, REG_DISCHARGE as usize)?;
 
         let params = |name, ops| Params::new(name, Kind::Voltage).ops(ops, N_VOLTAGES);
-        // What the regulator core records as the owner of these regulators.
-        // The module object the `module_i2c_driver!` macro generates for this driver.
+
+        // The module object the `module_i2c_driver!` macro generates for this driver; the
+        // regulator core records it as the owner of these regulators.
         let module = kernel::module::this_module::<DriverModule>();
+
+        /*
+         * Each rail is a child node of the controller's node, and that child is what a board's
+         * `<name>-supply` phandle names. Registering all four with the controller's node - which
+         * is what the provider does when no node is given - makes every lookup miss, and the
+         * sensors then defer for ever with "could not get regulators".
+         */
+        let parent = dev.of_node().ok_or(EINVAL)?;
+        let node = |name: &kernel::str::CStr| {
+            // SAFETY: the child belongs to this device's own node, so it lives as long as the
+            // registration, and the four names are the ones the binding documents.
+            unsafe { kernel::bindings::of_get_child_by_name(parent, name.as_char_ptr()) }
+        };
 
         Ok(Wl2866d {
             _dvdd1: Registration::new(
