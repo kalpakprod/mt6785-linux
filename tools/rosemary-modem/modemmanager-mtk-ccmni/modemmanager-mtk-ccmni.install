@@ -1,0 +1,25 @@
+# Nothing is started from here: which daemon manages the modem is the owner's
+# choice, and a package should not restart services behind his back.
+post_install() {
+  cat <<'EOF'
+==> ModemManager now carries the MediaTek ccmni plugin (mtk-ccmni).
+
+For this phone's modem the plugin is required for mobile data: it is the only
+code that understands the modem's "+EIF" message, which names the ccmni
+interface each PDP context lands on, and binds that interface to the kernel
+link through /sys/class/net/<link>/md_interface.
+
+Two things are still needed before data works, both from the rosemary port:
+  - rosemary-modemd running, so the modem reaches "state ready";
+  - a data interface created with "ip link add ... type wwan"
+    (rosemary-modem-datalink does this, and the rosemary-modem unit runs it).
+
+Restart ModemManager to pick the plugin up:
+  systemctl restart ModemManager
+Then: mmcli -L, and "mmcli -m 0" shows which plugin was chosen.
+EOF
+}
+
+post_upgrade() {
+  post_install
+}
