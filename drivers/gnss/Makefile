@@ -20,3 +20,15 @@ gnss-ubx-y := ubx.o
 
 obj-$(CONFIG_GNSS_USB)			+= gnss-usb.o
 gnss-usb-y := usb.o
+
+# The GNSS bridge talks to the WMT/STP stack, whose public headers live in the
+# connectivity driver; use the same defines the WMT core is built with.
+CFLAGS_stpgps.o += -DMTK_WCN_WMT_STP_EXP_SYMBOL_ABSTRACT
+CFLAGS_stpgps.o += -DWMT_IDC_SUPPORT=0
+CFLAGS_stpgps.o += -DWMT_PLAT_ALPS=1
+CFLAGS_stpgps.o += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/include
+CFLAGS_stpgps.o += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/linux/include
+CFLAGS_stpgps.o += -I$(srctree)/drivers/misc/mediatek/connectivity/compat/include
+CFLAGS_stpgps.o += -include $(srctree)/drivers/misc/mediatek/connectivity/compat/include/mtk-bsp-compat.h
+
+obj-$(CONFIG_MTK_STPGPS)		+= stpgps.o

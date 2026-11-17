@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/reserved-memory/mediatek,consys-reserve-memory.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek CONNSYS firmware memory
+
+maintainers:
+  - The poco-m5s port <worker@poco.local>
+
+description:
+  The conn MCU runs its firmware from a carve-out of DRAM that the kernel
+  must not use. The bootloader picks the address inside alloc-ranges and the
+  driver finds the region by its compatible string; the MCU also needs the
+  physical address written into its own register window, which the driver
+  does at bring-up.
+
+properties:
+  compatible:
+    const: mediatek,consys-reserve-memory
+
+  reg: true
+  size: true
+  alignment: true
+  alloc-ranges: true
+  no-map: true
+
+required:
+  - compatible
+  - size
+
+additionalProperties: false
+
+examples:
+  - |
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        consys-reserve-memory {
+            compatible = "mediatek,consys-reserve-memory";
+            no-map;
+            size = <0 0x400000>;
+            alignment = <0 0x1000000>;
+            alloc-ranges = <0 0x40000000 0 0x80000000>;
+        };
+    };

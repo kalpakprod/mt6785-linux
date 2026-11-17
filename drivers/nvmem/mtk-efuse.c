@@ -11,8 +11,11 @@
 #include <linux/platform_device.h>
 #include <linux/property.h>
 
+#include "mtk-efuse.h"
+
 struct mtk_efuse_pdata {
-	bool uses_post_processing;
+	void (*fixup_dt_cell_info)(struct nvmem_device *nvmem,
+				   struct nvmem_cell_info *cell);
 };
 
 struct mtk_efuse_priv {
@@ -85,8 +88,7 @@ static int mtk_efuse_probe(struct platform_device *pdev)
 	econfig.size = resource_size(res);
 	econfig.priv = priv;
 	econfig.dev = dev;
-	if (pdata->uses_post_processing)
-		econfig.fixup_dt_cell_info = &mtk_efuse_fixup_dt_cell_info;
+	econfig.fixup_dt_cell_info = pdata->fixup_dt_cell_info;
 	nvmem = devm_nvmem_register(dev, &econfig);
 	if (IS_ERR(nvmem))
 		return PTR_ERR(nvmem);
@@ -101,15 +103,23 @@ static int mtk_efuse_probe(struct platform_device *pdev)
 }
 
 static const struct mtk_efuse_pdata mtk_mt8186_efuse_pdata = {
-	.uses_post_processing = true,
+	.fixup_dt_cell_info = mtk_efuse_fixup_dt_cell_info,
 };
 
-static const struct mtk_efuse_pdata mtk_efuse_pdata = {
-	.uses_post_processing = false,
+/*
+ * The MT6785 GPU eFuse is the chip segment code, not a 3-bit bin number, so this SoC
+ * decodes it with its own post-processing - see mtk-efuse.h for the vendor table the
+ * decode is taken from.
+ */
+static const struct mtk_efuse_pdata mtk_mt6785_efuse_pdata = {
+	.fixup_dt_cell_info = mtk_mt6785_efuse_fixup_dt_cell_info,
 };
+
+static const struct mtk_efuse_pdata mtk_efuse_pdata = { };
 
 static const struct of_device_id mtk_efuse_of_match[] = {
 	{ .compatible = "mediatek,mt8173-efuse", .data = &mtk_efuse_pdata },
+	{ .compatible = "mediatek,mt6785-efuse", .data = &mtk_mt6785_efuse_pdata },
 	{ .compatible = "mediatek,mt8186-efuse", .data = &mtk_mt8186_efuse_pdata },
 	{ .compatible = "mediatek,efuse", .data = &mtk_efuse_pdata },
 	{/* sentinel */},

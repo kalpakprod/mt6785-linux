@@ -70,10 +70,102 @@ static void mtk_phy_csi_dphy_ana_eq_tune(void __iomem *base)
 	mtk_phy_update_field(base + CSIXB_OFFSET + MIPI_RX_ANA1C_CSIXA, RG_CSI1A_L2_EQ_BW, 1);
 }
 
+/*
+ * DIAG (not for upstream): the block's first eight registers of both halves, before and after the
+ * programming, so a log shows whether the writes landed in the halves the driver believes it has.
+ * Off by default; enable with `file phy-mtk-mipi-csi-0-5.c +p` in dynamic debug.
+ */
+/*
+ * The analog fields the stock HAL sets, extracted from its own disassembly
+ * (libcam.halsensor.so: hal_csirx_phyA_init 0x32208-0x32520; the other four sequence functions add
+ * no field these do not carry). One line per field, mask and value as the HAL writes them.
+ *
+ * Mainline's header names some of these bits: offset 0x4 == ANA04, where bit 2 is RG_CSIXA_BG_LPF_EN,
+ * bit 6 RG_CSIXA_DPHY_L0_CKSEL, bit 9 RG_CSIXA_DPHY_L1_CKSEL, bits 11/12 RG_CSIXA_DPHY_L2_CKMODE_EN
+ * and _CKSEL (phy-mtk-mipi-csi-0-5-rx-reg.h:17-27). Bits 10, 14 and 19 of the same register, which the
+ * stock HAL sets and this driver did not, are not named in that header - and they are exactly the ones
+ * missing in what this phone reads back after power-on (A 0x00801a4e). Offsets 0x8, 0xc, 0x18-0x20,
+ * 0x30, 0x34 and 0x3c are the per-lane timing/equaliser fields, likewise unnamed in mainline.
+ */
+static const struct {
+	u32 off;
+	u32 mask;
+	u32 val;
+} mtk_mipi_vendor_ana[] = {
+	{ 0x4, 0xfffffff8, 0x4 },	/* phyA_init */
+	{ 0x4, 0xffffff8f, 0x40 },	/* phyA_init */
+	{ 0x4, 0xfffff8ff, 0x400 },	/* phyA_init */
+	{ 0x4, 0xffff8fff, 0x4000 },	/* phyA_init */
+	{ 0x4, 0xfff0ffff, 0x80000 },	/* phyA_init */
+	{ 0x18, 0xffffffcf, 0x10 },	/* phyA_init */
+	{ 0x18, 0xffcfffff, 0x100000 },	/* phyA_init */
+	{ 0x1c, 0xffffffcf, 0x10 },	/* phyA_init */
+	{ 0x1c, 0xffcfffff, 0x100000 },	/* phyA_init */
+	{ 0x20, 0xffffffcf, 0x10 },	/* phyA_init */
+	{ 0x20, 0xffcfffff, 0x100000 },	/* phyA_init */
+	{ 0x18, 0xffffff3f, 0x40 },	/* phyA_init */
+	{ 0x18, 0xff3fffff, 0x400000 },	/* phyA_init */
+	{ 0x1c, 0xffffff3f, 0x40 },	/* phyA_init */
+	{ 0x1c, 0xff3fffff, 0x400000 },	/* phyA_init */
+	{ 0x20, 0xffffff3f, 0x40 },	/* phyA_init */
+	{ 0x20, 0xff3fffff, 0x400000 },	/* phyA_init */
+	{ 0x20, 0xfffff0ff, 0x40000 },	/* phyA_init */
+	{ 0x18, 0xfffff0ff, 0x300 },	/* phyA_init */
+	{ 0x18, 0xf0ffffff, 0x3000000 },	/* phyA_init */
+	{ 0x1c, 0xfffff0ff, 0x300 },	/* phyA_init */
+	{ 0x1c, 0xf0ffffff, 0x3000000 },	/* phyA_init */
+	{ 0x20, 0xfffff0ff, 0x300 },	/* phyA_init */
+	{ 0x20, 0xf0ffffff, 0x3000000 },	/* phyA_init */
+	{ 0x8, 0xffffffe0, 0x10 },	/* phyA_init */
+	{ 0x8, 0xffffe0ff, 0x1000 },	/* phyA_init */
+	{ 0x8, 0xffe0ffff, 0x100000 },	/* phyA_init */
+	{ 0x8, 0xe0ffffff, 0x10000000 },	/* phyA_init */
+	{ 0xc, 0xffffffe0, 0x10 },	/* phyA_init */
+	{ 0xc, 0xffffe0ff, 0x1000 },	/* phyA_init */
+	{ 0x30, 0xffffffe0, 0x8 },	/* phyA_init */
+	{ 0x30, 0xffffe0ff, 0x800 },	/* phyA_init */
+	{ 0x30, 0xffe0ffff, 0x80000 },	/* phyA_init */
+	{ 0x3c, 0xffffffe0, 0x8 },	/* phyA_init */
+	{ 0x3c, 0xffffe0ff, 0x800 },	/* phyA_init */
+	{ 0x3c, 0xffe0ffff, 0x80000 },	/* phyA_init */
+	{ 0x34, 0xe0ffffff, 0x1 },	/* phyA_init */
+	{ 0x30, 0xe0ffffff, 0x1000000 },	/* phyA_init */
+	{ 0x3c, 0xe0ffffff, 0x1000000 },	/* phyA_init */
+};
+
+static void mtk_mipi_phy_vendor_ana(struct device *dev, void __iomem *base,
+				    const char *half)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(mtk_mipi_vendor_ana); i++) {
+		u32 off = mtk_mipi_vendor_ana[i].off;
+		u32 before = readl(base + off);
+		u32 want = (before & mtk_mipi_vendor_ana[i].mask) | mtk_mipi_vendor_ana[i].val;
+
+		writel(want, base + off);
+
+		dev_info(dev, "ana %s +0x%02x: 0x%08x -> 0x%08x (want 0x%08x)%s\n",
+			 half, off, before, readl(base + off), want,
+			 readl(base + off) == want ? "" : "  MISMATCH");
+	}
+}
+
+static void mtk_mipi_phy_dump(struct device *dev, void __iomem *base, const char *when)
+{
+	dev_info(dev, "DIAG ana %s: A 0x00 %08x %08x %08x %08x | B 0x00 %08x %08x %08x %08x\n",
+		when,
+		readl(base + 0x00), readl(base + 0x04), readl(base + 0x08), readl(base + 0x0c),
+		readl(base + CSIXB_OFFSET + 0x00), readl(base + CSIXB_OFFSET + 0x04),
+		readl(base + CSIXB_OFFSET + 0x08), readl(base + CSIXB_OFFSET + 0x0c));
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
 	void __iomem *base = port->base;
+
+	mtk_mipi_phy_dump(&phy->dev, base, "before");
 
 	/*
 	 * The driver currently supports DPHY and CD-PHY phys,
@@ -145,6 +237,16 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	usleep_range(20, 40);
 	mtk_phy_update_field(base + MIPI_RX_ANA00_CSIXA, RG_CSIXA_BG_LPF_EN, 1);
 	mtk_phy_update_field(base + CSIXB_OFFSET + MIPI_RX_ANA00_CSIXA, RG_CSIXA_BG_LPF_EN, 1);
+
+	/*
+	 * The fields the stock HAL sets, in its order, on both halves. This is what was missing for
+	 * lanes 2, 3 and 4: mainline's own writes leave them out, and the phone's read-back showed
+	 * exactly those bits clear while the receiver sat enabled with silent lanes.
+	 */
+	mtk_mipi_phy_vendor_ana(&phy->dev, base, "A");
+	mtk_mipi_phy_vendor_ana(&phy->dev, base + CSIXB_OFFSET, "B");
+
+		mtk_mipi_phy_dump(&phy->dev, base, "after");
 
 	return 0;
 }

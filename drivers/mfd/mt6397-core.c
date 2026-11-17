@@ -252,6 +252,24 @@ static const struct mfd_cell mt6359_devs[] = {
 		.of_compatible = "mediatek,mt6359-keys"
 	},
 	{
+		/*
+		 * The clock-buffer block (drivers/clk/mediatek/clk-mt6359-clkbuf.c).
+		 * An MFD child exists only when it is listed here: the core builds the
+		 * platform devices from this table, not from arbitrary DT children, so a
+		 * node with a compatible and no cell here never probes - which is exactly
+		 * what happened to the NFC reference clock on conn15 (the st-nci client
+		 * deferred with "failed to get the reference clock" while the DT node and
+		 * the module were both present).
+		 */
+		.name = "mt6359-clkbuf",
+		.of_compatible = "mediatek,mt6359-clkbuf",
+	},
+	{
+		/* The coulomb-counting fuel gauge (drivers/power/supply/mt6359_gauge.c). */
+		.name = "mt6359-gauge",
+		.of_compatible = "mediatek,mt6359-gauge",
+	},
+	{
 		.name = "mt6359-accdet",
 		.of_compatible = "mediatek,mt6359-accdet",
 		.num_resources = ARRAY_SIZE(mt6359_accdet_resources),

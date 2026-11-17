@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config MTK_SENSORHUB
+	tristate "MediaTek SCP sensor hub (IPI_SENSOR client and IIO front end)"
+	depends on MTK_SCP
+	depends on IIO
+	help
+	  Say yes here to expose the sensors behind MediaTek's SCP sensor hub as
+	  IIO devices. The hub speaks MediaTek's own protocol over the SCP's
+	  IPI id 8: control messages travel through the interrupt and the samples
+	  themselves through a ring buffer in DRAM.
+
+config MTK_SENSORHUB_KUNIT_TEST
+	tristate "KUnit tests for the SCP sensorhub ring parser and the scales" if !KUNIT_ALL_TESTS
+	depends on MTK_SENSORHUB || KUNIT_ALL_TESTS
+	default KUNIT_ALL_TESTS
+	help
+	  Unit tests for the frame parsing of the SCP sensorhub ring (including a
+	  corrupted frame), the byte layout of every message the client sends and
+	  the scale of every sensor, each with a deliberately wrong case that has
+	  to be caught. Run with:
+	    tools/testing/kunit/kunit.py run --kunitconfig=drivers/iio/common/mtk_sensorhub

@@ -1,0 +1,186 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000032c08 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI>:
+   32c08:      	stp	x29, x30, [sp, #-0x30]!
+   32c0c:      	stp	x22, x21, [sp, #0x10]
+   32c10:      	mov	x29, sp
+   32c14:      	stp	x20, x19, [sp, #0x20]
+   32c18:      	ldr	x20, [x1, #0x8]
+   32c1c:      	mov	x19, x0
+   32c20:      	ldr	w9, [x20]
+   32c24:      	cmp	w9, #0x2
+   32c28:      	b.eq	0x32c48 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x40>
+   32c2c:      	cmp	w9, #0x1
+   32c30:      	b.ne	0x32c5c <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x54>
+   32c34:      	add	x8, x19, #0x100
+   32c38:      	add	x10, x19, #0x108
+   32c3c:      	ldr	x21, [x10]
+   32c40:      	cbnz	x21, 0x32c6c <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x64>
+   32c44:      	b	0x32ca8 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xa0>
+   32c48:      	add	x8, x19, #0x110
+   32c4c:      	add	x10, x19, #0x118
+   32c50:      	ldr	x21, [x10]
+   32c54:      	cbnz	x21, 0x32c6c <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x64>
+   32c58:      	b	0x32ca8 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xa0>
+   32c5c:      	add	x8, x19, #0xf0
+   32c60:      	add	x10, x19, #0xf8
+   32c64:      	ldr	x21, [x10]
+   32c68:      	cbz	x21, 0x32ca8 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xa0>
+   32c6c:      	ldr	x22, [x8]
+   32c70:      	cbz	x22, 0x32ca8 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xa0>
+   32c74:      	add	x8, x19, x9, lsl #3
+   32c78:      	ldr	w10, [x1, #0x10]
+   32c7c:      	cmp	w9, #0x3
+   32c80:      	ldr	x8, [x8, #0xd8]
+   32c84:      	b.lt	0x32cd8 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xd0>
+   32c88:      	ldr	w9, [x1, #0x14]
+   32c8c:      	cmp	w9, #0x2
+   32c90:      	b.hs	0x32cd8 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xd0>
+   32c94:      	ldr	w9, [x8]
+   32c98:      	cmp	w10, #0x2
+   32c9c:      	b.ne	0x32cf8 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xf0>
+   32ca0:      	orr	w9, w9, #0x1
+   32ca4:      	b	0x32cfc <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xf4>
+   32ca8:      	ldp	x20, x19, [sp, #0x20]
+   32cac:      	adrp	x1, 0x21000
+   32cb0:      	adrp	x2, 0x21000
+   32cb4:      	ldp	x22, x21, [sp, #0x10]
+   32cb8:      	adrp	x3, 0x18000
+   32cbc:      	add	x1, x1, #0x4e5
+   32cc0:      	add	x2, x2, #0xe9e
+   32cc4:      	add	x3, x3, #0xaba
+   32cc8:      	mov	w4, #0x833              // =2099
+   32ccc:      	mov	w0, #0x6                // =6
+   32cd0:      	ldp	x29, x30, [sp], #0x30
+   32cd4:      	b	0xf17d0 <__android_log_print@plt>
+   32cd8:      	ldr	w9, [x22]
+   32cdc:      	cmp	w10, #0x2
+   32ce0:      	b.ne	0x32d04 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0xfc>
+   32ce4:      	orr	w9, w9, #0x1
+   32ce8:      	str	w9, [x22]
+   32cec:      	ldr	w9, [x21]
+   32cf0:      	orr	w9, w9, #0x1
+   32cf4:      	b	0x32d14 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x10c>
+   32cf8:      	and	w9, w9, #0xfffffffe
+   32cfc:      	str	w9, [x8]
+   32d00:      	b	0x32d18 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x110>
+   32d04:      	and	w9, w9, #0xfffffffe
+   32d08:      	str	w9, [x22]
+   32d0c:      	ldr	w9, [x21]
+   32d10:      	and	w9, w9, #0xfffffffe
+   32d14:      	str	w9, [x21]
+   32d18:      	ldr	w9, [x1, #0x10]
+   32d1c:      	cmp	w9, #0x2
+   32d20:      	b.eq	0x32e38 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x230>
+   32d24:      	ldr	w9, [x1, #0x14]
+   32d28:      	cmp	w9, #0x3
+   32d2c:      	b.eq	0x32d3c <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x134>
+   32d30:      	ldr	w9, [x20]
+   32d34:      	cmp	w9, #0x2
+   32d38:      	b.gt	0x32df0 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x1e8>
+   32d3c:      	adrp	x1, 0x21000
+   32d40:      	adrp	x2, 0x16000
+   32d44:      	adrp	x3, 0x18000
+   32d48:      	add	x1, x1, #0x4e5
+   32d4c:      	add	x2, x2, #0x6cd
+   32d50:      	add	x3, x3, #0xaba
+   32d54:      	mov	w0, #0x3                // =3
+   32d58:      	bl	0xf17d0 <__android_log_print@plt>
+   32d5c:      	ldr	w8, [x22]
+   32d60:      	and	w8, w8, #0xffffffdf
+   32d64:      	str	w8, [x22]
+   32d68:      	ldr	w8, [x22]
+   32d6c:      	and	w8, w8, #0xfffffeff
+   32d70:      	str	w8, [x22]
+   32d74:      	ldr	w8, [x22]
+   32d78:      	orr	w8, w8, #0x800
+   32d7c:      	str	w8, [x22]
+   32d80:      	ldr	w8, [x21]
+   32d84:      	and	w8, w8, #0xffffffdf
+   32d88:      	str	w8, [x21]
+   32d8c:      	ldr	w8, [x21]
+   32d90:      	and	w8, w8, #0xfffffeff
+   32d94:      	str	w8, [x21]
+   32d98:      	ldr	w8, [x21]
+   32d9c:      	and	w8, w8, #0xfffff7ff
+   32da0:      	str	w8, [x21]
+   32da4:      	ldr	w8, [x22]
+   32da8:      	orr	w8, w8, #0x40
+   32dac:      	str	w8, [x22]
+   32db0:      	ldr	w8, [x22]
+   32db4:      	orr	w8, w8, #0x200
+   32db8:      	str	w8, [x22]
+   32dbc:      	ldr	w8, [x22]
+   32dc0:      	orr	w8, w8, #0x1000
+   32dc4:      	str	w8, [x22]
+   32dc8:      	ldr	w8, [x21]
+   32dcc:      	orr	w8, w8, #0x40
+   32dd0:      	str	w8, [x21]
+   32dd4:      	ldr	w8, [x21]
+   32dd8:      	orr	w8, w8, #0x200
+   32ddc:      	str	w8, [x21]
+   32de0:      	ldr	w8, [x21]
+   32de4:      	orr	w8, w8, #0x1000
+   32de8:      	str	w8, [x21]
+   32dec:      	b	0x32e38 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x230>
+   32df0:      	ldr	w9, [x8]
+   32df4:      	and	w9, w9, #0xffffffdf
+   32df8:      	str	w9, [x8]
+   32dfc:      	ldr	w9, [x8]
+   32e00:      	orr	w9, w9, #0x100
+   32e04:      	str	w9, [x8]
+   32e08:      	ldr	w9, [x8]
+   32e0c:      	and	w9, w9, #0xfffff7ff
+   32e10:      	str	w9, [x8]
+   32e14:      	ldr	w9, [x8]
+   32e18:      	and	w9, w9, #0xffffffbf
+   32e1c:      	str	w9, [x8]
+   32e20:      	ldr	w9, [x8]
+   32e24:      	and	w9, w9, #0xfffffdff
+   32e28:      	str	w9, [x8]
+   32e2c:      	ldr	w9, [x8]
+   32e30:      	and	w9, w9, #0xffffefff
+   32e34:      	str	w9, [x8]
+   32e38:      	ldr	w1, [x20]
+   32e3c:      	cmp	w1, #0x8
+   32e40:      	b.hi	0x32e74 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x26c>
+   32e44:      	adrp	x8, 0x11000
+   32e48:      	add	x8, x8, #0xb56
+   32e4c:      	adr	x9, 0x32e5c <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x254>
+   32e50:      	ldrb	w10, [x8, x1]
+   32e54:      	add	x9, x9, x10, lsl #2
+   32e58:      	br	x9
+   32e5c:      	mov	x0, x19
+   32e60:      	ldp	x20, x19, [sp, #0x20]
+   32e64:      	mov	w2, #0x1                // =1
+   32e68:      	ldp	x22, x21, [sp, #0x10]
+   32e6c:      	ldp	x29, x30, [sp], #0x30
+   32e70:      	b	0xf19f0 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb@plt>
+   32e74:      	ldp	x20, x19, [sp, #0x20]
+   32e78:      	ldp	x22, x21, [sp, #0x10]
+   32e7c:      	ldp	x29, x30, [sp], #0x30
+   32e80:      	ret
+   32e84:      	mov	x0, x19
+   32e88:      	mov	w1, #0x3                // =3
+   32e8c:      	mov	w2, #0x1                // =1
+   32e90:      	bl	0xf19f0 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb@plt>
+   32e94:      	mov	x0, x19
+   32e98:      	mov	w1, #0x4                // =4
+   32e9c:      	b	0x32e60 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x258>
+   32ea0:      	mov	w1, #0x5                // =5
+   32ea4:      	mov	x0, x19
+   32ea8:      	mov	w2, #0x1                // =1
+   32eac:      	bl	0xf19f0 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb@plt>
+   32eb0:      	mov	x0, x19
+   32eb4:      	mov	w1, #0x6                // =6
+   32eb8:      	b	0x32e60 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x258>
+   32ebc:      	mov	x0, x19
+   32ec0:      	mov	w1, #0x7                // =7
+   32ec4:      	mov	w2, #0x1                // =1
+   32ec8:      	bl	0xf19f0 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb@plt>
+   32ecc:      	mov	x0, x19
+   32ed0:      	mov	w1, #0x8                // =8
+   32ed4:      	b	0x32e60 <_ZN12SeninfDrvImp22hal_csirx_phyA_settingEP15SENINF_CSI_MIPI+0x258>

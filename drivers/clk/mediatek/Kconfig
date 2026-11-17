@@ -1221,3 +1221,16 @@ config COMMON_CLK_MT8516_AUDSYS
 	  This driver supports MediaTek MT8516 audsys clocks.
 
 endmenu
+
+config COMMON_CLK_MT6359_CLKBUF
+	tristate "MediaTek MT6359 PMIC clock buffer (XO) outputs"
+	depends on MFD_MT6397 || COMPILE_TEST
+	help
+	  Exposes the MT6359 PMIC's 26 MHz clock buffer outputs (SOC, WCN, NFC,
+	  CEL, EXT) as gate clocks, so consumers such as the NFC controller can
+	  ask for their reference clock instead of relying on the bootloader
+	  having left it on.
+
+	  The buffers are registered with CLK_IGNORE_UNUSED: a buffer nobody
+	  requests keeps the state the bootloader gave it, which matters for the
+	  modem, Wi-Fi/BT and UFS votes.

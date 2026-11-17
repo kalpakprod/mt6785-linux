@@ -1,0 +1,58 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000030b90 <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM>:
+   30b90:      	stp	x29, x30, [sp, #-0x10]!
+   30b94:      	mov	x29, sp
+   30b98:      	ldr	x8, [x0, #0x38]
+   30b9c:      	cmp	w1, #0x5
+   30ba0:      	b.hi	0x30c2c <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM+0x9c>
+   30ba4:      	adrp	x10, 0x11000
+   30ba8:      	mov	w9, w1
+   30bac:      	add	x10, x10, #0xb18
+   30bb0:      	adr	x11, 0x30bc0 <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM+0x30>
+   30bb4:      	ldrb	w12, [x10, x9]
+   30bb8:      	add	x11, x11, x12, lsl #2
+   30bbc:      	br	x11
+   30bc0:      	mov	x9, x8
+   30bc4:      	ldr	w11, [x9, #0x10]!
+   30bc8:      	b	0x30c08 <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM+0x78>
+   30bcc:      	mov	x9, x8
+   30bd0:      	ldr	w10, [x9, #0x10]!
+   30bd4:      	b	0x30c1c <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM+0x8c>
+   30bd8:      	mov	x9, x8
+   30bdc:      	ldr	w10, [x9, #0x10]!
+   30be0:      	and	w11, w10, #0xfff0ffff
+   30be4:      	ubfiz	w10, w2, #16, #4
+   30be8:      	b	0x30c24 <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM+0x94>
+   30bec:      	mov	x9, x8
+   30bf0:      	ldr	w10, [x9, #0x10]!
+   30bf4:      	and	w11, w10, #0xf0ffffff
+   30bf8:      	ubfiz	w10, w2, #24, #4
+   30bfc:      	b	0x30c24 <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM+0x94>
+   30c00:      	mov	x9, x8
+   30c04:      	ldr	w11, [x9, #0x14]!
+   30c08:      	and	w10, w2, #0xf
+   30c0c:      	and	w11, w11, #0xfffffff0
+   30c10:      	b	0x30c24 <_ZN12SeninfDrvImp19setSeninfTopMuxCtrlE15SENINF_MUX_ENUM11SENINF_ENUM+0x94>
+   30c14:      	mov	x9, x8
+   30c18:      	ldr	w10, [x9, #0x14]!
+   30c1c:      	and	w11, w10, #0xfffff0ff
+   30c20:      	ubfiz	w10, w2, #8, #4
+   30c24:      	orr	w10, w11, w10
+   30c28:      	str	w10, [x9]
+   30c2c:      	ldr	w4, [x8, #0x10]
+   30c30:      	adrp	x1, 0x21000
+   30c34:      	ldr	w5, [x8, #0x14]
+   30c38:      	adrp	x2, 0x16000
+   30c3c:      	adrp	x3, 0x16000
+   30c40:      	add	x1, x1, #0x4e5
+   30c44:      	add	x2, x2, #0x600
+   30c48:      	add	x3, x3, #0x6b1
+   30c4c:      	mov	w0, #0x3                // =3
+   30c50:      	bl	0xf17d0 <__android_log_print@plt>
+   30c54:      	mov	w0, wzr
+   30c58:      	ldp	x29, x30, [sp], #0x10
+   30c5c:      	ret

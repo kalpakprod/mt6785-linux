@@ -524,6 +524,18 @@ config INPUT_REGULATOR_HAPTIC
 	  To compile this driver as a module, choose M here: the
 	  module will be called regulator-haptic.
 
+config INPUT_AW8622_HAPTICS
+	tristate "Awinic AW8622 haptics support"
+	depends on PWM
+	select INPUT_FF_MEMLESS
+	help
+	  Say Y here to enable support for the Awinic AW8622 linear resonant
+	  actuator driver, which drives the actuator through a PWM channel and
+	  an enable pin and reports through the input force-feedback interface.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called aw8622-haptics.
+
 config INPUT_RETU_PWRBUTTON
 	tristate "Retu Power button Driver"
 	depends on MFD_RETU

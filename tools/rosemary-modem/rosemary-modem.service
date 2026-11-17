@@ -1,0 +1,31 @@
+[Unit]
+Description=Modem services (rosemary: NVRAM file service, RPC, MD boot)
+Before=ModemManager.service
+After=systemd-modules-load.service
+
+[Service]
+ExecStartPre=/usr/bin/modprobe rosemary_ccci
+ExecStart=/usr/bin/rosemary-modemd
+# The WWAN framework does not create the modem's data interface on its own: it must
+# be created with "ip link add ... type wwan". ModemManager's plugin then moves that
+# one interface to whichever ccmni id each PDP context gets. Without it the plugin
+# reports "No valid data port found" and no data connection is possible.
+ExecStartPost=/usr/local/bin/rosemary-modem-datalink
+# leave the MD powered off for lk on the next boot, but keep it running
+# across a restart of the service: a warm restart of an MD that has been up
+# for a while does not reach HS1 (only a reboot recovers it)
+ExecStopPost=/bin/sh -c 'systemctl is-system-running | grep -q stopping && echo 0 > /sys/devices/platform/10209000.modem/boot || true'
+Restart=on-failure
+RestartSec=5
+# 3: lk loaded no MD image this boot (rosemary-modemd), retrying is useless
+RestartPreventExitStatus=3
+StateDirectory=rosemary-modem
+StateDirectoryMode=0700
+RuntimeDirectory=rosemary-modem
+RuntimeDirectoryPreserve=yes
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

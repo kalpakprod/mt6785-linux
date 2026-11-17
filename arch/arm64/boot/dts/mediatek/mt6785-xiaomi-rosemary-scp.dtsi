@@ -1,0 +1,189 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * mt6785-xiaomi-rosemary-scp.dtsi -- the SCP (a Cortex-M4) of the Poco M5s,
+ * and the sensor hub that runs on it.
+ *
+ * The SCP runs the sensor hub the four motion and environment sensors sit
+ * behind, so this node is what makes them reachable at all.
+ *
+ * Addresses and sizes come from the phone's own tree [L: device-tree.dts:2975,
+ * scp@10500000]: SRAM (TCM) at 0x10500000 with 0xc0000 bytes, cfg at
+ * 0x105c0000, and the clock block at 0x105c4000 which the vendor tree has as a
+ * region of its own. mainline's mtk_scp addresses the clock registers as
+ * cfg + 0x4000 (MT8183_SCP_CLK_SW_SEL and the SRAM power registers in
+ * drivers/remoteproc/mtk_common.h:23-27), so cfg has to cover them: 0x5000, not
+ * the vendor's 0x3000.
+ *
+ * The interrupt is GIC SPI 201, level high [L: same node,
+ * interrupts = <0x00 0xc9 0x04>].
+ *
+ * The firmware is not loaded by the bootloader on this phone: the TCM reads
+ * zero, the clock enable register reads zero and every SRAM power-down register
+ * reads 0xffffffff, so the kernel stages it. See tools/scp-repack.py for how the
+ * vendor's tinysys container becomes the ELF this driver loads, and REPORT.md
+ * "sensors: the SCP under mainline" for the whole story.
+ */
+/ {
+	reserved-memory {
+		/*
+		 * The carve-out the staged firmware lives in. mainline's
+		 * mtk_scp allocates this region with dma_alloc_coherent() and
+		 * translates firmware addresses through memory-region, so its
+		 * address has to be pinned here: the segments of the repacked
+		 * ELF carry absolute addresses inside it. 0x50000000 with 4 MiB
+		 * is where the upstream MediaTek boards put theirs
+		 * (mt8183-kukui.dtsi:96-100, mt8188-geralt.dtsi:167-170).
+		 */
+		scp_mem_reserved: scp-memory@50000000 {
+			compatible = "shared-dma-pool";
+			reg = <0 0x50000000 0 0x400000>;
+			no-map;
+		};
+
+		/*
+		 * The loader's own region, exactly as LK reserves it: mblock_reserve "SCP-reserved"
+		 * at 0x9fc00000 with 3 MiB (pl_lk.txt:2305-2306), holding the loader image at its
+		 * start (ap_loader_start, 0x438 bytes), the staged firmware at +0x800
+		 * (ap_firmware_start 0x9fc00800, size 0xbb800) and the DRAM part at 0x9fd00000
+		 * (pl_lk.txt:2406-2411). Linux must keep its hands off it or the images LK left are
+		 * gone by the time the SCP driver probes.
+		 */
+		scp_lk_mem: scp-lk-memory@9fc00000 {
+			reg = <0 0x9fc00000 0 0x300000>;
+			no-map;
+		};
+
+		/*
+		 * The hub's sample ring: the vendor splits this out of its
+		 * scp_share block as the sensor block (SENS_MEM_ID), 1 MiB
+		 * [L: mt6785.dts scp_mem_tbl = <1 0x100000>, the sensor entry;
+		 * the live tree has the same table at device-tree.dts:2986].
+		 * The client maps it and hands its address to the SCP with
+		 * SENSOR_HUB_SET_CONFIG, so this one may be dynamic.
+		 */
+		sensorhub_ring: sensorhub-ring {
+			compatible = "shared-dma-pool";
+			size = <0 0x100000>;
+			alignment = <0 0x1000>;
+			alloc-ranges = <0 0x40000000 0 0x50000000>;
+			no-map;
+		};
+	};
+
+	scp: scp@10500000 {
+		compatible = "mediatek,mt6785-scp";
+		/*
+		 * The four windows the vendor's own node declares (vendor mt6785.dts:1021-1028):
+		 * TCM, cfg, the SCP clock block, and the L1 cache control block at 0x105d4000 with
+		 * 0x6000 bytes - two instances 0x3000 apart, I then D (vendor scp_l1c.h:19-21,
+		 * L1C_SEL(x) = base + x*0x3000). LK writes 0x100 into the L1C_CON of both before it
+		 * writes the region information (pl_lk.txt:2390-2393).
+		 */
+		reg = <0 0x10500000 0 0xc0000>,
+		      <0 0x105c0000 0 0x5000>,
+		      <0 0x105d4000 0 0x6000>,
+		      <0 0x9fc00000 0 0x300000>;
+		reg-names = "sram", "cfg", "l1c", "lk-images";
+		interrupts = <GIC_SPI 201 IRQ_TYPE_LEVEL_HIGH>;
+
+		/*
+		 * The SCP's clock: the top clock controller's SCP mux and gate
+		 * (CLK_TOP_SCP, "top_scp"), which has to sit on the 26 MHz
+		 * oscillator. The vendor does both steps through the clock framework
+		 * immediately before releasing the core from reset -
+		 * "request pll clock before turn on scp" (scp_helper.c:583) calling
+		 * clk_prepare_enable() and then clk_set_parent(..., clk26m)
+		 * (scp_dvfs.c:597-655) - and without them the TCM is loaded and the
+		 * core never executes.
+		 */
+		/*
+		 * The crystal and the PLL taps the SCP's own DVFS may select as its clock: the
+		 * vendor lists exactly these as the SCP mux's parents and enables them from the
+		 * AP side (mt6785.dts:655-669). The firmware switched to one of them 1.1 s after
+		 * the release and froze while it was off (trial 42), so the driver holds them.
+		 */
+		clocks = <&topckgen CLK_TOP_SCP>, <&infracfg CLK_INFRA_SCP>,
+			 <&topckgen CLK_TOP_MAINPLL_D2_D2>,
+			 <&topckgen CLK_TOP_MAINPLL_D2_D4>,
+			 <&topckgen CLK_TOP_MAINPLL_D3>,
+			 <&topckgen CLK_TOP_UNIVPLL_D3>,
+			 <&topckgen CLK_TOP_MAINPLL_D5>,
+			 <&topckgen CLK_TOP_MAINPLL_D3_D2>;
+		clock-names = "main", "infra",
+			      "scp_pll_1", "scp_pll_2", "scp_pll_3",
+			      "scp_pll_4", "scp_pll_5", "scp_pll_6";
+		assigned-clocks = <&topckgen CLK_TOP_SCP>;
+		assigned-clock-parents = <&clk26m>;
+
+		/* the top clock controller, for the SCP gate block its driver does not model */
+		mediatek,topckgen = <&topckgen>;
+		/* infracfg, for the SCP's module reset and its sleep protection */
+		mediatek,infracfg = <&infracfg>;
+		/* the SPM block, whose PCM firmware owns the ULPOSC the core may switch to */
+		mediatek,spm = <&scpsys>;
+		/* the two rails the stock kernel keeps on for the SCP */
+		vcore_sshub-supply = <&mt6359_vcore_sshub_buck_reg>;
+		vsram_others_sshub-supply = <&mt6359_vsram_others_sshub_ldo>;
+		/* topckgen: the frequency meter the firmware measures its oscillator with */
+		mediatek,topckgen-meter = <&topckgen>;
+
+		/*
+		 * This one is the driver's shared pool: of_reserved_mem_device_init() attaches a
+		 * shared-dma-pool for dma_alloc_coherent(), and mtk_scp allocates its DRAM window
+		 * from it at probe. A plain no-map region such as LK's cannot be attached that way
+		 * (no compatible), so it is not the memory-region: the driver maps it with its own
+		 * "lk-images" window and stages the vendor images into it, where the SCP master may
+		 * read them (see the region's own comment).
+		 */
+		memory-region = <&scp_mem_reserved>;
+		/*
+		 * The vendor's own image, as shipped in the scp_a partition: MTK records with
+		 * tinysys-loader-CM4_A, tinysys-scp-CM4_A and tinysys-scp-CM4_A_dram inside
+		 * (pl_lk.txt:2311-2313, :2406-2411). Not an ELF: the driver parses the records the
+		 * way LK does.
+		 */
+		firmware-name = "mediatek/mt6785/scp-ext.img";
+	};
+
+	/*
+	 * The sensor hub on top of the SCP: the client of IPI 8 that speaks
+	 * MediaTek's sensorhub protocol (REPORT.md, "SCP step 2"). The vendor
+	 * calls the same block "sensorHub" in its tree.
+	 */
+	sensorhub {
+		compatible = "mediatek,mt6785-sensorhub";
+		mediatek,scp = <&scp>;
+		memory-region = <&sensorhub_ring>;
+	};
+};
+
+/*
+ * The board file still carries the vendor's inert placeholder for the SCP
+ * (`scp { compatible = "mediatek,scp"; }`), which no mainline driver claims and
+ * which has no registers: replace it with the node above.
+ */
+&{/} {
+	/delete-node/ scp;
+};
+
+/*
+ * The SCP's own two rails. The stock kernel sets them up once at boot, in
+ * mt_pmic_sshub_init() (vendor scp/mt6785/scp_dvfs.c:919-946): VCORE_SSHUB at 575 mV and
+ * VSRAM_OTHERS_SSHUB at 800 mV with SSHUB_EN = 1 for both, RG_VR_SSHUB_MODE = 0
+ * (vendor pmic/mt6359/v1/pmic.c:117-147 for the enables and the mode, :117-127 for
+ * pmic_scp_ctrl_enable(true, true, false)). On our kernel both rails measured as disabled with no
+ * users, while the sensors' own rails on this board are always-on; these are the same two rails
+ * the SCP uses, so they are kept on here. The low-power (SRCLKEN11) and VR_SSHUB_MODE settings of
+ * the vendor's init have no regulator-API equivalent and are not written.
+ */
+&mt6359_vcore_sshub_buck_reg {
+	regulator-min-microvolt = <575000>;
+	regulator-max-microvolt = <575000>;
+	regulator-always-on;
+};
+
+&mt6359_vsram_others_sshub_ldo {
+	regulator-min-microvolt = <800000>;
+	regulator-max-microvolt = <800000>;
+	regulator-always-on;
+};

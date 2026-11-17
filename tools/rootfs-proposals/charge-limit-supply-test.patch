@@ -1,0 +1,115 @@
+From f1c1e2a3b4c5d6e7f8091a2b3c4d5e6f7081920a Mon Sep 17 00:00:00 2001
+From: poco-connectivity-worker <worker@poco.local>
+Date: Tue, 17 Nov 2026 21:55:00 +0400
+Subject: [PATCH] rootfs: host test for supply_of_type with two Battery supplies
+
+Lead note 136. The limiter prefers a Battery supply that answers capacity, which
+keeps it reading the MT6359 gauge instead of a voltage-only adc-battery stand-in;
+the old code took whichever supply sysfs listed first and reported 20 % from a
+voltage estimate while the gauge said 46 %.
+
+The choice depends on readdir order, so the test runs both orders over a fake
+/sys/class/power_supply and asserts the effect rather than the log line: with the
+gauge at 52 % (HIGH is 50) the limiter must write inhibit-charge to the charger's
+charge_behaviour, and the stand-in's voltage is chosen to imply ~46 %, so a limiter
+that read the stand-in would leave the charger alone.
+
+Nothing here touches the phone: it is a host test over a directory.
+---
+ poco-m5s/port/tests/charge-limit-supply-test.sh | 93 ++++++++++++++++++++
+ 1 file changed, 93 insertions(+)
+ create mode 100755 poco-m5s/port/tests/charge-limit-supply-test.sh
+
+diff --git a/poco-m5s/port/tests/charge-limit-supply-test.sh b/poco-m5s/port/tests/charge-limit-supply-test.sh
+new file mode 100755
+index 0000000..b7e2c11
+--- /dev/null
++++ b/poco-m5s/port/tests/charge-limit-supply-test.sh
+@@ -0,0 +1,93 @@
++#!/bin/sh
++# Host test for poco-charge-limit's choice of battery supply.
++#
++#     ./charge-limit-supply-test.sh [path to poco-charge-limit]
++#
++# A phone can carry two supplies of type Battery: the MT6359 fuel gauge, which answers
++# `capacity`, and a voltage-only adc-battery stand-in, which does not. The limiter must
++# take the gauge whichever order sysfs lists them in - the old code took the first match
++# and acted on the stand-in's voltage instead.
++#
++# The test asserts the effect, not the log line: with the gauge at 52 % (HIGH is 50) the
++# limiter has to write inhibit-charge; the stand-in's voltage is chosen to imply about
++# 46 %, where a limiter that read it would leave the charger on auto.
++set -u
++
++here=$(cd "$(dirname "$0")" && pwd)
++limit=${1:-$here/../rootfs/usr/local/sbin/poco-charge-limit}
++[ -r "$limit" ] || { echo "test: no $limit" >&2; exit 2; }
++
++fails=0
++work=$(mktemp -d "${TMPDIR:-/tmp}/charge-limit-test.XXXXXX")
++trap 'rm -rf "$work"' EXIT
++
++# A fake sysfs with one charger and two batteries; $1 = "stand-in-first" or "gauge-first",
++# $2 = the gauge's capacity. Creation order is readdir order on this filesystem, which is
++# what the old bug depended on.
++make_sysfs() {
++	root=$work/sys-$1-$2
++	rm -rf "$root"
++	mkdir -p "$root/mt6360-charger" "$root/fuel-gauge" "$root/mt6359_fg"
++
++	echo USB > "$root/mt6360-charger/type"
++	echo 1 > "$root/mt6360-charger/online"
++	echo auto > "$root/mt6360-charger/charge_behaviour"
++	echo 500000 > "$root/mt6360-charger/input_current_limit"
++
++	# The voltage-only stand-in: 3.878 V is about 46 % by the script's own OCV table.
++	echo Battery > "$root/fuel-gauge/type"
++	echo 3878000 > "$root/fuel-gauge/voltage_now"
++
++	echo Battery > "$root/mt6359_fg/type"
++	echo "$2" > "$root/mt6359_fg/capacity"
++	echo 320 > "$root/mt6359_fg/temp"
++
++	if [ "$1" = stand-in-first ]; then
++		mv "$root/fuel-gauge" "$work/x1"
++		mv "$root/mt6359_fg" "$work/x2"
++		mv "$work/x2" "$root/fuel-gauge"
++		mv "$work/x1" "$root/mt6359_fg"
++	fi
++	echo "$root"
++}
++
++behaviour_after() {	# behaviour_after <order> <gauge capacity>
++	root=$(make_sysfs "$1" "$2")
++	RUNDIR=$work/run-$1-$2 SYSFS=$root CONF=$work/none.conf POWEROFF_CMD=true \
++		sh "$limit" --once >"$work/log-$1-$2" 2>&1
++	cat "$root/mt6360-charger/charge_behaviour"
++}
++
++for order in stand-in-first gauge-first; do
++	got=$(behaviour_after "$order" 52)
++	if [ "$got" = inhibit-charge ]; then
++		echo "PASS  $order: the gauge's 52 % was used, the charger inhibited"
++	else
++		echo "FAIL  $order: charger says '$got', so the gauge's capacity was not used"
++		sed 's/^/      /' "$work/log-$order-52"
++		fails=$((fails + 1))
++	fi
++done
++
++# The same in the other direction: at 46 % the stop must not fire. If the limiter ignored
++# the gauge and used the stand-in's estimate the two cases would be indistinguishable, so
++# this pair is what pins the supply choice.
++got=$(behaviour_after gauge-first 46)
++if [ "$got" = auto ]; then
++	echo "PASS  a 46 % battery is left alone (HIGH is 50)"
++else
++	echo "FAIL  a 46 % battery was inhibited ($got)"
++	fails=$((fails + 1))
++fi
++
++echo
++echo "$fails check(s) failed"
++exit "$fails"
+-- 
+2.43.0

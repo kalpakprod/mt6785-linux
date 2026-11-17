@@ -576,216 +576,259 @@
 		opp-270000000 {
 			opp-hz = /bits/ 64 <270000000>;
 			opp-microvolt = <612500>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-295000000 {
 			opp-hz = /bits/ 64 <295000000>;
 			opp-microvolt = <618750>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-320000000 {
 			opp-hz = /bits/ 64 <320000000>;
 			opp-microvolt = <625000>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-345000000 {
 			opp-hz = /bits/ 64 <345000000>;
 			opp-microvolt = <631250>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-370000000 {
 			opp-hz = /bits/ 64 <370000000>;
 			opp-microvolt = <637500>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-395000000 {
 			opp-hz = /bits/ 64 <395000000>;
 			opp-microvolt = <643750>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-420000000 {
 			opp-hz = /bits/ 64 <420000000>;
 			opp-microvolt = <650000>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-445000000 {
 			opp-hz = /bits/ 64 <445000000>;
 			opp-microvolt = <656250>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-470000000 {
 			opp-hz = /bits/ 64 <470000000>;
 			opp-microvolt = <662500>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-495000000 {
 			opp-hz = /bits/ 64 <495000000>;
 			opp-microvolt = <668750>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-520000000 {
 			opp-hz = /bits/ 64 <520000000>;
 			opp-microvolt = <675000>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-545000000 {
 			opp-hz = /bits/ 64 <545000000>;
 			opp-microvolt = <681250>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-570000000 {
 			opp-hz = /bits/ 64 <570000000>;
 			opp-microvolt = <687500>;
+			opp-supported-hw = <0xf>;
 		};
 
 		opp-595000000 {
 			opp-hz = /bits/ 64 <595000000>;
 			opp-microvolt = <693750>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-620000000 {
 			opp-hz = /bits/ 64 <620000000>;
 			opp-microvolt = <700000>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-634000000 {
 			opp-hz = /bits/ 64 <634000000>;
 			opp-microvolt = <706250>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-648000000 {
 			opp-hz = /bits/ 64 <648000000>;
 			opp-microvolt = <712500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-663000000 {
 			opp-hz = /bits/ 64 <663000000>;
 			opp-microvolt = <718750>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-677000000 {
 			opp-hz = /bits/ 64 <677000000>;
 			opp-microvolt = <725000>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-691000000 {
 			opp-hz = /bits/ 64 <691000000>;
 			opp-microvolt = <731250>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-706000000 {
 			opp-hz = /bits/ 64 <706000000>;
 			opp-microvolt = <737500>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-720000000 {
 			opp-hz = /bits/ 64 <720000000>;
 			opp-microvolt = <743750>;
+			opp-supported-hw = <0x7>;
 		};
 
 		opp-735000000 {
 			opp-hz = /bits/ 64 <735000000>;
 			opp-microvolt = <750000>;
+			opp-supported-hw = <0x5>;
 		};
 
 		opp-749000000 {
 			opp-hz = /bits/ 64 <749000000>;
 			opp-microvolt = <756250>;
+			opp-supported-hw = <0x5>;
 		};
 
 		opp-763000000 {
 			opp-hz = /bits/ 64 <763000000>;
 			opp-microvolt = <762500>;
+			opp-supported-hw = <0x5>;
 		};
 
 		opp-778000000 {
 			opp-hz = /bits/ 64 <778000000>;
 			opp-microvolt = <768750>;
+			opp-supported-hw = <0x5>;
 		};
 
 		opp-792000000 {
 			opp-hz = /bits/ 64 <792000000>;
 			opp-microvolt = <775000>;
+			opp-supported-hw = <0x5>;
 		};
 
 		opp-806000000 {
 			opp-hz = /bits/ 64 <806000000>;
 			opp-microvolt = <781250>;
+			opp-supported-hw = <0x5>;
 		};
 
 		opp-821000000 {
 			opp-hz = /bits/ 64 <821000000>;
 			opp-microvolt = <787500>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-835000000 {
 			opp-hz = /bits/ 64 <835000000>;
 			opp-microvolt = <793750>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-850000000 {
 			opp-hz = /bits/ 64 <850000000>;
 			opp-microvolt = <800000>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-854000000 {
 			opp-hz = /bits/ 64 <854000000>;
 			opp-microvolt = <806250>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-858000000 {
 			opp-hz = /bits/ 64 <858000000>;
 			opp-microvolt = <812500>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-862000000 {
 			opp-hz = /bits/ 64 <862000000>;
 			opp-microvolt = <818750>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-867000000 {
 			opp-hz = /bits/ 64 <867000000>;
 			opp-microvolt = <825000>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-871000000 {
 			opp-hz = /bits/ 64 <871000000>;
 			opp-microvolt = <831250>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-875000000 {
 			opp-hz = /bits/ 64 <875000000>;
 			opp-microvolt = <837500>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-880000000 {
 			opp-hz = /bits/ 64 <880000000>;
 			opp-microvolt = <843750>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-884000000 {
 			opp-hz = /bits/ 64 <884000000>;
 			opp-microvolt = <850000>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-888000000 {
 			opp-hz = /bits/ 64 <888000000>;
 			opp-microvolt = <856250>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-892000000 {
 			opp-hz = /bits/ 64 <892000000>;
 			opp-microvolt = <862500>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-897000000 {
 			opp-hz = /bits/ 64 <897000000>;
 			opp-microvolt = <868750>;
+			opp-supported-hw = <0x1>;
 		};
 
 		opp-900000000 {
 			opp-hz = /bits/ 64 <900000000>;
 			opp-microvolt = <875000>;
+			opp-supported-hw = <0x1>;
 		};
 	};
 
@@ -855,6 +898,15 @@
 
 		lvts_efuse_data2: lvts2-calib@1d8 {
 			reg = <0x1d8 0x8>;
+		};
+
+		/*
+		 * The chip segment code the GPU speed bin is decoded from: byte 0 of the
+		 * vendor efuse_segment cell (vendor mt6785.dts:631, "segment@78"), read by
+		 * its gpufreq driver as get_devinfo() & 0xFF.
+		 */
+		gpu_speedbin: gpu-speedbin@78 {
+			reg = <0x78 0x1>;
 		};
 
 		lvts_efuse_data3: lvts3-calib@280 {
@@ -1147,7 +1199,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1175,7 +1227,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1188,7 +1240,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1201,7 +1253,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1252,7 +1304,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1277,7 +1329,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1315,7 +1367,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1328,7 +1380,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1365,7 +1417,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			mediatek,channel-offset = <0x100>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1379,7 +1431,7 @@
 			clocks = <&infracfg CLK_INFRA_I2C_AP>,
 				 <&infracfg CLK_INFRA_AP_DMA>;
 			clock-names = "main", "dma";
-			clock-div = <5>;
+			clock-div = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -1539,6 +1591,8 @@
 				     <GIC_SPI 312 IRQ_TYPE_LEVEL_LOW>;
 			interrupt-names = "job", "mmu", "gpu", "event";
 			operating-points-v2 = <&gpu_opp_table>;
+			nvmem-cells = <&gpu_speedbin>;
+			nvmem-cell-names = "speed-bin";
 			power-domains = <&spm MT6785_POWER_DOMAIN_MFG_CORE0>,
 					<&spm MT6785_POWER_DOMAIN_MFG_CORE1>,
 					<&spm MT6785_POWER_DOMAIN_MFG_CORE2>,
@@ -1585,7 +1639,6 @@
 				 <&iommu M4U_PORT_DISP_OVL0_HDR>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1400XXXX 0x8000 0x1000>;
-			resets = <&mmsys MT6785_MMSYS_DISP_OVL0_RST>;
 
 			ports {
 				#address-cells = <1>;
@@ -1619,7 +1672,6 @@
 				 <&iommu M4U_PORT_DISP_OVL0_2L_HDR>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1400XXXX 0x9000 0x1000>;
-			resets = <&mmsys MT6785_MMSYS_DISP_OVL0_2L_RST>;
 
 			ports {
 				#address-cells = <1>;
@@ -1817,12 +1869,22 @@
 					reg = <1>;
 
 					gamma0_out: endpoint {
-						remote-endpoint = <&postmask0_in>;
+						remote-endpoint = <&dsi0_in>;
 					};
 				};
 			};
 		};
 
+		/*
+		 * Not in the path this tree builds: mt6785's gamma0 drives dsi0 directly,
+		 * and the DRM master never adds dither@14012000 to its components (see the
+		 * "Adding component match" list in dmesg). A device described here but never
+		 * bound is still a consumer of this power controller, and genpd then keeps
+		 * sync_state pending and every domain on - which is what blocked the modem's
+		 * power cycle. Status disabled means the node is not instantiated at all, so
+		 * it stops being a consumer; the hardware is untouched because nothing ever
+		 * programmed it.
+		 */
 		dither0: dither@14012000 {
 			compatible = "mediatek,mt6785-disp-dither",
 				     "mediatek,mt8183-disp-dither";
@@ -1831,25 +1893,7 @@
 			interrupts = <GIC_SPI 259 IRQ_TYPE_LEVEL_LOW>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1401XXXX 0x2000 0x1000>;
-
-			ports {
-				#address-cells = <1>;
-				#size-cells = <0>;
-
-				port@0 {
-					reg = <0>;
-
-					dither0_in: endpoint {
-						remote-endpoint = <&postmask0_out>;
-					};
-				};
-
-				port@1 {
-					reg = <1>;
-
-					dither0_out: endpoint { };
-				};
-			};
+			status = "disabled";
 		};
 
 		dsi0: dsi@14014000 {
@@ -1875,7 +1919,9 @@
 				port@0 {
 					reg = <0>;
 
-					dsi0_in: endpoint { };
+					dsi0_in: endpoint {
+						remote-endpoint = <&gamma0_out>;
+					};
 				};
 
 				port@1 {
@@ -1926,6 +1972,11 @@
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 		};
 
+		/*
+		 * Not instantiated either, for the reason dither0 above gives plus one the
+		 * vendor's own configuration supplies: the loader programs POSTMASK0 with
+		 * en:0 (pl_lk.txt line 313), so nothing has ever driven it on these boards.
+		 */
 		postmask0: postmask@14021000 {
 			compatible = "mediatek,mt6785-disp-postmask",
 				     "mediatek,mt8192-disp-postmask";
@@ -1934,27 +1985,11 @@
 			interrupts = <GIC_SPI 268 IRQ_TYPE_LEVEL_LOW>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1402XXXX 0x1000 0x1000>;
-
-			ports {
-				#address-cells = <1>;
-				#size-cells = <0>;
-
-				port@0 {
-					reg = <0>;
-
-					postmask0_in: endpoint {
-						remote-endpoint = <&gamma0_out>;
-					};
-				};
-
-				port@1 {
-					reg = <1>;
-
-					postmask0_out: endpoint {
-						remote-endpoint = <&dither0_in>;
-					};
-				};
-			};
+			/*
+			 * Not in this SoC's display path: gamma0 feeds dither0 directly, so
+			 * postmask0 has no graph endpoints to point anywhere.
+			 */
+			status = "disabled";
 		};
 
 		imgsys: clock-controller@15020000 {
@@ -2001,8 +2036,9 @@
 			reg = <0 0x17010000 0 0x1000>;
 			mediatek,smi = <&smi_common>;
 			mediatek,larb-id = <3>;
-			clocks = <&vencsys CLK_VENC_LARB>, <&vencsys CLK_VENC_LARB>;
-			clock-names = "apb", "smi";
+			clocks = <&vencsys CLK_VENC_LARB>, <&vencsys CLK_VENC_LARB>,
+				 <&vencsys CLK_VENC_GALS>;
+			clock-names = "apb", "smi", "gals";
 			power-domains = <&spm MT6785_POWER_DOMAIN_VENC>;
 		};
 
@@ -2028,6 +2064,141 @@
 			compatible = "mediatek,mt6785-apu_core1", "syscon";
 			reg = <0 0x19280000 0 0x1000>;
 			#clock-cells = <1>;
+		};
+
+		/*
+		 * The CSI-2 receiver: window and neighbours from the vendor device tree
+		 * (seninf1 at 0x1a040000, one per port), clocks from this tree's clock
+		 * driver (the camsys gate and the top-level mux), power from the CAM
+		 * domain. Enabled by a board once its receiver port is wired.
+		 */
+		/*
+		 * The camera pipeline owner: the shared media device and v4l2 device the
+		 * receiver, the capture engine and the sensors register into.
+		 */
+		cam: camera {
+			compatible = "mediatek,mt6785-cam";
+			status = "disabled";
+		};
+
+		/*
+		 * The CSI-2 RX PHY: the analog block the receiver programs through, bound by the
+		 * upstream driver for this block family (phy-mtk-mipi-csi-0-5). num-lanes is the
+		 * sensor's, four on the IMX355.
+		 */
+		csi_rx_phy: phy@11c80000 {
+			compatible = "mediatek,mt8365-csi-rx";
+			/*
+			 * Two halves, as the stock tree describes them: CSI0A at 0x11c80000 and CSI0B at
+			 * 0x11c81000, each 0x1000 (the vendor nodes mipi_rx_ana_csi0a/csi0b), and the
+			 * same split the upstream PHY addresses (MIPI_RX_ANA00_CSI0B = 0x1000 in the
+			 * ChromeOS register header). One window covers both.
+			 */
+			reg = <0 0x11c80000 0 0x2000>;
+			num-lanes = <4>;
+			#phy-cells = <1>;
+		};
+
+		/*
+		 * The other two analog ports, the same pair of halves each and the same window size:
+		 * CSI1A/CSI1B at 0x11c82000/0x11c83000 and CSI2A/CSI2B at 0x11c84000/0x11c85000
+		 * (vendor mt6785.dts:1497-1525, mipi_rx_ana_csi1a/csi1b and csi2a/csi2b).
+		 */
+		csi_rx_phy1: phy@11c82000 {
+			compatible = "mediatek,mt8365-csi-rx";
+			reg = <0 0x11c82000 0 0x2000>;
+			num-lanes = <4>;
+			#phy-cells = <1>;
+		};
+
+		csi_rx_phy2: phy@11c84000 {
+			compatible = "mediatek,mt8365-csi-rx";
+			reg = <0 0x11c84000 0 0x2000>;
+			num-lanes = <4>;
+			#phy-cells = <1>;
+		};
+
+		seninf1: csi@1a040000 {
+			compatible = "mediatek,mt6785-seninf";
+			/*
+			 * The digital receiver and the analog MIPI RX block the vendor device tree
+			 * gives this SoC; the second window is what lanes, termination and settling
+			 * are programmed in.
+			 */
+			reg = <0 0x1a040000 0 0x5000>;
+			mediatek,cam = <&cam>;
+			/*
+			 * All three analog ports: the port a sensor lands on is a HAL setting, and
+			 * neither the vendor device tree nor the stock one names it, so the driver
+			 * picks one at run time (mtk_seninf.csi_port) and this describes them all.
+			 */
+			phys = <&csi_rx_phy PHY_TYPE_DPHY>, <&csi_rx_phy1 PHY_TYPE_DPHY>,
+			       <&csi_rx_phy2 PHY_TYPE_DPHY>;
+			phy-names = "csi-rx0", "csi-rx1", "csi-rx2";
+			clocks = <&camsys CLK_CAM_SENINF>, <&topckgen CLK_TOP_SENINF0>;
+			clock-names = "seninf", "mux";
+			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					seninf1_in_a: endpoint {
+						remote-endpoint = <&imx355_out>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					seninf1_in_b: endpoint {
+						remote-endpoint = <&ov13b10_out>;
+					};
+				};
+
+				port@2 {
+					reg = <2>;
+
+					seninf1_out: endpoint {
+						remote-endpoint = <&camsv1_in>;
+					};
+				};
+			};
+		};
+
+		/*
+		 * Raw capture engine: window and interrupt from the vendor device tree
+		 * (camsv1..6 at 0x1a050000 + 0x1000*n, IRQs from 0x117), the camsys gate
+		 * CLK_CAM_SV0 for the first engine, the camera larb's IOMMU port
+		 * M4U_PORT_CAM_IMGO (larb 6 port 0), and the CAM domain.
+		 */
+		camsv1: capture@1a050000 {
+			compatible = "mediatek,mt6785-camsv";
+			reg = <0 0x1a050000 0 0x1000>;
+			mediatek,cam = <&cam>;
+			interrupts = <GIC_SPI 279 IRQ_TYPE_LEVEL_LOW>;
+			/*
+			 * The engine's own gate, the camera subsystem's main and TG gates, and the GALS
+			 * that carries its DMA out to the MM subsystem: the vendor's camera clock list
+			 * names all four (camsys gates, clk-mt6785-cam.c:25,27-30), and without GALS a
+			 * frame cannot reach memory however well the engine is programmed.
+			 */
+			clocks = <&camsys CLK_CAM_SV0>, <&camsys CLK_CAM_MAIN>,
+				 <&camsys CLK_CAM_TG>, <&camsys CLK_CAM_GALS>;
+			clock-names = "sv", "main", "tg", "gals";
+			iommus = <&iommu M4U_PORT_CAM_IMGO>;
+			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+			status = "disabled";
+
+			port {
+				camsv1_in: endpoint {
+					remote-endpoint = <&seninf1_out>;
+				};
+			};
 		};
 
 		camsys: clock-controller@1a000000 {

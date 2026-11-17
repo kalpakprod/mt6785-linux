@@ -47,6 +47,14 @@ config REGULATOR_VIRTUAL_CONSUMER
 
 	  If unsure, say no.
 
+config REGULATOR_WL2866D
+	tristate "WL2866D camera LDO controller"
+	depends on I2C && RUST
+	help
+	  Four-output LDO controller for camera sensors, found next to the camera
+	  connector on several MediaTek phones. Say M or Y here to drive it from
+	  the device tree.
+
 config REGULATOR_USERSPACE_CONSUMER
 	tristate "Userspace regulator consumer support"
 	help

@@ -1,0 +1,5 @@
+*.o
+stpgps-bridge
+stpgps-bridge-naive
+stpgps-bridge-aarch64-linux-musl
+test-bridge

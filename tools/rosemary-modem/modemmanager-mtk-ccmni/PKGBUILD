@@ -1,0 +1,113 @@
+# Maintainer: rosemary modem port <worker@poco.local>
+#
+# ModemManager 1.24.2 with this port's `mtk-ccmni` plugin built in.
+#
+# Why a variant package and not a plain dependency: the plugin is what knows this
+# modem's data dialect (AT+CGACT then the "+EIF" URC naming the ccmni interface,
+# bound to the kernel link through /sys/class/net/<link>/md_interface). Without it
+# ModemManager drives registration and SMS but every bearer fails with "No valid
+# data port found". The plugin does not exist upstream, so the distro package
+# cannot carry it.
+#
+# Arch rules for a package that replaces a repo one: same-named provides with the
+# version, and conflicts on the packages it replaces (modemmanager, and libmm-glib
+# because this package installs the library too, as the distro build splits it).
+
+pkgname=modemmanager-mtk-ccmni
+pkgver=1.24.2
+pkgrel=1
+pkgdesc="Mobile broadband modem management service, with the MediaTek ccmni plugin (Poco M5s modem)"
+url="https://www.freedesktop.org/wiki/Software/ModemManager/"
+arch=('aarch64')
+license=('GPL-2.0-or-later' 'LGPL-2.1-or-later')
+depends=(
+  bash
+  glib2
+  glibc
+  hicolor-icon-theme
+  libgcc
+  libgudev
+  libmbim
+  libqmi
+  libqrtr-glib
+  mobile-broadband-provider-info
+  polkit
+)
+makedepends=(
+  bash-completion
+  git
+  glib2-devel
+  gobject-introspection
+  gtk-doc
+  meson
+  systemd
+  vala
+)
+checkdepends=(
+  python-dbus
+  python-gobject
+)
+provides=(
+  "modemmanager=$pkgver"
+  libmm-glib.so
+)
+conflicts=(
+  modemmanager
+  libmm-glib
+)
+optdepends=('usb_modeswitch: install if your modem shows up as a storage drive')
+install=modemmanager-mtk-ccmni.install
+
+# The official source for this release is the signed git tag: freedesktop stopped
+# publishing tarballs after 1.18 and the gitlab release-asset URLs for 1.24.2 do
+# not exist. This is also exactly what Arch's own modemmanager PKGBUILD uses, so
+# the signature is verified against the same keys.
+source=(
+  "git+https://gitlab.freedesktop.org/mobile-broadband/ModemManager.git?signed#tag=$pkgver"
+  "0003-plugins-new-mtk-ccmni-plugin.patch"
+)
+validpgpkeys=(
+  A814D09B9C5BC01945A64308AECE0239C6606AD5 # Aleksander Morgado <aleksandermj@chromium.org>
+  3A948E16E8860C68CD68441D734614319E26A433 # Dan Williams <dan@ioncontrol.co>
+)
+# the git source is verified by its tag signature above; the patch is ours
+b2sums=('SKIP' 'SKIP')
+
+prepare() {
+  cd ModemManager
+  # our plugin, rebased on this release; applies with no fuzz
+  patch -Np1 -i "$srcdir/0003-plugins-new-mtk-ccmni-plugin.patch"
+}
+
+build() {
+  arch-meson ModemManager build \
+    -D dbus_policy_dir=/usr/share/dbus-1/system.d \
+    -D dist_version="\"$pkgver-$pkgrel\"" \
+    -D gtk_doc=true \
+    -D polkit=permissive \
+    -D vapi=true \
+    -D plugin_mtk_ccmni=enabled \
+    -D tests=true
+  meson compile -C build
+}
+
+check() {
+  # the "+EIF" parser is pure GLib and its test needs no modem; it is the one part
+  # of the plugin that can be wrong in a way only a phone would otherwise reveal
+  meson test -C build --print-errorlogs test-mtk-ccmni-eif
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+
+  # the plugin must be installed where the daemon loads its modules from, and its
+  # udev rules must be there, or data will not work and nothing will say why.
+  # Both paths are the ones this release installs to with --prefix=/usr.
+  test -f "$pkgdir/usr/lib/ModemManager/libmm-plugin-mtk-ccmni.so"
+  test -f "$pkgdir/usr/lib/udev/rules.d/77-mm-mtk-ccmni.rules"
+  # the daemon itself must carry the option, or the module is never chosen
+  test -x "$pkgdir/usr/bin/ModemManager"
+  test -x "$pkgdir/usr/bin/mmcli"
+}
+
+# vim:set sw=2 sts=-1 et:

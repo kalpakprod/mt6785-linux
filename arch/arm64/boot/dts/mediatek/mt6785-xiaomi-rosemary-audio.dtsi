@@ -1,5 +1,733 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the audio area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * Every value below comes from one of these, and each node says which:
+ *   [L] poco-m5s/device-dump-2026-11-12/device-tree.dts
+ *       the device tree the phone actually boots (the hardware truth)
+ *   [V] scratch/native/4-modem/src/los-mt6785, the vendor 4.19 kernel:
+ *       arch/arm64/boot/dts/mediatek/mt6785.dts,
+ *       arch/arm64/boot/dts/mediatek/rosemary/cust.dtsi,
+ *       arch/arm64/boot/dts/mediatek/v1/mt6360.dtsi
+ *   [K] this tree (mainline 7.3.4 with MT6785 support)
  */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/leds/common.h>
+
+/* -------------------------------------------------- headset detect (ACCDET) */
+
+/*
+ * The jack lives in the PMIC: detection and the headset button ADC are MT6359
+ * functions, so this works without the audio front end.
+ *
+ * The node is an MFD child of the PMIC, not of &pwrap and not of the codec:
+ * mt6397-core.c registers the cells of the node carrying
+ * compatible = "mediatek,mt6359", and mt6359-accdet.c then looks for
+ * of_get_child_by_name(dev->parent->of_node, "accdet") — that parent is
+ * `pmic`. The vendor tree has its accdet in the same place, as a sibling of
+ * the ADC and the regulators [L: /accdet under the PMIC node].
+ *
+ * No io-channels here: mainline reads the PMIC's own ADC and takes the three
+ * PMIC interrupts (MT6359_IRQ_ACCDET, _EINT0, _EINT1) from the MFD cell. The
+ * vendor's `io-channels = <&pmic_auxadc AUXADC_ACCDET>` belongs to the vendor
+ * SoC-level ACCDET driver and is not used by mainline [L: accdet].
+ *
+ * Values: the vendor board's thresholds, and the loader's own dtbo overlay
+ * injects the same numbers into this node [L: accdet; V: mt6785.dts]. The
+ * property names are mainline's (mt6359-accdet.c) — the vendor names
+ * (accdet-mic-vol, headset-three-key-threshold, ...) belong to the vendor
+ * driver and would be silently ignored here.
+ */
+&pmic {
+	accdet {
+		compatible = "mediatek,mt6359-accdet";
+
+		mediatek,mic-vol = <8>;			/* 2.8 V [L] accdet-mic-vol */
+		mediatek,mic-mode = <2>;		/* [L] accdet-mic-mode */
+		mediatek,plugout-debounce = <1>;	/* [L] accdet-plugout-debounce */
+		mediatek,eint-use-ap = <0>;		/* PMIC EINT path */
+		mediatek,eint-use-ext-res = <0>;	/* [L] eint_use_ext_res */
+		mediatek,eint-detect-mode = <4>;	/* hardware detection mode */
+		mediatek,eint-trig-mode = <0>;		/* GPIO trigger */
+		mediatek,key-mode = <0>;		/* three-key headset */
+		/* [L] headset-mode-setting, the 15 debounce words, in order */
+		mediatek,pwm-deb-setting = <0x500 0x500 0x1 0x1f0
+					    0x800 0x800 0x20 0x44
+					    0x4 0x1
+					    0x5 0x3 0x3 0x5 0xe>;
+		mediatek,three-key-thr = <0 80 220 400>;	/* [L] 0 0x50 0xdc 0x190 */
+		mediatek,four-key-thr = <0 58 121 192 400>;	/* [L] 0 0x3a 0x79 0xc0 0x190 */
+	};
+};
+
+/* ------------------------------------------------------------ volume keys */
+
+/*
+ * Volume down is the only key on a GPIO. The owner pressed it on the phone
+ * while the lead logged (15.11): evtest on this device reported KEY_VOLUMEUP,
+ * but /proc/interrupts showed `mt-eint 59 Volume Up` counting up and
+ * `mt-eint 60 Volume Down` staying at zero, and nothing was ever seen on
+ * GPIO60. So the GPIO is GPIO59 and the key it carries is volume *down*; the
+ * label of that interrupt is the vendor's, not the measurement.
+ *
+ * Volume up is not a GPIO at all: held down for three seconds it moved the
+ * MT6359's TOPSTATUS (0x2a) from 0x000e to 0x0006 — the HOMEKEY_DEB bit — while
+ * neither GPIO interrupt moved. That is the PMIC's home key, which the stock
+ * key map also calls the reset key (hardware key 17), and it is described on the
+ * board's `keys` node below.
+ *
+ * The pins are the keypad matrix's column pins in the SoC's pin functions
+ * (GPIO59 = KPCOL0) [K: include/dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h],
+ * which is why the key comes out of a matrix scan on the stock phone (the
+ * device list has the input device "mtk-kpd" as event2 [L:
+ * device-dump-2026-11-13/stock/hw-inventory.txt], and the vendor key map puts
+ * KEY_VOLUMEDOWN at hardware key 0 [L: device-tree.dts, keypad node]). The stock
+ * tree muxes nothing for GPIO59 itself (no 0x3b01/0x3c01 cell, no
+ * gpio_usage_mapping entry), so the kernel has to mux it, which is what the
+ * group below does, as begonia's does for the same pins.
+ *
+ * Numbers: GPIO59 is volume down, active low. GPIO60 is not described: no
+ * source and no measurement shows anything wired to it.
+ */
+&{/} {
+	volume_buttons: volume-buttons {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&volume_button_pins>;
+
+		button-volume-down {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			debounce-interval = <100>;
+
+			gpios = <&pio 59 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&pio {
+	volume_button_pins: volume-button-pins {
+		pins-volume {
+			pinmux = <PINMUX_GPIO59__FUNC_KPCOL0>;
+			input-enable;
+		};
+	};
+};
+
+/*
+ * Volume up, on the PMIC's home key. The board's keys node already describes the
+ * power key; this adds the second child, which mtk-pmic-keys takes in order and
+ * matches to the PMIC's "homekey" interrupt.
+ */
+&{/soc/pwrap@1000d000/pmic/keys} {
+	home {
+		linux,keycodes = <KEY_VOLUMEUP>;
+		wakeup-source;
+	};
+};
+
+/* ------------------------------------------------------------------- NFC */
+
+/*
+ * ST21NFC on I2C3 at 0x08. The live tree has the controller bound on this bus
+ * [L: i2c3@1100f000/nfc@08], and 400 kHz is the vendor board's bus speed
+ * [V: rosemary/cust.dtsi &i2c3 clock-frequency].
+ *
+ * The controller's two pins come from the vendor's separate GPIO node, which
+ * is also what the phone boots with [L: nfc { compatible =
+ * "mediatek,nfc-gpio-v2"; gpio-rst = <32>; gpio-irq = <31>; }]:
+ *   reset  GPIO32   the vendor driver pulses it low for 20 ms and leaves it
+ *                   high, so the line is active low — GPIO_ACTIVE_HIGH here
+ *                   matches mainline's own sequence in st-nci/i2c.c
+ *                   (gpiod_set_value(reset, 0), then 1)
+ *   irq    GPIO31   the live tree has a separate irq_nfc EINT on GPIO31 [L:
+ *                   irq_nfc, interrupt-parent pio, interrupts <31 4>], so the
+ *                   line is wired level-high
+ *
+ * The part: fw7 firmware (st21nfc_fw7.bin in /vendor/firmware) is ST's NCI
+ * family line, so mainline's st-nci is the right driver and "st,st21nfcc-i2c"
+ * its binding for an I2C part [K].
+ *
+ * Left enabled: the 26 MHz reference is switched by the PMIC clock buffer in
+ * the vendor design (CONFIG_MTK_NFC_CLKBUF_ENABLE=y in the stock kernel), and
+ * the lead measured on the phone (15.11) that MT6359 DCXO_CW00 (0x788) reads
+ * 0x4f1d, i.e. the XO_EXTBUF3 field (the third of XO_SOC, XO_WCN, XO_NFC in the
+ * vendor mtk-clkbuf-hw.c XO_NAME order) is in software mode with EN_M = 1: the
+ * loader leaves the NFC 26 MHz buffer on, so the controller has its clock and
+ * this node needs no driver for that buffer.
+ */
+&i2c3 {
+	status = "okay";
+	clock-frequency = <400000>;		/* [V] */
+
+	nfc: nfc@8 {
+		compatible = "st,st21nfcc-i2c";
+		reg = <0x08>;
+		interrupt-parent = <&pio>;
+		interrupts = <31 IRQ_TYPE_LEVEL_HIGH>;	/* [L] irq_nfc */
+		reset-gpios = <&pio 32 GPIO_ACTIVE_HIGH>;	/* [L] nfc gpio-rst */
+		status = "okay";
+	};
+};
+
+/* --------------------------------------------------------- IR transmitter */
+
+/*
+ * The IR LED hangs on the MOSI line of SPI3 chip select 0 with no register
+ * interface, which is exactly what mainline's ir-spi driver drives [K:
+ * drivers/media/rc/ir-spi.c, binding leds/irled/ir-spi-led.yaml]. The live
+ * tree carries the same client with the vendor compatible [L:
+ * spi3@11013000/spi@3 { compatible = "ir,ir_spi"; reg = <0>; }], and the
+ * vendor board file enables the controller for it [V].
+ *
+ * 1 MHz and clock polarity from the vendor node [L: spi-max-frequency
+ * <1000000>, spi-cpol]. Duty cycle 50 % is the driver's documented value.
+ *
+ * GPIO26 is NOT claimed here: the vendor tree also carries an irtx_pwm node
+ * on that pin, but the stock kernel does not build the MTK IRTX PWM driver, so
+ * that node is dead, and the pin belongs to the vibration motor (see the
+ * haptics node added in this area's later step).
+ */
+&spi3 {
+	status = "okay";
+	mediatek,pad-select = <0>;	/* [L] */
+
+	irled@0 {
+		compatible = "ir-spi-led";
+		reg = <0>;
+		spi-max-frequency = <1000000>;	/* [L] */
+		duty-cycle = /bits/ 8 <50>;
+	};
+};
+
+/* ------------------------------------------------- camera flash (MT6360) */
+
+/*
+ * The MT6360 sub-PMIC on I2C5 carries the phone's two flash channels, and the
+ * LED block is added to the board's own `pmic@34` node.
+ *
+ * Why a node of our own: the tree appended by the bootloader has the chip at
+ * the same address as `subpmic@34` with `compatible = "mediatek,subpmic"`
+ * [L: device-tree.dts:4381-4386], which no mainline driver claims, so the MFD
+ * would never bind to it and its LED cell would have no of_node — that is the
+ * `mt6360-led: Failed to locate of_node` line the base kernel prints
+ * [B: poco-m5s/evidence/b11/hang-boot-journal.txt:338]. Our `pmic@34` with
+ * `compatible = "mediatek,mt6360"` is the node the MFD binds to, which is why
+ * the audio kernels print no such line and register the two LEDs instead
+ * [B: poco-m5s/evidence/audio-trial7/dmesg.txt:316, int-trial1: white:flash-1
+ * and white:flash-2].
+ *
+ * Currents and the strobe timeout are the ones the chip is programmed with on
+ * the stock phone, taken from the vendor kernel's own MT6360 description, which
+ * is in this repository at scratch/native/4-modem/src/los-mt6785/arch/arm64/
+ * boot/dts/mediatek/mt6360.dtsi:81-99 and agrees with the live tree
+ * [L: device-tree.dts:4266-4275, mt6360_pmu_dts/fled]:
+ *   torch  37500 uA  on both channels	fled1_tor_cur = fled2_tor_cur = 37500
+ *					(vendor: 25000..400000 uA, 12500/step;
+ *					 live tree: 0x927c)
+ *   strobe 750000 uA on FLASH1		fled1_strb_cur = 750000, with the
+ *					vendor's own commented-out 800000 beside
+ *					it (live tree: 0xb71b0)
+ *   strobe 800000 uA on FLASH2		fled2_strb_cur = 800000 (the live cell at
+ *					device-tree.dts:4275 is garbled; the
+ *					vendor source states it plainly)
+ *   strobe timeout 1248 ms = 1248000 us	fled_strb_tout = 1248
+ *					(vendor: 64..2432 ms, 32 ms/step;
+ *					 live tree: 0x4e0)
+ * A draft in poco-m5s/research/native/5-cameras/rosemary-camera.dtsi must not be
+ * copied here: it names the nodes flash@4/flash@5, which this binding does not
+ * allow (^led@[0-5]$), and gives them led-max-microamp = 200000, more than five
+ * times the vendor's torch current — the one number that must never be raised.
+ * They are written under mainline's names: leds-mt6360 takes led-max-microamp
+ * as the torch ceiling, flash-max-microamp as the strobe ceiling and
+ * flash-max-timeout-us as the timer, and clamps all three to the chip's own
+ * ranges on probe [K: drivers/leds/flash/leds-mt6360.c:64-73, :700-780], whose
+ * limits are torch 25 mA..400 mA in 12.5 mA steps, strobe 50 mA..1.5 A in
+ * 12.5 mA steps and timeout 64 ms..2432 ms in 32 ms steps. Every value above is
+ * inside them and none exceeds the vendor's own number: the torch ceiling of
+ * 37.5 mA gives two brightness levels (25 mA and 37.5 mA), which is why
+ * brightness 1 is the lowest torch current the chip can be asked for.
+ */
+&{/soc/i2c@11016000/pmic@34} {
+	led-controller {
+		compatible = "mediatek,mt6360-led";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@4 {				/* FLASH1 */
+			reg = <4>;
+			function = LED_FUNCTION_FLASH;
+			color = <LED_COLOR_ID_WHITE>;
+			function-enumerator = <1>;
+			led-max-microamp = <37500>;
+			flash-max-microamp = <750000>;
+			flash-max-timeout-us = <1248000>;
+		};
+
+		led@5 {				/* FLASH2 */
+			reg = <5>;
+			function = LED_FUNCTION_FLASH;
+			color = <LED_COLOR_ID_WHITE>;
+			function-enumerator = <2>;
+			led-max-microamp = <37500>;
+			flash-max-microamp = <800000>;
+			flash-max-timeout-us = <1248000>;
+		};
+	};
+};
+
+/* --------------------------------------------------------------- haptics */
+
+/*
+ * The vibration motor is an Awinic AW8622 driven through a PWM channel: a
+ * square wave at the actuator's resonance frequency, with the duty cycle
+ * setting the strength. The vendor tree describes the same part
+ * [V: mt6785.dts, aw8622 node], and the stock kernel builds that driver and
+ * nothing else for the motor (CONFIG_AW8622_HAPTIC=y, while
+ * CONFIG_INPUT_REGULATOR_HAPTIC is not set) [C].
+ *
+ * Wiring, all of it from the phone's own tree [L: device-tree.dts, aw8622]:
+ *   hwen-gpio = <&pio 202 0>      the chip's enable input, GPIO202
+ *   pwm_ch = <0>                  PWM channel 0, muxed onto GPIO26 (the
+ *                                 haptic_gpio_aw8622_set pin group sets
+ *                                 PINMUX_GPIO26__FUNC_PWM_0)
+ *   center_freq = <208>           the actuator's resonance frequency
+ *   waveform_sample_period = <41666>  only used by the vendor's waveform
+ *                                 playback, which this driver does not carry
+ *
+ * GPIO26 is therefore the haptics' pin, not the IR emitter's: the vendor tree
+ * also has an irtx_pwm node on that pin, but the stock kernel does not build
+ * the MTK IRTX PWM driver, so that node is dead weight.
+ */
+&pwm0 {
+	status = "okay";
+};
+
+&{/} {
+	haptics {
+		compatible = "awinic,aw8622";
+		hwen-gpios = <&pio 202 GPIO_ACTIVE_HIGH>;
+		/* channel 0, one 208 Hz cycle in nanoseconds */
+		pwms = <&pwm0 0 4807692>;
+		awinic,vibration-frequency-hz = <208>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&haptic_pwm_pins>;
+	};
+};
+
+/*
+ * Two other ways to drive a motor exist in this phone's tree and neither is
+ * this hardware. The appended tree has the framework vibrator
+ * [L: device-tree.dts:6277-6281, `vibrator@0` with `mediatek,vibrator`,
+ * vib_timer = 25, vib_limit = 9, vib_vol = 9] which mainline has no driver for,
+ * and the MT6359's own vibrator rail `mt_pmic_vibr_ldo_reg` / `ldo_vibr`
+ * [L: device-tree.dts:2490-2495; mainline's table at
+ * drivers/regulator/mt6358-regulator.c:255-262 and :540], which only that
+ * framework path switches. The AW8622 node in the phone's tree names no supply
+ * at all — `hwen-gpio`, `pwm_ch`, `center_freq`, `default_pwm_freq` and the two
+ * pinctrl states are its whole description [L: device-tree.dts:7715-7724, and
+ * the vendor kernel's own copy at scratch/native/4-modem/src/los-mt6785/
+ * arch/arm64/boot/dts/mediatek/mt6785.dts:6328-6340] — so there is no rail for
+ * this board to describe and no voltage to set: the motor runs from a fixed
+ * rail and the chip is gated by GPIO202. The vendor driver the node pairs with
+ * includes <linux/regulator/consumer.h> but never calls regulator_get(), which
+ * is the same statement from the other side. The framework node is switched off
+ * here so it cannot claim the same job.
+ */
+&{/vibrator} {
+	status = "disabled";
+};
+
+&pio {
+	haptic_pwm_pins: haptic-pwm-pins {
+		pins-pwm {
+			pinmux = <PINMUX_GPIO26__FUNC_PWM_0>;
+		};
+	};
+
+	/* the MTKAIF pins, see the pinctrl-names list on &afe */
+	aud_clk_mosi_off: aud-clk-mosi-off-pins {
+		pins-cmd0-dat {
+			pinmux = <PINMUX_GPIO189__FUNC_GPIO189>;
+			input-enable;
+			bias-pull-down;
+		};
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO190__FUNC_GPIO190>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_clk_mosi_on: aud-clk-mosi-on-pins {
+		pins-cmd0-dat {
+			pinmux = <PINMUX_GPIO189__FUNC_AUD_CLK_MOSI>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO190__FUNC_AUD_SYNC_MOSI>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_mosi_off: aud-dat-mosi-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO191__FUNC_GPIO191>;
+			input-enable;
+			bias-pull-down;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO192__FUNC_GPIO192>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_mosi_on: aud-dat-mosi-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO191__FUNC_AUD_DAT_MOSI0>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO192__FUNC_AUD_DAT_MOSI1>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_miso_off: aud-dat-miso-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_GPIO193>;
+			input-enable;
+			bias-pull-down;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_GPIO194>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_miso_on: aud-dat-miso-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_AUD_DAT_MISO0>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+		pins-cmd2-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_AUD_DAT_MISO1>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	vow_dat_miso_off: vow-dat-miso-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_GPIO193>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	vow_dat_miso_on: vow-dat-miso-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO193__FUNC_VOW_DAT_MISO>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	vow_clk_miso_off: vow-clk-miso-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_GPIO194>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	vow_clk_miso_on: vow-clk-miso-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO194__FUNC_VOW_CLK_MISO>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_mosi_ch34_off: aud-dat-mosi-ch34-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO143__FUNC_GPIO143>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_mosi_ch34_on: aud-dat-mosi-ch34-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO143__FUNC_AUD_DAT_MOSI2>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_dat_miso_ch34_off: aud-dat-miso-ch34-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO146__FUNC_GPIO146>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
+
+	aud_dat_miso_ch34_on: aud-dat-miso-ch34-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO146__FUNC_AUD_DAT_MISO2>;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+
+	aud_gpio_i2s0_off: aud-gpio-i2s0-off-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO70__FUNC_GPIO70>;
+		};
+	};
+
+	aud_gpio_i2s0_on: aud-gpio-i2s0-on-pins {
+		pins-cmd1-dat {
+			pinmux = <PINMUX_GPIO70__FUNC_I2S0_DI>;
+		};
+	};
+};
+
+/* --------------------------------------------------- speaker amplifiers */
+
+/*
+ * Two Awinic AW87xxx Class-D amplifiers on I2C9: the bottom speaker and the
+ * earpiece, which together make the phone's stereo pair
+ * (CONFIG_SND_SOC_DSPK_LOL_HP=y in the stock kernel, and the vendor machine
+ * driver routes "LINEOUT L" to one amp and "Receiver" to the other).
+ *
+ * Addresses, reset pin and channels are the phone's own [L: device-tree.dts,
+ * i2c9@11015000, aw87xxx_pa_5B@5b and aw87xxx_pa_58@58; the vendor board file
+ * cust_aw87xxx_audio.dtsi says the same]:
+ *   0x5b  reset-gpio GPIO24, pa-channel 0  - the bottom speaker
+ *   0x58  no reset gpio,      pa-channel 1  - the earpiece
+ * The speaker is the one on channel 0: the vendor machine driver loads the
+ * speaker scene onto AW87XXX_RIGHT_CHANNEL, which that enum sets to 0, and
+ * the earpiece scene onto AW87XXX_LEFT_CHANNEL = 1. The part itself is
+ * detected by the driver from register 0x00, so no part name is claimed here:
+ * the profile files are named with the id the chip reports and with its
+ * channel.
+ *
+ * sound-name-prefix makes the two amplifiers' DAPM widgets distinguishable in
+ * the card's routes ("Spk Amp" and "Rcv Amp").
+ */
+&i2c9 {
+	status = "okay";
+	clock-frequency = <400000>;		/* [L] */
+
+	spk_amp: amplifier@5b {
+		compatible = "awinic,aw87xxx";
+		reg = <0x5b>;
+		reset-gpios = <&pio 24 GPIO_ACTIVE_LOW>;	/* [L] */
+		awinic,pa-channel = <0>;		/* [L] */
+		sound-name-prefix = "Spk";
+	};
+
+	rcv_amp: amplifier@58 {
+		compatible = "awinic,aw87xxx";
+		reg = <0x58>;
+		awinic,pa-channel = <1>;		/* [L] */
+		sound-name-prefix = "Rcv";
+	};
+};
+
+/* --------------------------------------------------------- audio front end */
+
+/*
+ * The audio front end itself: the block that moves PCM between memory and the
+ * codec, the I2S ports, the PCM/TDM interfaces and the ADDA path.
+ *
+ * Address 0x11210000 is the SoC's (vendor mt6785.dts, afe node; confirmed by
+ * the pmOS memory map row "/mt6785-afe-pcm@11210000"), so the node is a child
+ * of the &audsys syscon the SoC description already carries — the driver takes
+ * its register map from that parent and needs no reg of its own, exactly as
+ * mt8192 does.
+ *
+ * Interrupt: GIC_SPI 184, level low (vendor mt6785.dts, afe node
+ * `interrupts = <GIC_SPI 184 IRQ_TYPE_LEVEL_LOW>`).
+ *
+ * Reset: MT6785_TOPRGU_AUDIO_RST = 17 from the watchdog block, which is the
+ * audiosys reset the driver asks for by name before it touches a register.
+ *
+ * Power: MT6785_POWER_DOMAIN_AUDIO, already a binding in this tree.
+ *
+ * The clock list is every clock the driver's aud_clks[] table asks for, under
+ * the same names, and every one of them exists in the MT6785 clock drivers
+ * (drivers/clk/mediatek/clk-mt6785-{aud,top,infra,apmixed}.c).
+ */
+#include <dt-bindings/clock/mediatek,mt6785-clk.h>
+#include <dt-bindings/power/mediatek,mt6785-power.h>
+#include <dt-bindings/reset/mediatek,mt6785-resets.h>
+
+&audsys {
+	afe: audio-controller {
+		compatible = "mediatek,mt6785-audio";
+		interrupts = <GIC_SPI 184 IRQ_TYPE_LEVEL_LOW>;
+		resets = <&watchdog MT6785_TOPRGU_AUDIO_RST>;
+		reset-names = "audiosys";
+		mediatek,apmixedsys = <&apmixedsys>;
+		mediatek,infracfg = <&infracfg>;
+		mediatek,topckgen = <&topckgen>;
+		power-domains = <&spm MT6785_POWER_DOMAIN_AUDIO>;
+		#sound-dai-cells = <0>;
+
+		/*
+		 * The MTKAIF pins, as the AFE driver wants them: it looks these
+		 * names up by hand (mt6785-afe-gpio.c, the aud_gpios table) and
+		 * switches MOSI on with input-schmitt and no bias, and MISO to an
+		 * input, around each playback and capture. The loader leaves them
+		 * right already, but until the states existed every gpio_select()
+		 * logged "not prepared" and nothing owned them.
+		 *
+		 * Which pins the vendor's groups carry [L: device-tree.dts,
+		 * aud_clk_mosi_* :6132-6204 region, pinmux values 0xbd..0xc2 and
+		 * 0x8f/0x92]: clk/sync mosi on GPIO189/190, dat mosi on
+		 * GPIO191/192, dat miso on GPIO193/194, the ch34 pair on
+		 * GPIO143/146, and the two Vow alternates on GPIO193/194 mode 2.
+		 * I2S0 gets its one pin (GPIO70, function 1, pinmux 0x4601 in the
+		 * vendor's aud_gpio_i2s0_on). I2S1, I2S2, I2S3, I2S5 and TDM are
+		 * deliberately absent: this phone wires none of those ports and
+		 * the vendor's tree defines no groups for them, so the driver's
+		 * one "pinctrl states missing" line counts ten of those and is
+		 * expected — not a fault to chase.
+		 */
+		pinctrl-names = "aud_clk_mosi_off", "aud_clk_mosi_on",
+				"aud_dat_mosi_off", "aud_dat_mosi_on",
+				"aud_dat_miso_off", "aud_dat_miso_on",
+				"vow_dat_miso_off", "vow_dat_miso_on",
+				"vow_clk_miso_off", "vow_clk_miso_on",
+				"aud_dat_mosi_ch34_off", "aud_dat_mosi_ch34_on",
+				"aud_dat_miso_ch34_off", "aud_dat_miso_ch34_on",
+				"aud_gpio_i2s0_off", "aud_gpio_i2s0_on";
+		pinctrl-0 = <&aud_clk_mosi_off>;
+		pinctrl-1 = <&aud_clk_mosi_on>;
+		pinctrl-2 = <&aud_dat_mosi_off>;
+		pinctrl-3 = <&aud_dat_mosi_on>;
+		pinctrl-4 = <&aud_dat_miso_off>;
+		pinctrl-5 = <&aud_dat_miso_on>;
+		pinctrl-6 = <&vow_dat_miso_off>;
+		pinctrl-7 = <&vow_dat_miso_on>;
+		pinctrl-8 = <&vow_clk_miso_off>;
+		pinctrl-9 = <&vow_clk_miso_on>;
+		pinctrl-10 = <&aud_dat_mosi_ch34_off>;
+		pinctrl-11 = <&aud_dat_mosi_ch34_on>;
+		pinctrl-12 = <&aud_dat_miso_ch34_off>;
+		pinctrl-13 = <&aud_dat_miso_ch34_on>;
+		pinctrl-14 = <&aud_gpio_i2s0_off>;
+		pinctrl-15 = <&aud_gpio_i2s0_on>;
+
+		clocks = <&audsys CLK_AUD_AFE>,
+			 <&audsys CLK_AUD_TML>,
+			 <&audsys CLK_AUD_22M>,
+			 <&audsys CLK_AUD_24M>,
+			 <&audsys CLK_AUD_APLL_TUNER>,
+			 <&audsys CLK_AUD_APLL2_TUNER>,
+			 <&audsys CLK_AUD_NLE>,
+			 <&audsys CLK_AUD_TDM>,
+			 <&audsys CLK_AUD_DAC>,
+			 <&audsys CLK_AUD_DAC_PREDIS>,
+			 <&audsys CLK_AUD_ADC>,
+			 <&audsys CLK_AUD_3RD_DAC>,
+			 <&audsys CLK_AUD_3RD_DAC_PREDIS>,
+			 <&audsys CLK_AUD_ADDA6_ADC>,
+			 <&infracfg CLK_INFRA_AUDIO>,
+			 <&infracfg CLK_INFRA_AUDIO_26M>,
+			 <&topckgen CLK_TOP_AUDIO>,
+			 <&topckgen CLK_TOP_AUDIO_INTBUS>,
+			 <&topckgen CLK_TOP_AUDIO1>,
+			 <&apmixedsys CLK_APMIXED_APLL1>,
+			 <&topckgen CLK_TOP_AUDIO2>,
+			 <&apmixedsys CLK_APMIXED_APLL2>,
+			 <&topckgen CLK_TOP_AUDIO_ENG1>,
+			 <&topckgen CLK_TOP_APLL1_D4>,
+			 <&topckgen CLK_TOP_AUDIO_ENG2>,
+			 <&topckgen CLK_TOP_APLL2_D4>,
+			 <&topckgen CLK_TOP_AUDIO_HIRES>,
+			 <&topckgen CLK_TOP_APLL_I2S0>,
+			 <&topckgen CLK_TOP_APLL_I2S1>,
+			 <&topckgen CLK_TOP_APLL_I2S2>,
+			 <&topckgen CLK_TOP_APLL_I2S3>,
+			 <&topckgen CLK_TOP_APLL_I2S4>,
+			 <&topckgen CLK_TOP_APLL_I2S5>,
+			 <&topckgen CLK_TOP_APLL12_DIV0>,
+			 <&topckgen CLK_TOP_APLL12_DIV1>,
+			 <&topckgen CLK_TOP_APLL12_DIV2>,
+			 <&topckgen CLK_TOP_APLL12_DIV3>,
+			 <&topckgen CLK_TOP_APLL12_DIV4>,
+			 <&topckgen CLK_TOP_APLL12_DIVB>,
+			 <&topckgen CLK_TOP_APLL12_DIV5>,
+			 <&infracfg CLK_INFRA_AUDIO_26M>,
+			 <&clk26m>;
+		clock-names = "aud_afe", "aud_tml", "aud_22m", "aud_24m",
+			      "aud_apll_tuner", "aud_apll2_tuner", "aud_nle",
+			      "aud_tdm", "aud_dac", "aud_dac_predis", "aud_adc",
+			      "aud_3rd_dac", "aud_3rd_dac_predis",
+			      "aud_adda6_adc",
+			      "infra_audio", "infra_audio_26m",
+			      "top_audio", "top_audio_intbus", "top_audio1",
+			      "apll1", "top_audio2", "apll2",
+			      "top_audio_eng1", "apll1_d4",
+			      "top_audio_eng2", "apll2_d4", "top_audio_hires",
+			      "top_apll_i2s0", "top_apll_i2s1", "top_apll_i2s2",
+			      "top_apll_i2s3", "top_apll_i2s4", "top_apll_i2s5",
+			      "top_apll12_div0", "top_apll12_div1",
+			      "top_apll12_div2", "top_apll12_div3",
+			      "top_apll12_div4", "top_apll12_divb",
+			      "top_apll12_div5", "mtkaif_26m_clk", "clk26m";
+	};
+};
+
+/* -------------------------------------------------------------- sound card */
+
+/*
+ * The card ties the front end and the codec together. The two amplifiers are
+ * auxiliary components (they are not DAIs), and the routes that feed them —
+ * "Spk Amp" from "LINEOUT L"and "Rcv Amp" from "Receiver", the phone's real
+ * stereo pair — are the vendor machine driver's [V: mt6785-mt6359.c,
+ * mt6785_mt6359_routes], written as the card's audio-routing.
+ *
+ * The headset jack is the codec's ACCDET block; mediatek,accdet points at it so
+ * the machine driver can attach the jack to that component.
+ */
+&{/} {
+	sound: sound {
+		compatible = "mediatek,mt6785-mt6359-sound";
+		model = "Xiaomi POCO M5s";
+		mediatek,platform = <&afe>;
+		mediatek,accdet = <&pmic>;
+		aux-devs = <&spk_amp>, <&rcv_amp>;
+
+		/*
+		 * The board's microphone types, which decide the codec's analog capture settings:
+		 * the codec reads mux_select[MUX_MIC_TYPE_n] from these and its DCC bits follow
+		 * IS_DCC_BASE(mic_type) - vendor mt6359.c:3487-3497, the same condition mainline
+		 * uses (mt6359.c:2439-2452, mt_dcc_clk_connect). Left unset, every type defaults to
+		 * IDLE (mt6359.c:3051-3075 prints "use default (0)"), which is neither of the two
+		 * microphones on the board. AIN0 and AIN2 carry analog electret microphones, so
+		 * both are ACC (1).
+		 */
+		mediatek,mic-type-0 = <1>;
+		mediatek,mic-type-2 = <1>;
+
+		audio-routing =
+			"Spk Amp", "LINEOUT L",
+			"Rcv Amp", "Receiver";
+	};
+};
