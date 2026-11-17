@@ -106,12 +106,15 @@ struct mt6359_gauge {
 	long long base_uah;
 	long long base_car;
 	bool anchored;
+	unsigned long long rest_since_ms;
 	struct power_supply_battery_info *batt;
 	long long last_car;
 	ktime_t last_time;
 	long long current_ua;
 	struct delayed_work sample;
 };
+
+static void mt6359_gauge_maybe_reanchor(struct mt6359_gauge *g);
 
 /*
  * Read one gauge register through the vendor's handshake. Defined before its callers
@@ -364,6 +367,7 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 */
 		if (!g->anchored || !g->batt || g->charge_full_uah <= 0)
 			return -ENODATA;
+		mt6359_gauge_maybe_reanchor(g);
 		ret = mt6359_gauge_read_car(g, &car);
 		if (ret)
 			return ret;
@@ -489,6 +493,58 @@ static int mt6359_gauge_car_show(struct seq_file *s, void *unused)
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(mt6359_gauge_car);
+
+/*
+ * The vendor's rest re-anchor, in their own structure: capacity comes from an OCV table, and
+ * the counter only carries the charge between anchors. The vendor detects rest as a current
+ * below a threshold held for a while (fg_swocv / "zcv" handling in the vendor gauge reads the
+ * rested open-circuit voltage and re-anchors on it), so the same shape is used here: while the
+ * current stays under MT6359_REST_UA for MT6359_REST_MS, the battery is at rest, and the OCV
+ * then means something.
+ *
+ * This is what removes the counter's ~100 mA offset from the capacity: the offset only
+ * accumulates between anchors, and an anchor discards it. Without it the drift decides the
+ * percentage; with it the drift decides nothing older than the last rest.
+ */
+#define MT6359_REST_UA		20000	/* below the offset's own magnitude */
+#define MT6359_REST_MS		180000	/* three minutes of it */
+
+static void mt6359_gauge_maybe_reanchor(struct mt6359_gauge *g)
+{
+	long long car, ocv_uv, cur_ua;
+	int cap;
+	long long raw;
+
+	if (!g->batt || g->charge_full_uah <= 0)
+		return;
+	if (g->rest_since_ms == 0) {
+		g->rest_since_ms = ktime_to_ms(ktime_get_boottime());
+		return;
+	}
+	if (ktime_to_ms(ktime_get_boottime()) - g->rest_since_ms < MT6359_REST_MS)
+		return;
+	if (mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &raw))
+		return;
+	cur_ua = (long)(s16)raw * 610;
+	if (abs(cur_ua) > MT6359_REST_UA) {
+		g->rest_since_ms = ktime_to_ms(ktime_get_boottime());
+		return;
+	}
+	if (mt6359_gauge_chosen_ocv_uV(g->dev, &ocv_uv))
+		return;
+	cap = power_supply_batinfo_ocv2cap(g->batt, ocv_uv, 25);
+	if (cap < 0)
+		return;
+	if (mt6359_gauge_read_car(g, &car))
+		return;
+	g->base_car = car;
+	g->base_uah = (long long)cap * g->charge_full_uah / 100;
+	g->anchored = true;
+	g->rest_since_ms = ktime_to_ms(ktime_get_boottime());
+	dev_info(g->dev,
+		 "re-anchored at rest: OCV %lld uV -> %d %%, counter base %lld\n",
+		 ocv_uv, cap, car);
+}
 
 static int mt6359_gauge_probe(struct platform_device *pdev)
 {

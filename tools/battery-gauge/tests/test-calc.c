@@ -58,6 +58,12 @@ int main(int argc, char **argv)
 	expect("conn42: residual counts per second",
 	       (long long)((881676 - 46810 * 1000 / 85) / 884), 374);
 	/*
+	 * The offset expressed as a current, which is how a consumer of the counter must
+	 * judge it: 374 counts/s at 0.085 uAh per count is 31.8 uAh/s, i.e. 114 mA.
+	 */
+	expect("conn42: drift as a current",
+	       (long long)(374 * 85 * 3600 / 1000000), 114);
+	/*
 	 * The vendor's current arithmetic (mt6359_gauge.c:250-266) with this board's
 	 * numbers: raw * 610352 / 100000, * 50 / 5, * 100 / 1000, in 0.1 mA.
 	 *   raw 1000 -> 6103 -> 61030 -> 6103 -> 610300 uA
