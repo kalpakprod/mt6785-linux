@@ -289,6 +289,33 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	if (ret)
 		return ret;
 
+	/*
+	 * The TOP block read-only, named by the ChromeOS mt8183 map
+	 * (scratch/native/5-cameras/tmp/cros/mtk_seninf_reg.h:136-144 and :162, :271), so the layout
+	 * of this SoC can be read off the phone instead of assumed: which of these registers exist,
+	 * and what the bootloader left in them.
+	 */
+	dev_info(seninf->dev, "TOP: CTRL %08x CMODEL %08x MUX_CTRL %08x CAM_MUX %08x\n",
+		 readl(seninf->base + 0x0000), readl(seninf->base + 0x0004),
+		 readl(seninf->base + 0x0008), readl(seninf->base + 0x0010));
+	dev_info(seninf->dev, "TOP: N3D_A %08x N3D_B %08x PHY_CSI0 %08x PHY_CSI1 %08x PHY_CSI2 %08x\n",
+		 readl(seninf->base + 0x0014), readl(seninf->base + 0x0018),
+		 readl(seninf->base + 0x001c), readl(seninf->base + 0x0020),
+		 readl(seninf->base + 0x0024));
+	{
+		unsigned int inst;
+
+		for (inst = 0; inst < 5; inst++) {
+			void __iomem *i = seninf->base + 0x1000 * inst;
+
+			dev_info(seninf->dev,
+				 "inst %u: CTRL %08x CTRL_EXT %08x CSI2_CTRL %08x CSI2_EN %08x MUX_CTRL %08x MUX_EXT %08x\n",
+				 inst + 1, readl(i + 0x0200), readl(i + 0x0204),
+				 readl(i + SENINF_CSI2_CTRL), readl(i + SENINF_CSI2_EN),
+				 readl(i + 0x0d00), readl(i + 0x0d3c));
+		}
+	}
+
 	/* The port select first: which analog port this receiver instance is tied to. */
 	{
 		u32 before = readl(seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
