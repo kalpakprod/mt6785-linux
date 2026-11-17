@@ -401,6 +401,61 @@ static int md_tags_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
+/*
+ * The infra bus-debug block, read-only
+ *
+ * bus_dbg@10208000, compatible "mediatek,bus_dbg-v2", with the configuration/status register
+ * in the infracfg window at 0x2fc ("mediatek,bus_dbg_con_offset = <0x2fc>",
+ * arch/arm64/boot/dts/mediatek/mt6785.dts:1575-1580). It is the block that latches a hung
+ * transaction on the interconnect, which is the shape trial 31 measured from the other side
+ * (an AP read on the MD path that never completed) and the shape a bus protect that never
+ * acknowledges would leave.
+ *
+ * What it prints is the raw content: the register bit layout lives in the vendor's bus_dbg
+ * driver, which is in none of the sources this project has, so the values are printed as
+ * they are and named by offset -- no invented bit names, and nothing written.
+ */
+#define BUS_DBG_PHYS	0x10208000
+#define BUS_DBG_WINDOW	0x100
+
+static int md_bus_dbg_show(struct seq_file *s, void *unused)
+{
+	struct ccci_md *md = s->private;
+	void __iomem *p = ioremap(BUS_DBG_PHYS, BUS_DBG_WINDOW);
+	size_t off;
+
+	seq_printf(s, "BUS_DBG_CON (infracfg 0x2fc): %#010x\n",
+		   md->infra ? readl(md->infra + INFRA_BUS_DBG_CON) : 0);
+	seq_printf(s, "bus_dbg block at %#x, window %#zx (raw; the bit layout is in the vendor's\n"
+		      "bus_dbg driver, which is in no source we have -- nothing is decoded here)\n",
+		   BUS_DBG_PHYS, (size_t)BUS_DBG_WINDOW);
+	if (!p) {
+		seq_printf(s, "cannot map %#x\n", BUS_DBG_PHYS);
+		return 0;
+	}
+	for (off = 0; off < BUS_DBG_WINDOW; off += 16) {
+		seq_printf(s, "  %08x:", (unsigned int)(BUS_DBG_PHYS + off));
+		for (size_t k = 0; k < 16; k += 4)
+			seq_printf(s, " %08x", readl(p + off + k));
+		seq_putc(s, '\n');
+	}
+	iounmap(p);
+	return 0;
+}
+
+static int md_bus_dbg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, md_bus_dbg_show, inode->i_private);
+}
+
+static const struct file_operations md_bus_dbg_fops = {
+	.owner = THIS_MODULE,
+	.open = md_bus_dbg_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int md_tags_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, md_tags_show, inode->i_private);
@@ -445,6 +500,7 @@ void rosemary_ccci_debugfs_add(struct ccci_md *md)
 	debugfs_create_file("state", 0444, md->debugfs, md, &md_state_fops);
 	debugfs_create_file("md_regs", 0444, md->debugfs, md, &md_regs_fops);
 	debugfs_create_file("tags", 0444, md->debugfs, md, &md_tags_fops);
+	debugfs_create_file("bus_dbg", 0444, md->debugfs, md, &md_bus_dbg_fops);
 }
 
 void rosemary_ccci_debugfs_remove(struct ccci_md *md)

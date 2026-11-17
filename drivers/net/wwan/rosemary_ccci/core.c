@@ -52,6 +52,14 @@
  * 64-bit call bit.
  */
 #define SIP_AP_MDSRC_REQ	0xc2000223
+/*
+ * MTK_SIP_KERNEL_SPM_FIRMWARE_STATUS -- the function id the vendor kernel uses
+ * (drivers/misc/mediatek/include/mt-plat/mtk_secure_api.h:66, 0x82000221 | AARCH_BIT),
+ * called read-only by spm_load_firmware_status()
+ * (base/power/spm/mt6785/mtk_spm_utils.c:29-36), whose comment documents the values:
+ * -1 not init, 0 not loaded, 1 loaded, 2 loaded and kicked.
+ */
+#define SIP_SPM_FIRMWARE_STATUS	0xc2000221
 
 /* the modem's SRAM supply: PMIC_RG_LDO_VSRAM_MD_VOSEL = 0x4f, 993 750 uV */
 #define VSRAM_MD_UV		993750
@@ -838,6 +846,41 @@ static void md_ap_snapshot(struct ccci_md *md, const char *when)
 	md->snap_pwr_status = sta;
 	md->snap_pwr_status_2nd = sta2;
 	md->snap_valid = true;
+}
+
+/*
+ * md_spm_firmware_state() - what the SPM's PCM firmware reports about itself
+ * @md: the modem
+ *
+ * The image is not the kernel's: the loader reads the `spmfw` partition and hands it to
+ * the secure monitor in one SMC -- "before smc call" / "after smc call", 1 ms of work in
+ * our own LK log (poco-m5s/evidence/try-safe1/pl_lk.txt:2293-2304; the partition entries
+ * are at :1051 and :1071). Both Android and this kernel start from that same handover, and
+ * no kernel in either tree loads or kicks it (no request_firmware() for it, no kick in the
+ * vendor's power code), so this call is the only thing a kernel can learn about it.
+ *
+ * It matters here because the SPM's PCM register block is where the modem's own 26 MHz
+ * request is visible: PCM_REG13_DATA (SPM 0x110, base/power/spm/mt6785/mtk_spm_reg.h:88)
+ * is a PCM-block data register, and the vendor decides "MD1 is asleep" from it
+ * (spm_is_md1_sleep(), mtk_spm_utils.c:36-39). The acknowledgement of the AP's own MD
+ * source request comes from the same place (AP_MDSMSRC_ACK, check_ap_mdsrc_ack(),
+ * mtk_spm_utils.c:59-72). If the PCM code is not running, both of those are somebody
+ * else's opinion -- which is why the returned number earns a line in the log.
+ *
+ * Read-only: one SMC with three zero arguments.
+ */
+static void md_spm_firmware_state(struct ccci_md *md)
+{
+	struct arm_smccc_res r;
+
+	arm_smccc_smc(SIP_SPM_FIRMWARE_STATUS, 0, 0, 0, 0, 0, 0, 0, &r);
+	dev_info(md->dev,
+		 "spm firmware: status %ld (%s), a1 %ld a2 %ld a3 %ld\n",
+		 (long)r.a0,
+		 r.a0 == 2 ? "loaded and kicked" :
+		 r.a0 == 1 ? "loaded" :
+		 r.a0 == 0 ? "NOT loaded" : "not init / refused",
+		 (long)r.a1, (long)r.a2, (long)r.a3);
 }
 
 static void md_loader_state(struct ccci_md *md, const char *when)
@@ -1864,6 +1907,7 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	 * already happened.
 	 */
 	md_ap_snapshot(md, "probe");
+	md_spm_firmware_state(md);
 	ret = rosemary_ccci_tags_init(md);
 	if (ret) {
 		/*
