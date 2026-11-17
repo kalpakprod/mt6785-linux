@@ -496,8 +496,30 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 			 g->batt ? "vbat channel" : "battery profile");
 		goto no_anchor;
 	}
+	/*
+	 * An open-circuit table needs an open-circuit voltage. The vendor gets one the
+	 * hardware latched: PMIC_AUXADC_ADC_OUT_PWRON_PCHR -> MT6359_AUXADC_ADC19, a
+	 * 15-bit power-on sample taken before any load (upmu_hw.h:10279-10285), read by
+	 * read_hw_ocv_6359_power_on() with its ready flag (mt6359_gauge.c:1199-1224) and
+	 * chosen against the software value in read_hw_ocv() (:1254-1300). That register
+	 * is the right source and is the next step; until it is wired, anchoring from a
+	 * live voltage is only valid when nothing is drawing current, so that is the
+	 * condition the anchor now requires - no IR-drop compensation is invented here.
+	 */
 	{
-		int ocv = 0, pct;
+		int ocv = 0, pct, cur = 0;
+
+		ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, (long long *)&cur);
+		if (ret) {
+			dev_warn(&pdev->dev, "cannot read current for the anchor (%d)\n", ret);
+			goto no_anchor;
+		}
+		if (abs((int)(s16)cur) * 610 > 50000) {
+			dev_warn(&pdev->dev,
+				 "battery is loaded (%d mA): no OCV anchor, capacity off until a rest\n",
+				 (int)(s16)cur * 610 / 1000);
+			goto no_anchor;
+		}
 
 		ret = iio_read_channel_processed(g->vbat, &ocv);
 		if (ret < 0) {

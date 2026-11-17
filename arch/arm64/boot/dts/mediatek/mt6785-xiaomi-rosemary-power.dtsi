@@ -76,8 +76,8 @@
  * of it gave a constant 9.153 V.
  */
 &{/soc/pwrap@1000d000/pmic/gauge} {
-	io-channels = <&{/soc/i2c@11016000/pmic@34/adc} 4>;
-	io-channel-names = "vbat";
+	io-channels = <&{/soc/i2c@11016000/pmic@34/adc} 4>, <&pmic_adc 1>;
+	io-channel-names = "vbat", "ntc";
 };
 
 &{/soc/i2c@11016000/pmic@34} {
