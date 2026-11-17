@@ -531,9 +531,6 @@ static void mt6785_scp_hexdump(struct mtk_scp *scp, u32 ofs, size_t len,
 			       const char *label);
 static void mt6785_scp_scan_text(struct mtk_scp *scp);
 static void mt6785_scp_log_tcm(struct mtk_scp *scp, const char *when);
-static u32 mt6785_scp_crc_tcm(struct mtk_scp *scp, u32 ofs, size_t len, u8 *buf);
-static void mt6785_scp_scan_tcm_text(struct mtk_scp *scp, u8 *buf);
-
 /*
  * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
  * that audio20 had just stopped, because cfg + 0x4000 still read 0x201 (the loader's clock
@@ -774,6 +771,10 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	void __iomem *cfg = scp->cluster->reg_base;
 	u32 rstn, tcm0, tcm1;
 
+	dev_err(scp->dev, "post-mortem, cfg registers, each announced below\n");
+	dev_err(scp->dev, "  reading cfg + %#x (PC) %#x (LR) %#x (SP) %#x (PSP)\n",
+		MT8183_SCP_DEBUG_PC, MT8183_SCP_DEBUG_LR, MT8183_SCP_DEBUG_SP,
+		MT8183_SCP_DEBUG_PSP);
 	dev_err(scp->dev, "core PC %#x LR %#x SP %#x PSP %#x\n",
 		readl(cfg + MT8183_SCP_DEBUG_PC), readl(cfg + MT8183_SCP_DEBUG_LR),
 		readl(cfg + MT8183_SCP_DEBUG_SP), readl(cfg + MT8183_SCP_DEBUG_PSP));
@@ -784,9 +785,32 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE,
 			   "backup at the timeout");
 	mt6785_scp_scan_text(scp);
-	dev_err(scp->dev, "TCM state at the timeout (dev_err, cannot be filtered):\n");
-	mt6785_scp_log_tcm(scp, "at the timeout");
+
+	/*
+	 * Not one bulk read of the SCP's SRAM: audio37 hung the phone doing exactly that - the
+	 * core owns its SRAM and a stalled slave hangs the AP's bus that touched it. The vendor
+	 * reads the whole TCM only in its coredump path, after the core has been halted
+	 * (scp_excep.c:404-406, reached from scp_sys_reset_ws()); at run time its only SRAM access
+	 * is the share buffer inside the IPI handler, bounded by the message length
+	 * (scp_ipi.c:41-43). So the same limit applies here: 16 bytes, word by word, each one
+	 * announced first, so a hang names the address that caused it.
+	 */
+	dev_err(scp->dev, "post-mortem, reading only the share buffer at TCM + %#x, word by word:\n",
+		MT6785_SCP_IPI_BUF_OFS);
+	{
+		unsigned int w;
+
+		for (w = 0; w < 4; w++) {
+			dev_err(scp->dev, "  reading TCM + %#x\n",
+				MT6785_SCP_IPI_BUF_OFS + 4 * w);
+			dev_err(scp->dev, "  TCM + %#x = %#x\n",
+				MT6785_SCP_IPI_BUF_OFS + 4 * w,
+				readl(scp->sram_base + MT6785_SCP_IPI_BUF_OFS + 4 * w));
+		}
+	}
 	dev_err(scp->dev, "SCP_A_TO_HOST interrupts seen: %u\n", scp->to_host_irqs);
+	dev_err(scp->dev, "  reading cfg + %#x (sleep) %#x (to_host) %#x (gipc_in)\n",
+		MT8183_SCP_SLEEP_STATUS, MT8183_SCP_TO_HOST, MT8183_HOST_TO_SCP);
 	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
 		readl(cfg + MT8183_SCP_SLEEP_STATUS),
 		readl(cfg + MT8183_SCP_TO_HOST), readl(cfg + MT8183_HOST_TO_SCP));
@@ -1236,7 +1260,7 @@ static int scp_start(struct rproc *rproc)
 	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs) {
 		mt6785_scp_log_dram_state(scp, "before the release");
 		mt6785_scp_log_pages(scp, "before");
-		mt6785_scp_log_tcm(scp, "before the release");
+		mt6785_scp_log_tcm(scp, "before the release (core held in reset)");
 		mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE,
 				   "dram part before the release");
 	}
@@ -2376,65 +2400,6 @@ static void mt6785_scp_log_dram_state(struct mtk_scp *scp, const char *when)
 		 mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE));
 }
 
-/* crc32 of a TCM range, using the caller's scratch buffer */
-static u32 mt6785_scp_crc_tcm(struct mtk_scp *scp, u32 ofs, size_t len, u8 *buf)
-{
-	u32 crc = ~0;
-	size_t done = 0;
-
-	while (done < len) {
-		size_t n = min((size_t)SZ_4K, len - done);
-
-		memcpy_fromio(buf, scp->sram_base + ofs + done, n);
-		crc = crc32_le(crc, buf, n);
-		done += n;
-	}
-
-	return ~crc;
-}
-
-/* the .bss ranges the firmware's reset handler clears (record offset 0x37fd8 of its image) */
-static const struct {
-	u32 start;
-	u32 end;
-} mt6785_bss[] = {
-	{ 0x58400, 0xb797c },
-	{ 0xb8180, 0xb85fc },
-};
-
-/* printable text in the TCM: the firmware keeps its log ring there */
-static void mt6785_scp_scan_tcm_text(struct mtk_scp *scp, u8 *buf)
-{
-	size_t len = MT6785_SCP_FIRMWARE_TCM_MAX, i, start = 0, run = 0;
-	int shown = 0;
-
-	for (i = 0; i < len; i += SZ_4K) {
-		size_t n = min((size_t)SZ_4K, len - i);
-		size_t k;
-
-		memcpy_fromio(buf, scp->sram_base + i, n);
-		for (k = 0; k < n; k++) {
-			bool printable = buf[k] >= 0x20 && buf[k] < 0x7f;
-
-			if (printable) {
-				if (!run)
-					start = i + k;
-				run++;
-				continue;
-			}
-			if (run >= 16 && shown < 12) {
-				dev_err(scp->dev, "TCM text at %#zx: %.*s\n", start,
-					(int)min(run, (size_t)96),
-					buf + k - min(run, (size_t)96));
-				shown++;
-			}
-			run = 0;
-		}
-	}
-	if (!shown)
-		dev_err(scp->dev, "no printable text in the TCM\n");
-}
-
 /* a checksum of the TCM range the firmware was staged into, and its non-zero pages */
 static void mt6785_scp_log_tcm(struct mtk_scp *scp, const char *when)
 {
@@ -2442,7 +2407,7 @@ static void mt6785_scp_log_tcm(struct mtk_scp *scp, const char *when)
 	u32 crc = ~0, page, first = 0, total = MT6785_SCP_FIRMWARE_TCM_MAX / SZ_4K;
 	bool in_range = false;
 	size_t done;
-	unsigned int i;
+
 
 	if (!scp->sram_base)
 		return;
@@ -2481,24 +2446,6 @@ static void mt6785_scp_log_tcm(struct mtk_scp *scp, const char *when)
 		when, MT6785_SCP_FIRMWARE_TCM_MAX, ~crc,
 		readl(scp->sram_base), readl(scp->sram_base + 4));
 
-	/* the two questions the firmware's own startup answers */
-	crc = mt6785_scp_crc_tcm(scp, 0x800, MT6785_SCP_FIRMWARE_TCM_MAX, buf);
-	dev_err(scp->dev, "TCM firmware part [0x800..%#x] crc %#010x (the staged copy is %#010x)%s\n",
-		0x800 + MT6785_SCP_FIRMWARE_TCM_MAX, ~crc, MT6785_DRAM_COPY_CRC,
-		(~crc == MT6785_DRAM_COPY_CRC) ? " - the loader copied it" : " - different");
-	for (i = 0; i < ARRAY_SIZE(mt6785_bss); i++) {
-		crc = mt6785_scp_crc_tcm(scp, mt6785_bss[i].start,
-					 mt6785_bss[i].end - mt6785_bss[i].start, buf);
-		dev_err(scp->dev, "TCM bss [%#x..%#x] crc %#010x%s\n",
-			mt6785_bss[i].start, mt6785_bss[i].end, crc,
-			crc == MT6785_ZERO_CRC ? " (zeros: the startup ran)" : "");
-	}
-	/* the IPI share buffer the firmware writes its ready message into */
-	memcpy_fromio(buf, scp->sram_base + MT6785_SCP_IPI_BUF_OFS, 32);
-	dev_err(scp->dev, "TCM share buffer at %#x: %*ph\n",
-		MT6785_SCP_IPI_BUF_OFS, 32, buf);
-	/* and any text the firmware left in the TCM, which is where its log ring lives */
-	mt6785_scp_scan_tcm_text(scp, buf);
 	kfree(buf);
 }
 
