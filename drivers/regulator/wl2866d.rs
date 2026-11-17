@@ -18,6 +18,7 @@
 
 use kernel::{
     device::Core,
+    sync::{Arc, Mutex},
     i2c,
     io::Io,
     of,
@@ -42,9 +43,20 @@ const AVDD_BASE_UV: i32 = 1_200_000;
 const AVDD_STEP_UV: i32 = 12_500;
 const N_VOLTAGES: u32 = 256;
 
+/*
+ * The enable register holds one bit per rail and is a read-modify-write, with four rails of this
+ * chip and two sensors as separate consumers: unlocked, one consumer's disable can clobber
+ * another's enable (the phone shows exactly that - a rail whose enable returned 0 reads back as
+ * not enabled one millisecond later, right when the neighbouring sensor's probe tears its rails
+ * down). Every access to the register goes through this lock.
+ */
+
+
 /// One output of the chip.
 struct Ldo<'a, const IDX: usize> {
     client: &'a i2c::I2cClient<kernel::device::Bound>,
+    /// Serialises the read-modify-write of the enable register between the four rails.
+    enable_lock: Arc<Mutex<()>>,
 }
 
 // SAFETY: the I2C core serialises transfers on the client, and the bound client stays valid as
@@ -117,18 +129,38 @@ impl<'a, const IDX: usize> Ldo<'a, IDX> {
 impl<const IDX: usize> RegOps for Ldo<'_, IDX> {
     fn enable(data: &Self) -> Result {
         let mask = 1u8 << IDX;
+        let _guard = data.enable_lock.lock();
+        let before = data.read(REG_ENABLE)?;
+        let ret = data.write(REG_ENABLE, before | mask);
+        let after = data.read(REG_ENABLE).unwrap_or(0xff);
 
-        data.write(REG_ENABLE, data.read(REG_ENABLE)? | mask)
+        dev_dbg!(data.client.as_ref(), "rail {} enable: {:#04x} -> {:#04x}, write {:?}, readback {:#04x}\n",
+                 IDX, before, before | mask, ret.is_ok(), after);
+
+        ret
     }
 
     fn disable(data: &Self) -> Result {
         let mask = 1u8 << IDX;
+        let _guard = data.enable_lock.lock();
+        let before = data.read(REG_ENABLE)?;
+        let ret = data.write(REG_ENABLE, before & !mask);
+        let after = data.read(REG_ENABLE).unwrap_or(0xff);
 
-        data.write(REG_ENABLE, data.read(REG_ENABLE)? & !mask)
+        dev_dbg!(data.client.as_ref(), "rail {} disable: {:#04x} -> {:#04x}, write {:?}, readback {:#04x}\n",
+                 IDX, before, before & !mask, ret.is_ok(), after);
+
+        ret
     }
 
     fn is_enabled(data: &Self) -> Result<bool> {
-        Ok((data.read(REG_ENABLE)? & (1u8 << IDX)) != 0)
+        let _guard = data.enable_lock.lock();
+        let reg = data.read(REG_ENABLE)?;
+        let on = (reg & (1u8 << IDX)) != 0;
+
+        dev_dbg!(data.client.as_ref(), "rail {} is_enabled: reg {:#04x} -> {}\n", IDX, reg, on);
+
+        Ok(on)
     }
 
     fn list_voltage(_data: &Self, selector: u32) -> Result<i32> {
@@ -206,6 +238,9 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
         // regulator core records it as the owner of these regulators.
         let module = kernel::module::this_module::<DriverModule>();
 
+        // One lock for the chip's enable register, shared by its four rails.
+        let enable_lock = Arc::pin_init(kernel::sync::new_mutex!(()), GFP_KERNEL)?;
+
         /*
          * Each rail is a child node of the controller's node, and that child is what a board's
          * `<name>-supply` phandle names. Registering all four with the controller's node - which
@@ -228,7 +263,7 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
                     c"dvdd1",
                 ),
                 module,
-                Ldo::<0> { client },
+                Ldo::<0> { client, enable_lock: enable_lock.clone() },
             )?,
             _dvdd2: Registration::new(
                 dev,
@@ -237,7 +272,7 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
                     c"dvdd2",
                 ),
                 module,
-                Ldo::<1> { client },
+                Ldo::<1> { client, enable_lock: enable_lock.clone() },
             )?,
             _avdd1: Registration::new(
                 dev,
@@ -246,7 +281,7 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
                     c"avdd1",
                 ),
                 module,
-                Ldo::<2> { client },
+                Ldo::<2> { client, enable_lock: enable_lock.clone() },
             )?,
             _avdd2: Registration::new(
                 dev,
@@ -255,7 +290,7 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
                     c"avdd2",
                 ),
                 module,
-                Ldo::<3> { client },
+                Ldo::<3> { client, enable_lock: enable_lock.clone() },
             )?,
         })
     }
