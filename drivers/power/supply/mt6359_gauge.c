@@ -67,6 +67,10 @@
 #define MT6359_FG_ON		BIT(0)	/* upmu_hw.h:8419-8422, PMIC_FG_ON */
 
 /* Hardware current, in the vendor's own register (MTK: PMIC_FG_CURRENT_OUT). */
+/* The vendor's averaged-current accumulator, 28 bits over two registers (upmu_hw.h:562-563). */
+#define MT6359_FGADC_IAVG_CON0	0xd2c
+#define MT6359_FGADC_IAVG_CON1	0xd2e
+
 #define MT6359_FGADC_CUR_CON0	0xd8a
 
 /*
@@ -378,6 +382,28 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 		val->intval = g->charge_full_uah;
 		return 0;
+	case POWER_SUPPLY_PROP_CURRENT_AVG:
+		/*
+		 * The vendor keeps an averaged current beside the instantaneous one: its IAVG
+		 * accumulator is 28 bits over two registers (PMIC_FG_IAVG_27_16 / _15_00, the
+		 * vendor's read_fg_hw_info_Iavg, mt6359_gauge.c:316-360, reading
+		 * MT6359_FGADC_IAVG_CON0/CON1, upmu_hw.h:562-563), and it is the number that
+		 * does not move with a single sample's noise. current_now here is the
+		 * instantaneous ADC sample (PMIC_FG_CURRENT_OUT, read_fg_hw_info_current_1,
+		 * mt6359_gauge.c:228-250), which is why the logger's own wake-ups biased it.
+		 */
+		{
+			long long hi = 0, lo = 0;
+
+			if (mt6359_gauge_read_reg(g, MT6359_FGADC_IAVG_CON0, &hi) ||
+			    mt6359_gauge_read_reg(g, MT6359_FGADC_IAVG_CON1, &lo))
+				return -EIO;
+			hi = (hi << 16) | (lo & 0xffff);
+			if (hi & 0x8000000)
+				hi -= 0x10000000;
+			val->intval = (long)(hi * 610352 / 1000);
+		}
+		return 0;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		/*
 		 * From the gauge's own current register rather than from the counter's
@@ -457,6 +483,7 @@ static enum power_supply_property mt6359_gauge_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CURRENT_AVG,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_TEMP,
 	/*
@@ -561,7 +588,8 @@ static void mt6359_gauge_maybe_reanchor(struct mt6359_gauge *g)
 	g->anchored = true;
 	g->rest_since_ms = ktime_to_ms(ktime_get_boottime());
 	dev_info(g->dev,
-		 "re-anchored at rest: OCV %lld uV -> %d %%, counter base %lld\n",
+		 "re-anchored: trigger rest (|I| < %d mA held %d s), OCV %lld uV -> %d %%, counter base %lld\n",
+		 MT6359_REST_UA / 1000, MT6359_REST_MS / 1000,
 		 ocv_uv, cap, car);
 }
 

@@ -61,17 +61,16 @@ int main(int argc, char **argv)
 	 * The offset expressed as a current, which is how a consumer of the counter must
 	 * judge it: 374 counts/s at 0.085 uAh per count is 31.8 uAh/s, i.e. 114 mA.
 	 */
-	expect("conn42: drift as a current",
-	       (long long)(374 * 85 * 3600 / 1000000), 114);
 	/*
-	 * The trim, as the lead asked: 481 counts in the current ADC's LSB, which this driver
-	 * takes as UNIT_FGCURRENT/1000 = 610 uA per count. That is 293 mA - not the 114 mA the
-	 * counter drifts by, a factor of 2.6 apart - so the trim cannot be subtracted from the
-	 * CAR without overcorrecting it three times over. Both numbers are pinned here so a
-	 * future change to either is visible.
+	 * conn43, the decisive measurement: with inhibit-charge and the battery idle the CAR
+	 * did not move in 60.0 s (0 counts, current_now -1.2 mA), and while the battery carried
+	 * the load it moved -465.5 counts/s, which at 0.085 uAh per count is -142.5 mA against
+	 * current_now -144 mA - one percent. So there is no CAR offset and no trim to subtract.
 	 */
-	expect("trim 481 counts at the current LSB (uA)", (long long)(481 * 610352 / 1000), 293579);
-	expect("trim as a current vs the measured drift (uA)", 293579 - 114000, 179579);
+	expect("car 0 counts -> 0 uAh", mt6359_car_to_uah(0, 5), 0);
+	expect("conn43: 27934 counts -> uAh", mt6359_car_to_uah(27934, 5), 2374);
+	expect("conn43: -465 counts/s as a current (uA)",
+	       (long long)(465 * 85 * 3600 / 1000), 142290);
 	/*
 	 * The vendor's current arithmetic (mt6359_gauge.c:250-266) with this board's
 	 * numbers: raw * 610352 / 100000, * 50 / 5, * 100 / 1000, in 0.1 mA.
