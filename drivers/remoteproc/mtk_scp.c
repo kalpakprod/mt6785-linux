@@ -467,14 +467,26 @@ struct mt6785_scp_region_info {
 };
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
+static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
+static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
 
 static int mt6785_scp_before_load(struct mtk_scp *scp)
 {
 	struct mtk_scp_of_cluster *cluster = scp->cluster;
+	u32 val;
 	int ret;
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
+	if (ret)
+		return ret;
+
+	/*
+	 * The subsystem's module reset, and the SRAM switched on one block at a time, in the
+	 * vendor's order (scp_awake.c:222-283). The per-block ramp matters: scp_enable_sram()
+	 * writes 0x7fffffff, 0x3fffffff, ... 0 - "enable 1 block per time" - not one 0.
+	 */
+	ret = mt6785_scp_subsys_reset(scp);
 	if (ret)
 		return ret;
 
@@ -491,13 +503,16 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	 */
 
 	/*
-	 * Turn the TCM on. On this phone the three power-down registers read
-	 * 0xffffffff while the SCP is off (measured: 0x105c402c, +0x4080,
-	 * +0x4094 all ones), and the same offsets turn it back on for MT8183.
+	 * The SRAM: 0xffffffff is "all banks powered down" (the base kernel reads exactly that
+	 * at cfg + 0x402c/0x4080/0x4094), so the PD bits are active high. The vendor's
+	 * scp_enable_sram() releases the banks one at a time and only then the L1/TCM-tail bits
+	 * (scp_awake.c:196-214).
 	 */
+	for (val = 0xffffffff; val; val >>= 1)
+		writel(val, cluster->reg_base + MT8183_SCP_SRAM_PDN);
+	writel(0x0, cluster->reg_base + MT8183_SCP_SRAM_PDN);
 	writel(0x0, cluster->reg_base + MT8183_SCP_L1_SRAM_PD);
 	writel(0x0, cluster->reg_base + MT8183_SCP_TCM_TAIL_SRAM_PD);
-	writel(0x0, cluster->reg_base + MT8183_SCP_SRAM_PDN);
 
 	return 0;
 }
@@ -661,7 +676,8 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 	dev_dbg(scp->dev, "staged loader %#x firmware %#x dram %#x at %pa\n",
 		ri.ap_loader_size, fw_size, dram_size, &scp->dma_addr);
 
-	return 0;
+	/* the images are in place, so the buses need no protection any more */
+	return mt6785_scp_slp_prot_clear(scp);
 }
 
 static int mt8183_scp_before_load(struct mtk_scp *scp)
@@ -1789,6 +1805,96 @@ static int mt6785_scp_clk_get(struct mtk_scp *scp)
 		if (ret)
 			return ret;
 	}
+
+	return 0;
+}
+
+/* the infracfg regmap, from the phandle the DT gives */
+static struct regmap *mt6785_infracfg(struct mtk_scp *scp)
+{
+	return syscon_regmap_lookup_by_phandle(scp->dev->of_node,
+					       "mediatek,infracfg");
+}
+
+/* infracfg bit set, then wait for the status bit, as the vendor does (scp_awake.c:232-283) */
+static int mt6785_infracfg_reset(struct mtk_scp *scp, const char *what,
+				 u32 set_reg, u32 stat_reg, u32 bits)
+{
+	struct regmap *infracfg = mt6785_infracfg(scp);
+	u32 val;
+	int ret;
+
+	if (IS_ERR(infracfg))
+		return PTR_ERR(infracfg);
+
+	regmap_read(infracfg, set_reg, &val);
+	regmap_write(infracfg, set_reg, val | bits);
+	/* regmap writes are posted on this bus: the status read below must see this one first */
+	wmb();
+
+	ret = regmap_read_poll_timeout(infracfg, stat_reg, val,
+				       (val & bits) == bits, 10,
+				       MT6785_SCP_SYS_RESET_TIMEOUT_US);
+	if (ret)
+		dev_err(scp->dev, "%s: timeout (status %#x)\n", what, val);
+
+	return ret;
+}
+
+/*
+ * The SCP subsystem's own module reset and its sleep protection, in the order the vendor's
+ * scp_sys_full_reset() uses (scp_awake.c:222-300): protect the infra and audio buses, hold the SCP
+ * subsystem in reset and release it again, then switch the SRAM on one block at a time. The port
+ * only had the AP-side SW_RSTN in the cfg window, which is a different reset (the vendor's own
+ * reset_scp() writes it, scp_helper.c:596 and :617, but only on a subsystem that is already up).
+ */
+static int mt6785_scp_subsys_reset(struct mtk_scp *scp)
+{
+	struct regmap *infracfg = mt6785_infracfg(scp);
+	u32 val;
+	int ret;
+
+	if (IS_ERR(infracfg))
+		return PTR_ERR(infracfg);
+
+	/* the PD bits are active high: 0xffffffff is "all down", measured on the base kernel */
+	ret = mt6785_infracfg_reset(scp, "sleep protect", MT6785_INFRACFG_SLP_PROT_SET,
+				    MT6785_INFRACFG_SLP_PROT_STAT,
+				    MT6785_SCP_TO_INFRA_BIT | MT6785_SCP_TO_AUDIO_BIT);
+	if (ret)
+		return ret;
+
+	ret = mt6785_infracfg_reset(scp, "subsys reset",
+				    MT6785_INFRACFG_MODULE_RESET_SET,
+				    MT6785_INFRACFG_MODULE_RESET_STATUS,
+				    MT6785_SCP_RESET_BIT | MT6785_SCP_SEC_RESET_BIT);
+	if (ret)
+		return ret;
+
+	/* "finish the shutdown process by clearing reset bit" (scp_awake.c:276-281) */
+	regmap_read(infracfg, MT6785_INFRACFG_MODULE_RESET_CLR, &val);
+	regmap_write(infracfg, MT6785_INFRACFG_MODULE_RESET_CLR,
+		     val | MT6785_SCP_RESET_BIT | MT6785_SCP_SEC_RESET_BIT);
+	/* and the SRAM writes that follow must not overtake it */
+	wmb();
+
+	return 0;
+}
+
+/* "disable sleep protection" once the images are in place (vendor scp_awake.c:285-296) */
+static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp)
+{
+	struct regmap *infracfg = mt6785_infracfg(scp);
+	u32 val;
+
+	if (IS_ERR(infracfg))
+		return PTR_ERR(infracfg);
+
+	regmap_read(infracfg, MT6785_INFRACFG_SLP_PROT_SET, &val);
+	regmap_write(infracfg, MT6785_INFRACFG_SLP_PROT_SET,
+		     val & ~(MT6785_SCP_TO_INFRA_BIT | MT6785_SCP_TO_AUDIO_BIT));
+	/* the protection must be gone before the core is released */
+	wmb();
 
 	return 0;
 }

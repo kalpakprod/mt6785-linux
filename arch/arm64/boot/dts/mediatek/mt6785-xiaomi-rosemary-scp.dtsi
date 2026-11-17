@@ -81,6 +81,8 @@
 
 		/* the top clock controller, for the SCP gate block its driver does not model */
 		mediatek,topckgen = <&topckgen>;
+		/* infracfg, for the SCP's module reset and its sleep protection */
+		mediatek,infracfg = <&infracfg>;
 
 		memory-region = <&scp_mem_reserved>;
 		firmware-name = "mediatek/mt6785/scp.img";

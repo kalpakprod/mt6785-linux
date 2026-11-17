@@ -82,6 +82,23 @@
 #define MT8195_SEC_CTRL				0x85000
 #define MT8195_CORE_OFFSET_ENABLE_D		BIT(13)
 #define MT8195_CORE_OFFSET_ENABLE_I		BIT(12)
+/*
+ * The SCP subsystem's module reset and sleep protection, in infracfg (0x10001000) - the vendor's
+ * scpsys node's first window (vendor mt6785.dts:636-644) and, in mainline, the infracfg syscon.
+ * Offsets from the vendor scp_reg.h:96-112; bits 30/31 of the sleep protect are SCP->infra and
+ * SCP->audio, bits 3 and 10 of the module reset are SCP and SCP-secure.
+ */
+#define MT6785_INFRACFG_MODULE_RESET_SET	0x140
+#define MT6785_INFRACFG_MODULE_RESET_CLR	0x144
+#define MT6785_INFRACFG_MODULE_RESET_STATUS	0x148
+#define MT6785_INFRACFG_SLP_PROT_SET		0x220
+#define MT6785_INFRACFG_SLP_PROT_STAT		0x224
+#define MT6785_SCP_RESET_BIT			BIT(3)
+#define MT6785_SCP_SEC_RESET_BIT		BIT(10)
+#define MT6785_SCP_TO_INFRA_BIT			BIT(30)
+#define MT6785_SCP_TO_AUDIO_BIT			BIT(31)
+#define MT6785_SCP_SYS_RESET_TIMEOUT_US		1000000
+
 /* the vendor's SCP clock-gate registers inside topckgen (clk-mt6785.c:91-92) */
 #define MT6785_SCP_CLK_CFG_0			0x200
 #define MT6785_SCP_CLK_CFG_1			0x210
