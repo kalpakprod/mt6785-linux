@@ -109,17 +109,22 @@
 #define NO_ATTR		-12
 
 /*
- * MIUI's RIL sends ESIMS / EBOOT before powering the radio; CFUN=4 then
- * brings the SIM up with RF off, the low-power state ModemManager expects.
- * (command, seconds to keep retrying it): the AT task starts a moment after
- * the handshake, the SMS task (CMGF) only after the SIM is up.
+ * OWNER RULE (17.11): the SIM is Russian and roams on Magticom, so every call,
+ * message and data byte costs money. This daemon brings the modem up with the
+ * RADIO OFF and must never send CFUN=1, COPS (other than the read-only COPS?),
+ * CGACT, ATD or CMGS/CMGW. CFUN=0 is minimum functionality: the SIM stays
+ * readable for CPIN? and the port answers, but nothing registers and no context
+ * opens. MIUI's RIL sends ESIMS / EBOOT before powering the radio, so those stay.
+ *
+ * (command, seconds to keep retrying it): the AT task starts a moment after the
+ * handshake, the SMS task (CMGF) only after the SIM is up.
  */
 static const struct {
 	const char *cmd;
 	int retry;
 } at_init[] = {
 	{ "AT", 30 }, { "AT+CMEE=1", 0 }, { "AT+ESIMS=1", 0 }, { "AT+EBOOT=0", 0 },
-	{ "AT+CFUN=4", 0 }, { "AT+CMGF=0", 30 },
+	{ "AT+CFUN=0", 0 }, { "AT+CMGF=0", 30 },
 };
 
 #define AT_STEPS ((int)(sizeof(at_init) / sizeof(*at_init)))
