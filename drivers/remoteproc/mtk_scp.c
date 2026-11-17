@@ -4,6 +4,7 @@
 
 #include <asm/barrier.h>
 #include <linux/clk.h>
+#include <linux/crc32.h>
 #include <linux/dma-mapping.h>
 #include <linux/unaligned.h>
 #include <linux/err.h>
@@ -520,6 +521,7 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp,
 static void mt6785_scp_probe_lk_images(struct mtk_scp *scp);
 static void mt6785_scp_map_windows(struct platform_device *pdev,
 				   struct mtk_scp *scp);
+static void mt6785_scp_log_dram_state(struct mtk_scp *scp, const char *when);
 
 /*
  * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
@@ -556,8 +558,13 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	if (scp->l1c_base) {
 		writel(MT6785_SCP_L1C_CON_INIT, scp->l1c_base);
 		writel(MT6785_SCP_L1C_CON_INIT, scp->l1c_base + MT6785_SCP_L1C_STRIDE);
-		/* "l1c init status" is the first instance's L1C_CON read back */
-		dev_info(scp->dev, "l1c init status: %#x\n", readl(scp->l1c_base));
+		/*
+		 * LK's "l1c init status: 0x0" is its own function's return value (0 = success),
+		 * not this register - that line is not in our sources, only in LK's log, and the
+		 * register it writes is 0x100. So this prints the register and says so.
+		 */
+		dev_info(scp->dev, "l1c L1C_CON readback: %#x (LK wrote %#x here)\n",
+			 readl(scp->l1c_base), MT6785_SCP_L1C_CON_INIT);
 	}
 
 	/* a wrong offset has to fail the probe, not the boot (audio25) */
@@ -759,6 +766,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	dev_err(scp->dev, "core PC %#x LR %#x SP %#x PSP %#x\n",
 		readl(cfg + MT8183_SCP_DEBUG_PC), readl(cfg + MT8183_SCP_DEBUG_LR),
 		readl(cfg + MT8183_SCP_DEBUG_SP), readl(cfg + MT8183_SCP_DEBUG_PSP));
+	mt6785_scp_log_dram_state(scp, "at the timeout");
 	dev_err(scp->dev, "SCP_A_TO_HOST interrupts seen: %u\n", scp->to_host_irqs);
 	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
 		readl(cfg + MT8183_SCP_SLEEP_STATUS),
@@ -1205,6 +1213,9 @@ static int scp_start(struct rproc *rproc)
 	}
 
 	run->signaled = false;
+
+	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs)
+		mt6785_scp_log_dram_state(scp, "before the release");
 
 	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs)
 		dev_info(dev, "reboot handshake word before release: %#x (LK/vendor ready value %#x)\n",
@@ -2295,6 +2306,52 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp)
  * the loader's work survived instead of inferring it from SCP register reads that a running
  * core may not answer.
  */
+/*
+ * A checksum of one of the images in LK's region. The AP cannot read the SCP's memory once the
+ * core owns the bus, but DRAM is plain memory: the loader and the firmware write into their DRAM
+ * and backup areas when they run, so a checksum taken before the release and again at a timeout
+ * says whether anything executed at all.
+ */
+static u32 mt6785_scp_crc_region(struct mtk_scp *scp, u32 ofs, size_t len)
+{
+	u8 *buf;
+	u32 crc = ~0;
+	size_t done = 0, chunk = SZ_4K;
+
+	if (!scp->lk_base || ofs + len > scp->lk_size)
+		return 0;
+
+	buf = kmalloc(chunk, GFP_KERNEL);
+	if (!buf)
+		return 0;
+
+	while (done < len) {
+		size_t n = min(chunk, len - done);
+
+		memcpy_fromio(buf, scp->lk_base + ofs + done, n);
+		crc = crc32_le(crc, buf, n);
+		done += n;
+	}
+
+	kfree(buf);
+	return ~crc;
+}
+
+/* the three images' checksums, in one line each caller can compare with the next */
+static void mt6785_scp_log_dram_state(struct mtk_scp *scp, const char *when)
+{
+	if (!scp->lk_base)
+		return;
+
+	dev_info(scp->dev, "dram %s: firmware %#x crc %#010x, dram %#x crc %#010x, backup crc %#010x\n",
+		 when, MT6785_SCP_FIRMWARE_TCM_MAX,
+		 mt6785_scp_crc_region(scp, MT6785_LK_FIRMWARE_OFS,
+				       MT6785_SCP_FIRMWARE_TCM_MAX),
+		 MT6785_LK_DRAM_SIZE,
+		 mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE),
+		 mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE));
+}
+
 /* the named windows this SoC's bring-up uses beyond sram and cfg */
 static void mt6785_scp_map_windows(struct platform_device *pdev, struct mtk_scp *scp)
 {
