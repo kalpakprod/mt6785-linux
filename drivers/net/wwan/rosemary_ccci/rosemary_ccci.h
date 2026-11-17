@@ -233,8 +233,16 @@ struct ap_query_md_feature_v2_1 {
 #define MD_PLL_PHYS		0x1020e300
 #define MD_BOOT_VECTOR_PHYS	0x20000024
 
-#define SPM_POWERON_CONFIG_EN	0x000	/* write 0xb16 << 16 | 1 first */
-#define SPM_CLK_CON		0x008	/* BIT(21): srclken_o1 */
+/*
+ * SPM_POWERON_CONFIG_EN (the project key) and SPM_CLK_CON bit 21 (SRCLKEN_O1) are the
+ * vendor's MT6781 power-on path only: mtk_ccci_cfg_srclken_o1_on()
+ * (mt6785/md_sys1_platform.c:660-676) is called under #ifdef CCCI_PLATFORM_MT6781 in
+ * md_cd_power_on() (:713-724). MT6785 does not write them, so this port does not
+ * either; the definitions stay because the register block is shared and a reader
+ * deserves to know what the addresses are.
+ */
+#define SPM_POWERON_CONFIG_EN	0x000	/* write 0xb16 << 16 | 1 first (MT6781 only) */
+#define SPM_CLK_CON		0x008	/* BIT(21): srclken_o1 (MT6781 only) */
 /*
  * PCM_REG13_DATA, the SPM register that carries the MD-side sleep handshake
  * (base/power/spm/mt6785/mtk_spm_reg.h:88, bits from pcm_def.h:148-151):
@@ -395,6 +403,10 @@ struct ccci_md {
 	bool rails_on;		/* this driver enabled vmodem and vsram_md */
 	bool pm_held;		/* the runtime-PM reference this driver owns */
 	bool wdt_irq_on;	/* the modem's watchdog interrupt is enabled */
+	bool clks_on;		/* the CCIF clocks are enabled */
+	u32 clk_on_count;	/* how often they have been enabled */
+	u32 clk_off_count;	/* ... and disabled, so a trial can see both */
+	unsigned int clamp_wait_ms;	/* how long the last clamp waited for its ack */
 	struct dentry *debugfs;	/* the read-only state dumps */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;

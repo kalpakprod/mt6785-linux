@@ -256,21 +256,75 @@ static void md_wdt_irq(struct ccci_md *md, bool on)
 	}
 }
 
-static void md_clock_request(struct ccci_md *md, bool on)
+/*
+ * The session's grant of the modem's 26 MHz source clock: INFRA_AO_MD_SRCCLKENA's low
+ * byte, 0x21 for on. The vendor sets it in md_cd_power_on() (mt6785/md_sys1_platform.c:
+ * 713-726) and clears it only after the clamp has been acknowledged (:813-816), so it
+ * is a session-wide thing and not part of any single register access.
+ *
+ * Two things that used to live here and no longer do, both because the vendor does not
+ * do them on this SoC:
+ *
+ *  - the AP's own MD source request (SPM_AP_MDSRC_REQ, 0x434). The vendor holds it only
+ *    around an AP access to the modem's registers, through
+ *    md_cd_lock_modem_clock_src(1/0) (:332-360, used by modem_sys1.c:1047-1059,
+ *    mdee_dumper_v3.c:371-376 and :912-935) and never across its power-off. Holding it
+ *    for the whole session was one of the two things our stop did that the vendor's
+ *    does not; it is md_md_access() now;
+ *  - SPM_CLK_CON bit 21 (SRCLKEN_O1). That is the vendor's MT6781 path only:
+ *    mtk_ccci_cfg_srclken_o1_on() (md_sys1_platform.c:660-676) is called under
+ *    #ifdef CCCI_PLATFORM_MT6781 inside md_cd_power_on() (:713-724). MT6785 does not
+ *    set it, and this port is MT6785 only.
+ */
+static void md_srcclkena_grant(struct ccci_md *md, bool on)
 {
 	if (!on) {
 		writel(readl(md->infra + INFRA_MD_SRCCLKENA) & ~0xff,
 		       md->infra + INFRA_MD_SRCCLKENA);
-		ap_mdsrc_req(md, false);
 		return;
 	}
-	ap_mdsrc_req(md, true);
 	/* the modem's 26 MHz source clock request: low byte 0x21 */
 	writel((readl(md->infra + INFRA_MD_SRCCLKENA) & ~0xff) | 0x21,
 	       md->infra + INFRA_MD_SRCCLKENA);
-	/* SPM register control unlock, then srclken_o1 for the 32 kHz request */
-	writel(SPM_PROJECT_KEY | 1, md->spm + SPM_POWERON_CONFIG_EN);
-	writel(readl(md->spm + SPM_CLK_CON) | BIT(21), md->spm + SPM_CLK_CON);
+}
+
+/*
+ * md_md_access() - hold the AP's MD source request across one access to the modem
+ * @md: the modem
+ * @on: true before the access, false after it
+ *
+ * This is the vendor's md_cd_lock_modem_clock_src() in behaviour: the AP asks the SPM
+ * for the modem's SM clock, the SPM acknowledges (SPM_AP_MDSRC_REQ bits 0 and 4,
+ * mtk_spm_reg.h:1847-1852), the AP touches the modem's registers, and the request is
+ * released. Nothing may hold it for longer: the vendor never does, and at the moment
+ * its bus protect is set the request is free.
+ */
+static void md_md_access(struct ccci_md *md, bool on)
+{
+	ap_mdsrc_req(md, on);
+}
+
+/*
+ * The CCIF clocks, with the two counters a trial reads to prove they are where they
+ * should be. The vendor has no hif at the moment it sets the bus protect: ccci_hif_start()
+ * runs after the power cycle, and ccif_set_clk_on() only inside ccif_start()
+ * (modem_sys1.c:396; ccci_hif_ccif.c:2075). So the clocks come off before the clamp and
+ * go back on after the power-on.
+ */
+static void md_clks(struct ccci_md *md, bool on)
+{
+	if (on == md->clks_on)
+		return;
+	if (on) {
+		if (clk_bulk_prepare_enable(md->num_clks, md->clks))
+			return;
+		md->clks_on = true;
+		md->clk_on_count++;
+	} else {
+		clk_bulk_disable_unprepare(md->num_clks, md->clks);
+		md->clks_on = false;
+		md->clk_off_count++;
+	}
 }
 
 /* the vendor's power-on: rails and clock, then the gate by the caller */
@@ -280,7 +334,7 @@ static int md_power_seq_prepare(struct ccci_md *md)
 
 	if (ret)
 		return ret;
-	md_clock_request(md, true);
+	md_srcclkena_grant(md, true);
 	return 0;
 }
 
@@ -301,7 +355,7 @@ static void md_power_seq_release(struct ccci_md *md)
 			 readl(md->spm + SPM_PWR_STATUS));
 		return;
 	}
-	md_clock_request(md, false);
+	md_srcclkena_grant(md, false);
 	md_rails_cut(md);
 }
 
@@ -317,6 +371,7 @@ static int md_first_boot_check(struct ccci_md *md)
 	unsigned long deadline = jiffies + 2 * HZ;
 	u32 v0, v1, v2, v3, stats;
 
+	md_md_access(md, true);
 	for (;;) {
 		v0 = readl(md->sec_ao + SEC_AO_BROM0);
 		v1 = readl(md->sec_ao + SEC_AO_BROM1);
@@ -327,6 +382,7 @@ static int md_first_boot_check(struct ccci_md *md)
 			break;
 		}
 		if (time_after(jiffies, deadline)) {
+			md_md_access(md, false);
 			dev_err(md->dev, "boot ROM did not pass: %#x %#x %#x %#x\n",
 				v0, v1, v2, v3);
 			return -ETIMEDOUT;
@@ -651,6 +707,9 @@ static void md_loader_state(struct ccci_md *md, const char *when)
 
 static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1)
 {
+	/* an AP access to the modem's registers: the vendor holds its source request
+	 * across exactly these (md_cd_lock_modem_clock_src(), md_sys1_platform.c:332-360) */
+	md_md_access(md, true);
 	writel(0, md->pll + MD1_BOOT_STATS_SELECT);
 	readl(md->pll + MD1_CFG_BOOT_STATS);
 	readl(md->pll + MD1_CFG_BOOT_STATS);
@@ -659,6 +718,7 @@ static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1)
 	readl(md->pll + MD1_CFG_BOOT_STATS);
 	readl(md->pll + MD1_CFG_BOOT_STATS);
 	*stage1 = readl(md->pll + MD1_CFG_BOOT_STATS);
+	md_md_access(md, false);
 }
 
 /* the two helpers debugfs.c needs, so it does not reach into this file's statics */
@@ -892,10 +952,34 @@ static int md_power_cycle(struct ccci_md *md)
 	 * pair here instead would leave the count at one -- trial 25: power_off at
 	 * 17.59 s reported dev_count=1 and did nothing.
 	 */
-	md_pm_put(md);
+	/*
+	 * What the vendor holds at this instant, and nothing more (plan doc §2j): the
+	 * session grant is on, the AP's own source request is free, and the CCIF clocks
+	 * are off because the vendor has no hif yet at its power-off.
+	 */
+	md_clks(md, false);
+	dev_info(md->dev,
+		 "clamp: AP_MDSRC_REQ %#x (request %u ack %u), CCIF clocks %s (%u on / %u off), PWR_STATUS %#x md bit %u, PCM_REG13_DATA %#x\n",
+		 readl(md->spm + SPM_AP_MDSRC_REQ),
+		 (u32)!!(readl(md->spm + SPM_AP_MDSRC_REQ) & BIT(0)),
+		 (u32)!!(readl(md->spm + SPM_AP_MDSRC_REQ) & SPM_AP_MDSRC_ACK),
+		 md->clks_on ? "on" : "off", md->clk_on_count, md->clk_off_count,
+		 readl(md->spm + SPM_PWR_STATUS),
+		 (u32)!!(readl(md->spm + SPM_PWR_STATUS) & BIT(0)),
+		 readl(md->spm + SPM_PCM_REG13_DATA));
+	{
+		ktime_t t0 = ktime_get();
+
+		md_pm_put(md);
+		md->clamp_wait_ms = ktime_ms_delta(ktime_get(), t0);
+	}
+	prot = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0;
+	sta = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0;
+	dev_info(md->dev,
+		 "clamp: waited %u ms, PROTECTEN %#x, PROTECT_STA1 %#x (bit 7 %u), md domain %s\n",
+		 md->clamp_wait_ms, prot, sta, (u32)!!(sta & BIT(7)),
+		 md_domain_is_on(md) ? "on" : "off");
 	if (md_domain_is_on(md)) {
-		prot = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0;
-		sta = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0;
 
 		/*
 		 * Two different failures end here, and the registers tell them apart --
@@ -974,6 +1058,7 @@ static int md_power_cycle(struct ccci_md *md)
 	if (ret)
 		goto restore;
 	md_pm_get(md);
+	md_clks(md, true);
 	md_step(md, "cycle: gate on");
 	/*
 	 * Release the line only after the domain is back, so the modem starts from the
@@ -989,6 +1074,8 @@ static int md_power_cycle(struct ccci_md *md)
 	return 0;
 
 restore:
+	/* the clocks go back on whatever happened, so the caller sees the state it left */
+	md_clks(md, true);
 	/*
 	 * Every failing branch comes here. The domain is left exactly as it was found,
 	 * with the driver's one reference held again, or the next attempt starts from
@@ -1051,8 +1138,8 @@ static int md_boot(struct ccci_md *md)
 	 * trailer the modem reads is missing and the handshake it rings never
 	 * arrives.
 	 */
-	ret = clk_bulk_prepare_enable(md->num_clks, md->clks);
-	if (ret)
+	md_clks(md, true);
+	if (!md->clks_on)
 		goto err_off;
 	md_step(md, "ccif_clocks_on");
 	/*
@@ -1333,9 +1420,11 @@ static int md_boot(struct ccci_md *md)
 		ret = -EAGAIN;
 		goto err_seq;
 	}
+	md_md_access(md, true);
 	before = readl(md->boot_vector);
 	writel(1, md->boot_vector);
 	after = readl(md->boot_vector);
+	md_md_access(md, false);
 	dev_info(md->dev, "MD_BOOT_VECTOR_EN at %#x: before %#x, after %#x\n",
 		 MD_BOOT_VECTOR_PHYS, before, after);
 	if (after != 1)
@@ -1378,7 +1467,7 @@ err_seq:
 	md_power_seq_release(md);
 err_clk:
 	ccci_dpmaif_stop(md);
-	clk_bulk_disable_unprepare(md->num_clks, md->clks);
+	md_clks(md, false);
 err_off:
 	ccci_set_state(md, MD_STATE_OFF);
 	return ret;
@@ -1701,10 +1790,27 @@ void ccci_md_stop(struct ccci_md *md)
 	 */
 	/* the vendor's pre-stop, first thing (md_cd_pre_stop(), modem_sys1.c:496) */
 	md_wdt_irq(md, false);
-	md_pm_put(md);
-	dev_info(md->dev, "stop 1/3 gate: the md domain is %s (PWR_STATUS %#x)\n",
+	/* and its state at the power-off: no hif clocks, no AP source request (plan §2j) */
+	md_clks(md, false);
+	dev_info(md->dev,
+		 "stop: AP_MDSRC_REQ %#x (request %u ack %u), CCIF clocks %s (%u on / %u off), PCM_REG13_DATA %#x\n",
+		 readl(md->spm + SPM_AP_MDSRC_REQ),
+		 (u32)!!(readl(md->spm + SPM_AP_MDSRC_REQ) & BIT(0)),
+		 (u32)!!(readl(md->spm + SPM_AP_MDSRC_REQ) & SPM_AP_MDSRC_ACK),
+		 md->clks_on ? "on" : "off", md->clk_on_count, md->clk_off_count,
+		 readl(md->spm + SPM_PCM_REG13_DATA));
+	{
+		ktime_t t0 = ktime_get();
+
+		md_pm_put(md);
+		md->clamp_wait_ms = ktime_ms_delta(ktime_get(), t0);
+	}
+	dev_info(md->dev,
+		 "stop 1/3 gate: the md domain is %s (PWR_STATUS %#x), waited %u ms, PROTECT_STA1 %#x (bit 7 %u)\n",
 		 md_domain_is_on(md) ? "STILL ON" : "off",
-		 readl(md->spm + SPM_PWR_STATUS));
+		 readl(md->spm + SPM_PWR_STATUS), md->clamp_wait_ms,
+		 md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0,
+		 md->infra ? (u32)!!(readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) & BIT(7)) : 0);
 	if (md_domain_is_on(md)) {
 		/*
 		 * The clamp is the step that can refuse, and the vendor's order has
@@ -1717,14 +1823,14 @@ void ccci_md_stop(struct ccci_md *md)
 			 md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0,
 			 md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0);
 	} else {
-		md_clock_request(md, false);
+		md_srcclkena_grant(md, false);
 		dev_info(md->dev, "stop 2/3 26 MHz request: released (INFRA_MD_SRCCLKENA %#x)\n",
 			 readl(md->infra + INFRA_MD_SRCCLKENA));
 		md_rails_cut(md);
 		dev_info(md->dev, "stop 3/3 supplies: vmodem and vsram_md cut, so the loader starts a fresh modem on the next boot\n");
 	}
 	ccci_dpmaif_stop(md);
-	clk_bulk_disable_unprepare(md->num_clks, md->clks);
+	md_clks(md, false);
 	ccci_set_state(md, MD_STATE_OFF);
 }
 
