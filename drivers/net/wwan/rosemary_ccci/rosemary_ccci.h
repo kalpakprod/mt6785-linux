@@ -259,7 +259,16 @@ struct ap_query_md_feature_v2_1 {
 #define SPM_MD_EXT_BUCK_ISO_CON	0x3b0
 #define SPM_PWR_STATUS		0x160	/* BIT(0): the md domain is on */
 #define SPM_PWR_STATUS_2ND	0x164	/* the same, one SPM stage later */
-/* the domain's control register: PWR_RST_B BIT(0), PWR_ON BIT(2) */
+/*
+ * MD1_PWR_CON bits, from mainline's own definitions in the driver that owns this
+ * register: PWR_RST_B BIT(0), PWR_ISO BIT(1), PWR_ON BIT(2), PWR_ON_2ND BIT(3),
+ * PWR_CLK_DIS BIT(4) (drivers/pmdomain/mediatek/mtk-pm-domains.c:46-50). A powered,
+ * out-of-reset modem therefore reads 0xd = PWR_RST_B | PWR_ON | PWR_ON_2ND.
+ */
+#define MD1_PWR_RST_B		BIT(0)
+#define MD1_PWR_ISO		BIT(1)
+#define MD1_PWR_ON		BIT(2)
+#define MD1_PWR_ON_2ND		BIT(3)
 #define SPM_MD1_PWR_CON		0x318
 #define SPM_AP_MDSRC_REQ	0x434	/* ack in BIT(4) (mtk_spm_reg.h:265,
 					 * AP_MDSMSRC_ACK_LSB at :1851)
@@ -438,6 +447,7 @@ struct ccci_md {
 	bool snap_valid;
 	struct dentry *debugfs;	/* the read-only state dumps */
 	void __iomem *toprgu;	/* read-back of the MD reset bit */
+	u64 vendor_on_ns;	/* when the vendor power-on wrote its clears */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;
 	enum ccci_state state;

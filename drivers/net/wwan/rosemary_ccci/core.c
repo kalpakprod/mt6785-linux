@@ -783,8 +783,14 @@ static void md_vendor_power_on(struct ccci_md *md)
 
 	regmap_clear_bits(md->spm_map, SPM_MD_EXT_BUCK_ISO_CON, BIT(0));
 	regmap_clear_bits(md->spm_map, SPM_MD_EXT_BUCK_ISO_CON, BIT(1));
-	regmap_set_bits(md->spm_map, SPM_MD1_PWR_CON, BIT(1));	/* PWR_RST_B */
-	regmap_set_bits(md->spm_map, SPM_MD1_PWR_CON, BIT(2));	/* PWR_ON */
+	/*
+	 * PWR_RST_B is BIT(0) and PWR_ON is BIT(2) (mtk-pm-domains.c:46-50). The first
+	 * version of this wrote BIT(1), which is PWR_ISO: it isolated the domain instead
+	 * of releasing its reset, and trial 38's 0xd -> 0xf is that isolation bit
+	 * appearing. Corrected here.
+	 */
+	regmap_set_bits(md->spm_map, SPM_MD1_PWR_CON, MD1_PWR_RST_B);
+	regmap_set_bits(md->spm_map, SPM_MD1_PWR_CON, MD1_PWR_ON);
 	ret = regmap_read_poll_timeout(md->spm_map, SPM_PWR_STATUS, v, v & BIT(0),
 				       10, 1000 * 1000);
 	dev_info(md->dev,
@@ -794,9 +800,10 @@ static void md_vendor_power_on(struct ccci_md *md)
 	writel(BIT(3) | BIT(4), md->infra + INFRA_TOPAXI_PROTECTEN_CLR);
 	writel(BIT(6), md->infra + INFRA_TOPAXI_PROTECTEN_1_CLR);
 	writel(BIT(7), md->infra + INFRA_TOPAXI_PROTECTEN_CLR);
+	md->vendor_on_ns = ktime_get_ns();
 	dev_info(md->dev,
-		 "vendor power-on: the three protect clears written (PROTECTEN %#x, PROTECTEN_1 %#x), now the clamp\n",
-		 readl(md->infra + INFRA_TOPAXI_PROTECTEN),
+		 "vendor power-on: the three protect clears written at %llu ns (PROTECTEN %#x, PROTECTEN_1 %#x), now the clamp\n",
+		 md->vendor_on_ns, readl(md->infra + INFRA_TOPAXI_PROTECTEN),
 		 readl(md->infra + INFRA_TOPAXI_PROTECTEN_1));
 }
 
@@ -1089,11 +1096,6 @@ static int md_power_cycle(struct ccci_md *md)
 	 */
 	md_loader_state(md, "clamp");
 	md_ap_snapshot(md, "before clamp");
-	/*
-	 * O1: the vendor's power-on, microseconds before its own power-off, in the same
-	 * chain (md_sys1_platform.c:629 then :636).
-	 */
-	md_vendor_power_on(md);
 	if (!md_park(md))
 		dev_info(md->dev,
 			 "the modem did not park: trying the clamp first, as the vendor does\n");
@@ -1113,6 +1115,14 @@ static int md_power_cycle(struct ccci_md *md)
 	 * are off because the vendor has no hif yet at its power-off.
 	 */
 	md_clks(md, false);
+	/*
+	 * O1, and this time in the chain: the vendor's power-on with its three protect
+	 * clears runs AFTER the park wait and immediately before the power-off request, so
+	 * the clear of step1_0 and its set are microseconds apart, as on stock
+	 * (md_sys1_platform.c:629 then :636). Trial 38 had it before the park wait, 5.09 s
+	 * early, which repeated the previous experiment instead of testing this one.
+	 */
+	md_vendor_power_on(md);
 	dev_info(md->dev,
 		 "clamp: AP_MDSRC_REQ %#x (request %u ack %u), CCIF clocks %s (%u on / %u off), PWR_STATUS %#x md bit %u, PCM_REG13_DATA %#x\n",
 		 readl(md->spm + SPM_AP_MDSRC_REQ),
@@ -1124,7 +1134,11 @@ static int md_power_cycle(struct ccci_md *md)
 		 readl(md->spm + SPM_PCM_REG13_DATA));
 	{
 		ktime_t t0 = ktime_get();
+		u64 t_ns = ktime_get_ns();
 
+		dev_info(md->dev,
+			 "clamp: power-off requested at %llu ns (%llu ns after the protect clears)\n",
+			 t_ns, t_ns - md->vendor_on_ns);
 		md_pm_put(md);
 		md->clamp_wait_ms = ktime_ms_delta(ktime_get(), t0);
 	}
