@@ -200,26 +200,33 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
         client.smbus_io().try_write8(0x00, REG_DISCHARGE as usize)?;
 
         let params = |name, ops| Params::new(name, Kind::Voltage).ops(ops, N_VOLTAGES);
+        // What the regulator core records as the owner of these regulators.
+        // The module object the `module_i2c_driver!` macro generates for this driver.
+        let module = kernel::module::this_module::<DriverModule>();
 
         Ok(Wl2866d {
             _dvdd1: Registration::new(
                 dev,
                 params(c"wl2866d_dvdd1", &VTABLE_0).linear_ranges(Ldo::<0>::RANGES),
+                module,
                 Ldo::<0> { client },
             )?,
             _dvdd2: Registration::new(
                 dev,
                 params(c"wl2866d_dvdd2", &VTABLE_1).linear_ranges(Ldo::<1>::RANGES),
+                module,
                 Ldo::<1> { client },
             )?,
             _avdd1: Registration::new(
                 dev,
                 params(c"wl2866d_avdd1", &VTABLE_2).linear_ranges(Ldo::<2>::RANGES),
+                module,
                 Ldo::<2> { client },
             )?,
             _avdd2: Registration::new(
                 dev,
                 params(c"wl2866d_avdd2", &VTABLE_3).linear_ranges(Ldo::<3>::RANGES),
+                module,
                 Ldo::<3> { client },
             )?,
         })

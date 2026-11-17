@@ -313,6 +313,7 @@ impl<T: Ops> Registration<T> {
     pub fn new<Ctx: crate::device::DeviceContext>(
         dev: &Device<Ctx>,
         params: Params,
+        module: &'static crate::ThisModule,
         data: T,
     ) -> Result<Self> {
         let ops = params.ops.ok_or(EINVAL)?;
@@ -325,8 +326,9 @@ impl<T: Ops> Registration<T> {
 
         desc.name = params.name.as_char_ptr();
         desc.type_ = params.kind.raw();
-        // SAFETY: the kernel's own module object, as every C driver does in this field.
-        desc.owner = core::ptr::addr_of_mut!(bindings::__this_module);
+        // The regulator core uses this as the module that owns the regulator; for a built-in
+        // driver `THIS_MODULE` is NULL, which is exactly what `module.as_ptr()` returns then.
+        desc.owner = module.as_ptr();
         desc.ops = ops.as_ptr();
         desc.n_voltages = params.n_voltages;
 
