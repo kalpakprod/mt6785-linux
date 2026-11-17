@@ -121,8 +121,8 @@
 		mediatek,infracfg = <&infracfg>;
 		/* the SPM block, whose PCM firmware owns the ULPOSC the core may switch to */
 		mediatek,spm = <&scpsys>;
-		/* the oscillator control registers the firmware's own calibration writes */
-		mediatek,apmixedsys = <&apmixedsys>;
+		/* topckgen: the frequency meter the firmware measures its oscillator with */
+		mediatek,topckgen-meter = <&topckgen>;
 
 		/*
 		 * This one is the driver's shared pool: of_reserved_mem_device_init() attaches a

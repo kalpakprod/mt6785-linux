@@ -231,8 +231,11 @@ struct mtk_scp {
 	struct clk *clk;
 	/* the SPM block, for the oscillator state the PCM firmware owns */
 	struct regmap *spm_regmap;
-	/* apmixedsys, for the oscillator control registers the firmware's calibration uses */
-	struct regmap *apmixed_regmap;
+	/* the loaded image, to tell the firmware's own strings from its DRAM log */
+	const u8 *image;
+	size_t image_size;
+	/* topckgen, for the frequency meter the firmware's calibration drives */
+	struct regmap *topckgen_regmap;
 	void __iomem *sram_base;
 	size_t sram_size;
 	phys_addr_t sram_phys;

@@ -444,10 +444,11 @@ static int mt8183_scp_clk_get(struct mtk_scp *scp)
 		}
 	}
 
-	scp->apmixed_regmap = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,apmixedsys");
-	if (IS_ERR(scp->apmixed_regmap)) {
-		dev_info(dev, "no apmixedsys phandle: the oscillator registers stay unreported\n");
-		scp->apmixed_regmap = NULL;
+	scp->topckgen_regmap =
+		syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,topckgen-meter");
+	if (IS_ERR(scp->topckgen_regmap)) {
+		dev_info(dev, "no topckgen phandle for the meter: unreported\n");
+		scp->topckgen_regmap = NULL;
 	}
 
 	scp->spm_regmap = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,spm");
@@ -545,7 +546,8 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
 static int mt6785_scp_awake(struct mtk_scp *scp, bool lock);
 static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
-static void mt6785_scp_log_apmixed_ulposc(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -627,7 +629,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 		 readl(cluster->reg_base + MT6785_SCP_PROBE_REG));
 	mt6785_scp_log_wdt_sleep(scp, "before the release");
 	mt6785_scp_log_ulposc(scp, "before the release");
-	mt6785_scp_log_apmixed_ulposc(scp, "before the release");
+	mt6785_scp_log_fmeter(scp, "before the release");
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -828,6 +830,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 		MT6785_SCP_PROBE_REG);
 	dev_err(scp->dev, "post-mortem: probe word %#x (expected %#x)\n",
 		readl(cfg + MT6785_SCP_PROBE_REG), MT6785_SCP_PROBE_VALUE);
+	mt6785_scp_scan_dram_text(scp);
 	mt6785_scp_log_dram_state(scp, "at the timeout");
 	mt6785_scp_log_pages(scp, "at the timeout");
 	mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE,
@@ -855,6 +858,10 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 	struct mt6785_scp_region_info ri = { 0 };
 	u32 fw_size, dram_size;
 	int ret;
+
+	/* kept for the post-mortem's DRAM text scan, to tell the image's strings apart */
+	scp->image = (u8 *)fw->data;
+	scp->image_size = fw->size;
 
 	/*
 	 * The loader copies ap_firmware_size bytes from ap_firmware_start to a fixed
@@ -1330,7 +1337,7 @@ static int scp_start(struct rproc *rproc)
 					 ms, clk_sw, clk_en,
 					 readl(clk + MT6785_SCP_CLK_CTRL_24));
 				mt6785_scp_log_ulposc(scp, "timeline");
-				mt6785_scp_log_apmixed_ulposc(scp, "timeline");
+				mt6785_scp_log_fmeter(scp, "timeline");
 				dev_info(scp->dev, "%u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
 					 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
 					 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
@@ -2401,28 +2408,97 @@ static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when)
 /*
  * The oscillator's control registers as the firmware itself addresses them: its calibration
  * routine loads 0xA0000220, 0xA000010C, 0xA0000110 and 0xA0000224 from its literal pool (image
- * 0x2794c-0x2795c) and starts a frequency meter by setting bit 0x1000 then bit 0x10 there, waits
- * for the meter to finish, reads its 16-bit count and prints "ULPOSC%d is calibrated (%ld MHz)"
- * or "ULPOSC%d is not calibrated" (strings at image 0x4b1ed and 0x4b20f). The SCP sees those
- * addresses in its own window; the AP-side block with the same offsets is apmixedsys, so this
- * reports apmixedsys + 0x10c, +0x110, +0x220 and +0x224 - read only.
+ * 0x2794c-0x2795c), starts a frequency meter by setting 0x1000 and then 0x10 there, waits for the
+ * meter to finish and reads a 16-bit count (image 0x2790a-0x27936), then prints "ULPOSC%d is
+ * calibrated (%ld MHz)" or "ULPOSC%d is not calibrated" (strings at 0x4b1ed, 0x4b20f).
+ *
+ * The SCP reaches 0x10000000 through its own remap of 0xA0000000, and topckgen is what lives
+ * there. The four offsets are the vendor's own frequency meter on this SoC: CLK_DBG_CFG (0x10c),
+ * CLK_MISC_CFG_0 (0x110), CLK26CALI_0 (0x220) and CLK26CALI_1 (0x224) (clkdbg-mt6785.c:353-356),
+ * and the vendor drives them exactly as the firmware does - CLK26CALI_0 <- 0x1000, then 0x1010,
+ * wait while bit 0x10 is set, then read CLK26CALI_1 & 0xffff and scale by 26000/1024 kHz
+ * (clkdbg-mt6785.c:471-499). So the firmware measures its own oscillator with the AP's meter, and
+ * this reports the four registers - read only.
  */
-static void mt6785_scp_log_apmixed_ulposc(struct mtk_scp *scp, const char *when)
+static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when)
 {
 	static const u16 ofs[] = { 0x10c, 0x110, 0x220, 0x224 };
-	struct regmap *apmixed = scp->apmixed_regmap;
+	struct regmap *topckgen = scp->topckgen_regmap;
 	u32 v[ARRAY_SIZE(ofs)];
 	unsigned int i;
 
-	if (IS_ERR_OR_NULL(apmixed))
+	if (IS_ERR_OR_NULL(topckgen))
 		return;
 
 	for (i = 0; i < ARRAY_SIZE(ofs); i++)
-		if (regmap_read(apmixed, ofs[i], &v[i]))
+		if (regmap_read(topckgen, ofs[i], &v[i]))
 			return;
 
-	dev_info(scp->dev, "%s: apmixed ulposc 0x10c %#x 0x110 %#x 0x220 %#x 0x224 %#x\n",
+	dev_info(scp->dev, "%s: topckgen meter dbg %#x misc %#x cali0 %#x cali1 %#x\n",
 		 when, v[0], v[1], v[2], v[3]);
+}
+
+/* is this run of characters already in the loaded image? */
+static bool mt6785_scp_in_image(const u8 *raw, size_t raw_len, const char *s, size_t n)
+{
+	size_t i;
+
+	if (!raw || raw_len < n)
+		return false;
+
+	for (i = 0; i + n <= raw_len; i++)
+		if (!memcmp(raw + i, s, n))
+			return true;
+
+	return false;
+}
+
+/*
+ * The firmware's own log, after the timeout: its logger is handed a DRAM address and writes a ring
+ * there (the vendor's scp_logger.c), so DRAM is where its last words are - and DRAM is ordinary
+ * memory, never the SRAM of a core that owns it. The scan is bounded: only the two regions this
+ * driver already maps, only printable runs of 12 characters or more, at most 32 of them, and each
+ * one is compared against the loaded image so that the image's own strings are not repeated.
+ */
+static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
+{
+	const struct { void __iomem *base; size_t size; const char *what; } regions[] = {
+		{ scp->lk_base, SZ_1M, "loader region" },
+	};
+	u8 *buf;
+	const u8 *raw = scp->image;
+	size_t raw_len = scp->image_size;
+	unsigned int r, found = 0;
+	const u8 *p;
+
+	buf = kzalloc(SZ_1M, GFP_KERNEL);
+	if (!buf)
+		return;
+
+	for (r = 0; r < ARRAY_SIZE(regions); r++) {
+		if (!regions[r].base)
+			continue;
+		memcpy_fromio(buf, regions[r].base, SZ_1M);
+		for (p = buf; p < buf + SZ_1M - 12 && found < 32; p++) {
+			size_t n = 0;
+
+			while (p + n < buf + SZ_1M && p[n] >= 0x20 && p[n] < 0x7f)
+				n++;
+			if (n >= 12) {
+				const char *str = (const char *)p;
+
+				if (!mt6785_scp_in_image(raw, raw_len, str, n)) {
+					dev_err(scp->dev, "%s+%#zx: %.*s\n",
+						regions[r].what, (size_t)(p - buf),
+						(int)n, str);
+					found++;
+				}
+				p += n;
+			}
+		}
+	}
+	dev_err(scp->dev, "DRAM text scan: %u line(s) not in the image\n", found);
+	kfree(buf);
 }
 
 /* the infracfg regmap, from the phandle the DT gives */
