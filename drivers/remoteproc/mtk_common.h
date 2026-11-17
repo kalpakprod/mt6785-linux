@@ -178,6 +178,8 @@ struct mtk_scp_of_data {
 
 struct mtk_scp_of_cluster {
 	void __iomem *reg_base;
+	/* the size of the window reg_base maps, for the bring-up's bounds checks */
+	resource_size_t cfg_size;
 	void __iomem *l1tcm_base;
 	size_t l1tcm_size;
 	phys_addr_t l1tcm_phys;

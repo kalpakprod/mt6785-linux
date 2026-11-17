@@ -479,6 +479,7 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
  * answering the AP as soon as the core ran (every register read 0x1e1, the stale last value).
  */
 static struct regmap *mt6785_infracfg(struct mtk_scp *scp);
+static int mt6785_scp_check_windows(struct mtk_scp *scp);
 
 /*
  * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
@@ -505,6 +506,11 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	struct mtk_scp_of_cluster *cluster = scp->cluster;
 	u32 val;
 	int ret;
+
+	/* a wrong offset has to fail the probe, not the boot (audio25) */
+	ret = mt6785_scp_check_windows(scp);
+	if (ret)
+		return ret;
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -533,19 +539,14 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	 */
 
 	/*
-	 * The cache geometry has to be set before the firmware is loaded: "SCP SRAM logical
-	 * address may change when cache size setting differs" is upstream's own comment on the
-	 * mt8183 path (mt8183_scp_before_load(), this file), and LK passes the same geometry to
-	 * the firmware in the region information it writes - Il1c_con and Dl1c_con 0x10d
-	 * (pl_lk.txt:2409-2410). audio24 released a core with this left at its reset value and
-	 * the core stalled on its first instruction fetch at 0x1e0, holding the bus so that the
-	 * AP read back 0x1e1 (the last word the core fetched) for every register and every TCM
-	 * word.
+	 * No cache-geometry write here, and the reason is the SoC: mt8183's CACHE_CON and
+	 * DCACHE_CON live at 0x14000/0x17000 of its register block (MT8183_SCP_CACHE_SEL(),
+	 * mt_common.h), which MT6785 does not have - writing them there is what took audio25
+	 * down with a paging fault. MT6785 hands the cache geometry to the firmware in the
+	 * region information instead, Il1c_con and Dl1c_con 0x10d, exactly as LK does
+	 * (pl_lk.txt:2409-2410), and the vendor's own MT6785 driver has no cache register at
+	 * all (no definition in its scp_reg.h, no write in scp_helper.c).
 	 */
-	writel(MT8183_SCP_CACHE_CON_WAYEN | MT8183_SCP_CACHESIZE_8KB,
-	       cluster->reg_base + MT8183_SCP_CACHE_CON);
-	writel(MT8183_SCP_CACHESIZE_8KB,
-	       cluster->reg_base + MT8183_SCP_DCACHE_CON);
 
 	/*
 	 * The SRAM: 0xffffffff is "all banks powered down" (the base kernel reads exactly that
@@ -1892,6 +1893,9 @@ static int scp_probe(struct platform_device *pdev)
 	if (IS_ERR(scp_cluster->reg_base))
 		return dev_err_probe(dev, PTR_ERR(scp_cluster->reg_base),
 				     "Failed to parse and map cfg memory\n");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cfg");
+	if (res)
+		scp_cluster->cfg_size = resource_size(res);
 
 	/* l1tcm is an optional memory region */
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "l1tcm");
@@ -2128,6 +2132,49 @@ static void mt6785_scp_state(struct mtk_scp *scp, const char *when)
 		 when, readl(scp->cluster->reg_base + MT8183_SCP_CLK_SW_SEL),
 		 readl(scp->cluster->reg_base + MT8183_SW_RSTN),
 		 readl(scp->sram_base), readl(scp->sram_base + 4));
+}
+
+/*
+ * Every register this driver touches has to be inside a window the device tree gives it: the
+ * MT6785 bring-up writes cfg + 0x0, + 0x1c, + 0x28, + 0x114 and the SCP clock block at
+ * + 0x4000..+ 0x40a0, and reads the TCM. audio25 proved why this is not paranoia - a write at
+ * an offset this SoC does not have (mt8183's cache registers at 0x14000) is a paging fault
+ * inside an interrupt-free probe path, i.e. a boot that ends in pstore.
+ */
+static int mt6785_scp_check_windows(struct mtk_scp *scp)
+{
+	static const struct {
+		const char *what;
+		resource_size_t off;
+		resource_size_t size;
+		bool in_sram;
+	} used[] = {
+		{ "sw_rstn", 0x0, 0x4, false },
+		{ "to_host", 0x1c, 0x4, false },
+		{ "gipc_in", 0x28, 0x4, false },
+		{ "sleep status", 0x114, 0x4, false },
+		{ "sram pdn", 0x402c, 0x4, false },
+		{ "l1 sram pd", 0x4080, 0x4, false },
+		{ "tcm tail sram pd", 0x4094, 0x4, false },
+		{ "region info", MT6785_SCP_REGION_INFO_OFFSET, 0x40, true },
+		{ "vector table", 0x0, 0x8, true },
+	};
+	resource_size_t cfg_size = scp->cluster->cfg_size;
+	resource_size_t sram_size = scp->sram_size;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(used); i++) {
+		resource_size_t limit = used[i].in_sram ? sram_size : cfg_size;
+
+		if (used[i].off + used[i].size > limit) {
+			dev_err(scp->dev, "%s at %#x is outside the %s window (%#x bytes)\n",
+				used[i].what, (u32)used[i].off,
+				used[i].in_sram ? "sram" : "cfg", (u32)limit);
+			return -ERANGE;
+		}
+	}
+
+	return 0;
 }
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
