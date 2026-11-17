@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/awinic,aw8622.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Awinic AW8622 linear resonant actuator driver
+
+maintainers:
+  - MediaTek SoC Team <linux-mediatek@lists.infradead.org>
+
+description: |
+  The AW8622 drives a linear resonant actuator (LRA). Its PWM input takes a
+  square wave at the actuator's resonance frequency and the duty cycle of that
+  wave sets the strength of the vibration, so the device is described as a PWM
+  consumer plus the chip's enable pin.
+
+properties:
+  compatible:
+    const: awinic,aw8622
+
+  hwen-gpios:
+    description: The chip's HWEN input, which enables the amplifier.
+
+  pwms:
+    maxItems: 1
+
+  awinic,vibration-frequency-hz:
+    description: Resonance frequency of the actuator, in Hz.
+    default: 208
+
+  pinctrl-0: true
+  pinctrl-names: true
+
+required:
+  - compatible
+  - hwen-gpios
+  - pwms
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    haptics {
+        compatible = "awinic,aw8622";
+        hwen-gpios = <&pio 202 GPIO_ACTIVE_HIGH>;
+        pwms = <&pwm0 0 4807692>;
+        awinic,vibration-frequency-hz = <208>;
+    };
+
+    pio: pinctrl {
+        gpio-controller;
+        #gpio-cells = <2>;
+    };
+
+    pwm0: pwm {
+        #pwm-cells = <2>;
+    };
+
+...

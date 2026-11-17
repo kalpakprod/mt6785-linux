@@ -156,6 +156,19 @@ EXPORT_SYMBOL_GPL(scp_ipi_unlock);
  *
  * Return: 0 if sending data successfully, -error on error.
  **/
+/*
+ * The payload does not always start right after id and len: MediaTek's CM4 SCP
+ * keeps an eight-byte reserved gap there, so the SoC data says where it starts
+ * (ipi_buf_data_offset, 8 when unset).
+ */
+static void __iomem *scp_ipi_payload(struct mtk_scp *scp,
+				     struct mtk_share_obj __iomem *obj)
+{
+	u32 off = scp->data->ipi_buf_data_offset ?: sizeof(u32) * 2;
+
+	return (void __iomem *)obj + off;
+}
+
 int scp_ipi_send(struct mtk_scp *scp, u32 id, const void *buf, unsigned int len,
 		 unsigned int wait)
 {
@@ -187,7 +200,7 @@ int scp_ipi_send(struct mtk_scp *scp, u32 id, const void *buf, unsigned int len,
 		goto unlock_mutex;
 	}
 
-	scp_memcpy_aligned(&send_obj->share_buf, buf, len);
+	scp_memcpy_aligned(scp_ipi_payload(scp, send_obj), buf, len);
 
 	writel(len, &send_obj->len);
 	writel(id, &send_obj->id);

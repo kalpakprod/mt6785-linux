@@ -52,6 +52,9 @@ properties:
   interrupts:
     maxItems: 1
 
+  "#sound-dai-cells":
+    const: 1
+
   interrupt-controller: true
 
   "#interrupt-cells":
@@ -236,6 +239,14 @@ properties:
 
       '#power-domain-cells':
         const: 0
+
+  accdet:
+    type: object
+    $ref: /schemas/sound/mediatek,mt6359-accdet.yaml#
+    unevaluatedProperties: false
+    description: |
+      Accessory (headset) detection of the MT6359. The codec's sound card
+      reaches it through this node.
 
   pinctrl:
     type: object

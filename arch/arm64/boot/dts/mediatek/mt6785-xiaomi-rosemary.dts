@@ -618,10 +618,24 @@
 
 
 /* One file per area of poco-m5s/plan-full-phone.md, so the areas never edit the same lines. */
+/*
+ * The SPM firmware kick. Nothing here is memory-mapped: the driver sends two SMCs and
+ * reads no register, so the node carries no reg and cannot collide with the power
+ * controller's syscon at 0x10006000. It exists because the vendor's node for this
+ * ("mediatek,mt6785-scpsys") is a syscon/simple-mfd container that a device driver
+ * should not claim.
+ */
+/ {
+	spm_kick: spm-kick {
+		compatible = "mediatek,mt6785-spm-kick";
+	};
+};
+
 #include "mt6785-xiaomi-rosemary-power.dtsi"
 #include "mt6785-xiaomi-rosemary-display.dtsi"
 #include "mt6785-xiaomi-rosemary-connectivity.dtsi"
 #include "mt6785-xiaomi-rosemary-audio.dtsi"
+#include "mt6785-xiaomi-rosemary-scp.dtsi"
 #include "mt6785-xiaomi-rosemary-sensors.dtsi"
 #include "mt6785-xiaomi-rosemary-nfc.dtsi"
 #include "mt6785-xiaomi-rosemary-modem.dtsi"

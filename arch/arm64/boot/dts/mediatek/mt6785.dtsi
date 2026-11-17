@@ -1920,6 +1920,11 @@
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 		};
 
+		/*
+		 * Not instantiated either, for the reason dither0 above gives plus one the
+		 * vendor's own configuration supplies: the loader programs POSTMASK0 with
+		 * en:0 (pl_lk.txt line 313), so nothing has ever driven it on these boards.
+		 */
 		postmask0: postmask@14021000 {
 			compatible = "mediatek,mt6785-disp-postmask",
 				     "mediatek,mt8192-disp-postmask";
@@ -1928,6 +1933,7 @@
 			interrupts = <GIC_SPI 268 IRQ_TYPE_LEVEL_LOW>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_MM>;
 			mediatek,gce-client-reg = <&gce SUBSYS_1402XXXX 0x1000 0x1000>;
+			status = "disabled";
 
 			/*
 			 * Disabled for the same reason as dither0 below: mtk_drm_probe never
