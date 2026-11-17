@@ -606,72 +606,97 @@ static bool md_wait_sleep(struct ccci_md *md)
 
 static int md_power_cycle(struct ccci_md *md)
 {
+	bool reset_held = false;
+	unsigned int prot = 0, sta = 0;
 	int ret;
 
-	if (!md_wait_sleep(md)) {
-		unsigned int v = readl(md->spm + SPM_PCM_REG13_DATA);
-
-		/*
-		 * The modem is neither parking nor answering, so it cannot acknowledge
-		 * the bus protection and the clamp would time out -- which is the state
-		 * trials 16 to 22 kept meeting. Take it down without its cooperation: the
-		 * TOPRGU MD reset line stops it issuing transactions, and with the modem
-		 * held in reset the clamp's acknowledgement is no longer the modem's to
-		 * give.
-		 *
-		 * The vendor never does this (its ccci tree has no MD reset at all; its
-		 * only hard reset is the whole-SoC one at reboot), so the order here is
-		 * this driver's and is stated as such: assert, power off, power on,
-		 * deassert -- the line is held across the whole cycle so the modem cannot
-		 * come back half-started.
-		 */
-		if (!md->md_reset) {
-			dev_err(md->dev,
-				"the modem did not go to sleep (PCM_REG13_DATA %#x still asks for its clock) and there is no reset line to take it down\n",
-				v);
-			return -EAGAIN;
-		}
+	/*
+	 * The clamp comes FIRST, on the modem as it is -- that is the vendor's order
+	 * and the only one that can work, because the acknowledgement is not the AP's
+	 * to give. MD1_PROT_STEP1_0_MASK is bit 7 of INFRA_TOPAXI_PROTECTEN and its
+	 * acknowledgement is read from INFRA_TOPAXI_PROTECTEN_STA1
+	 * (clk-mt6785-pg.c:1009-1020, and the mask at :267-268), i.e. the request goes
+	 * to the interconnect and the ack says the protected port has gone quiet. A
+	 * modem held in reset cannot quieten anything: trial 23 measured the reset
+	 * reaching it (PCM_REG13_DATA 0xc400192c -> 0x84000800) while PROTECT_STA bit 7
+	 * never came. So the reset is the last resort AFTER a clamp that timed out, not
+	 * a preparation for it.
+	 */
+	if (!md_wait_sleep(md))
 		dev_info(md->dev,
-			 "the modem did not go to sleep (PCM_REG13_DATA %#x still asks for its clock): asserting the MD reset to take it down without its cooperation\n",
-			 v);
-		reset_control_assert(md->md_reset);
-		msleep(20);
-	} else {
+			 "the modem did not park (PCM_REG13_DATA %#x still asks for its clock): trying the clamp first, as the vendor does\n",
+			 readl(md->spm + SPM_PCM_REG13_DATA));
+	else
 		md_step(md, "cycle: modem asleep");
-	}
 
 	pm_runtime_put_sync(md->dev);
 	if (md_domain_is_on(md)) {
-		unsigned int prot, sta;
-
-		/*
-		 * Two very different failures end here, and the registers tell them
-		 * apart -- guessing "the provider is unsynced" was wrong once already
-		 * (trial 19: stay_on was 0, the power-off ran, and it timed out in the
-		 * bus protect):
-		 *
-		 *  - PROTECTEN bit 7 set with PROTECT_STA bit 7 clear: the clamp was
-		 *    attempted and the modem did not acknowledge inside the driver's
-		 *    second (MTK_POLL_TIMEOUT, mtk-pm-domains.c:38).
-		 *  - PROTECTEN bit 7 clear: the clamp was never attempted, because genpd
-		 *    refused to power the domain off (stay_on still set, i.e. the power
-		 *    controller has not synced).
-		 */
 		prot = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0;
 		sta = md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0;
-		if ((prot & BIT(7)) && !(sta & BIT(7)))
-			dev_err(md->dev,
-				"the power-off was attempted and the bus protect was not acknowledged within a second (PROTECTEN %#x, PROTECT_STA %#x), even though the modem had gone to sleep\n",
-				prot, sta);
-		else if (!(prot & BIT(7)))
+
+		/*
+		 * Three different failures end here, and the registers say which:
+		 *  - bit 7 clear in PROTECTEN: genpd never attempted the power-off (the
+		 *    domain's stay_on is still set, i.e. the provider has not synced);
+		 *  - bit 7 set, STA1 bit 7 clear: the clamp was attempted and not
+		 *    acknowledged inside the driver's second (MTK_POLL_TIMEOUT,
+		 *    mtk-pm-domains.c:38). The vendor waits for this without any timeout;
+		 *  - bit 7 set and acknowledged but the domain still on: the clamp was fine
+		 *    and something later in the power-off failed.
+		 */
+		if (!(prot & BIT(7))) {
 			dev_err(md->dev,
 				"genpd did not power the domain off: the clamp was never attempted (PROTECTEN %#x), which is the power controller still being unsynced\n",
 				prot);
-		else
+			return -EAGAIN;
+		}
+		if (!(sta & BIT(7))) {
+			/*
+			 * Last resort: take the modem down without its cooperation, and give
+			 * the interconnect the chance to acknowledge now that the port is
+			 * quiet. The reset stays asserted through the rest of the cycle.
+			 */
+			if (!md->md_reset) {
+				dev_err(md->dev,
+					"the bus protect was not acknowledged within a second (PROTECTEN %#x, PROTECT_STA %#x) and there is no reset line to quieten the modem\n",
+					prot, sta);
+				return -EAGAIN;
+			}
+			dev_info(md->dev,
+				 "the clamp timed out (PROTECTEN %#x, PROTECT_STA %#x): asserting the MD reset as the last resort\n",
+				 prot, sta);
+			reset_control_assert(md->md_reset);
+			reset_held = true;
+			if (readl_poll_timeout(md->infra + INFRA_TOPAXI_PROTECT_STA1,
+					       sta, sta & BIT(7), 100, 200000))
+				dev_warn(md->dev,
+					 "the bus protect is still not acknowledged after the reset (PROTECT_STA %#x)\n",
+					 sta);
+			else
+				dev_info(md->dev, "the bus protect is acknowledged now (PROTECT_STA %#x)\n", sta);
+			/*
+			 * Ask genpd to try again: with the acknowledgement in place the
+			 * power-off sequence can finish. A resume on a domain that is already
+			 * on costs nothing and is answered from genpd's own state.
+			 */
+			ret = pm_runtime_resume_and_get(md->dev);
+			if (ret)
+				return ret;
+			pm_runtime_put_sync(md->dev);
+			if (md_domain_is_on(md)) {
+				dev_err(md->dev,
+					"the domain is still on after the clamp and the reset (PROTECTEN %#x, PROTECT_STA %#x)\n",
+					readl(md->infra + INFRA_TOPAXI_PROTECTEN), sta);
+				if (reset_held)
+					reset_control_deassert(md->md_reset);
+				return -EAGAIN;
+			}
+		} else {
 			dev_err(md->dev,
-				"the md domain stayed on after the gate was released (PROTECTEN %#x, PROTECT_STA %#x)\n",
+				"the bus protect was acknowledged but the domain is still on (PROTECTEN %#x, PROTECT_STA %#x)\n",
 				prot, sta);
-		return -EAGAIN;
+			return -EAGAIN;
+		}
 	}
 	md_step(md, "cycle: gate off");
 	md_power_seq_release(md);
@@ -685,11 +710,10 @@ static int md_power_cycle(struct ccci_md *md)
 		return ret;
 	md_step(md, "cycle: gate on");
 	/*
-	 * Deassert only now: the modem has been held in reset across the power-off, so
-	 * it starts from the same point a loader-started one would -- boot ROM waiting
-	 * for the release.
+	 * Release the line only after the domain is back, so the modem starts from the
+	 * state a loader-started one would rather than half-started.
 	 */
-	if (md->md_reset)
+	if (reset_held)
 		reset_control_deassert(md->md_reset);
 	if (!md_domain_is_on(md)) {
 		dev_err(md->dev, "the md domain did not come back on after the cycle\n");
