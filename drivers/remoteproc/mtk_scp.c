@@ -611,63 +611,6 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	 * over LK's. The test is the region information itself - a loader size inside the TCM
 	 * and non-zero firmware and DRAM pointers.
 	 */
-	if (scp->data->scp_use_lk_images) {
-		struct mt6785_scp_region_info lk;
-		int i;
-
-		memcpy_fromio(&lk, scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET,
-			      sizeof(lk));
-		dev_info(scp->dev, "LK region info: loader %#x+%#x firmware %#x+%#x dram %#x+%#x l1c %#x/%#x\n",
-			 lk.ap_loader_start, lk.ap_loader_size,
-			 lk.ap_firmware_start, lk.ap_firmware_size,
-			 lk.ap_dram_start, lk.ap_dram_size, lk.il1c_con, lk.dl1c_con);
-		scp->lk_images = lk.ap_loader_size && lk.ap_loader_size <= 0x2000 &&
-				 lk.ap_firmware_start && lk.ap_firmware_size &&
-				 lk.ap_dram_start;
-		for (i = 0; scp->lk_images && i < MIN(lk.ap_loader_size, 0x1000) / 4; i++)
-			if (!readl(scp->sram_base + 4 * i))
-				scp->lk_images = false;
-		if (scp->lk_images)
-			dev_info(scp->dev, "LK's loader and region information survived: keeping them, releasing the core only\n");
-	}
-
-	/*
-	 * With the region information lost, rebuild what LK had: the loader image from
-	 * ap_loader_start in its reserved region into the TCM, and the region information in LK's
-	 * own layout - firmware at +0x800 with 0xbb800 bytes, DRAM at +0x100000 with 0x59968, the
-	 * backup at +0x200000, Il1c_con/Dl1c_con 0x10d (pl_lk.txt:2406-2414). This is the vendor's
-	 * own recovery copy (scp_awake.c:296-305) and the image LK staged, not our repacked ELF:
-	 * the loader pulls the firmware from DRAM itself, and that DRAM is the one LK prepared.
-	 */
-	if (scp->data->scp_use_lk_images && !scp->lk_images &&
-	    scp->lk_base && scp->lk_size >= MT6785_SCP_LK_REGION_MIN) {
-		struct mt6785_scp_region_info lk = { 0 };
-
-		memcpy_toio(scp->sram_base, scp->lk_base, MT6785_LK_LOADER_SIZE);
-
-		lk.ap_loader_start = scp->lk_phys;
-		lk.ap_loader_size = MT6785_LK_LOADER_SIZE;
-		lk.ap_firmware_start = scp->lk_phys + MT6785_LK_FIRMWARE_OFS;
-		lk.ap_firmware_size = MT6785_LK_FIRMWARE_SIZE;
-		lk.ap_dram_start = scp->lk_phys + MT6785_LK_DRAM_OFS;
-		lk.ap_dram_size = MT6785_LK_DRAM_SIZE;
-		lk.ap_dram_backup_start = scp->lk_phys + MT6785_LK_DRAM_OFS * 2;
-		lk.il1c_con = MT6785_SCP_L1C_CON;
-		lk.dl1c_con = MT6785_SCP_L1C_CON;
-		lk.struct_size = sizeof(lk);
-		memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &lk,
-			    sizeof(lk));
-		/* the loader must see the region info before the core is released */
-		wmb();
-		scp->lk_staged = true;
-
-		dev_info(scp->dev, "staged LK's own images: loader %#x from %#llx into the TCM, firmware %#llx+%#x, dram %#llx+%#x, l1c %#x\n",
-			 MT6785_LK_LOADER_SIZE, (u64)scp->lk_phys,
-			 (u64)lk.ap_firmware_start, MT6785_LK_FIRMWARE_SIZE,
-			 (u64)lk.ap_dram_start, MT6785_LK_DRAM_SIZE,
-			 MT6785_SCP_L1C_CON);
-	}
-
 	dev_info(scp->dev, "sram pdn after: %#x %#x %#x, clk_sw %#x, tcm[0] %#x\n",
 		 readl(cluster->reg_base + MT8183_SCP_SRAM_PDN),
 		 readl(cluster->reg_base + MT8183_SCP_L1_SRAM_PD),
@@ -1155,18 +1098,6 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 		return ret;
 	}
 
-	if (scp->data->scp_use_lk_images) {
-		/* the SRAM has to be powered before it can be looked at */
-		ret = scp->data->scp_before_load(scp);
-		if (ret)
-			goto leave;
-		if (scp->lk_images) {
-			dev_info(dev, "using the loader and region information LK left in the SRAM\n");
-			ret = 0;
-			goto leave;
-		}
-	}
-
 	/* Hold SCP in reset while loading FW. */
 	scp->data->scp_reset_assert(scp);
 
@@ -1179,12 +1110,6 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 	 * region information were written in before_load(), and the loader pulls the firmware from
 	 * the DRAM region LK prepared.
 	 */
-	if (scp->lk_staged) {
-		dev_info(dev, "not loading the ELF: LK's loader and region information are in place\n");
-		ret = 0;
-		goto leave;
-	}
-
 	/*
 	 * MT6785's firmware is the vendor image LK parses, not an ELF: stage the records into the
 	 * carve-out the way LK stages them into its own region, and let the loader do the rest.
@@ -2446,6 +2371,9 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 	rest_len = scp_len - fw_len;
 
 	memcpy_toio(scp->sram_base, loader, loader_len);
+	/* LK's own copy puts the initial stack pointer and the reset vector here (0x538, 0x1e1) */
+	dev_info(scp->dev, "loader in the TCM: SP %#x reset vector %#x, %#zx bytes from the firmware\n",
+		 readl(scp->sram_base), readl(scp->sram_base + 4), loader_len);
 	memcpy_toio(scp->cpu_addr + MT6785_SCP_LOADER_SLOT, scp_img, fw_len);
 	if (rest_len)
 		memcpy_toio(scp->cpu_addr + MT6785_SCP_REST_OFS,
