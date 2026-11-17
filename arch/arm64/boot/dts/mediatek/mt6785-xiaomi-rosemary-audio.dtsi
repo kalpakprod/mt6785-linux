@@ -713,6 +713,18 @@
 		mediatek,accdet = <&pmic>;
 		aux-devs = <&spk_amp>, <&rcv_amp>;
 
+		/*
+		 * The board's microphone types, which decide the codec's analog capture settings:
+		 * the codec reads mux_select[MUX_MIC_TYPE_n] from these and its DCC bits follow
+		 * IS_DCC_BASE(mic_type) - vendor mt6359.c:3487-3497, the same condition mainline
+		 * uses (mt6359.c:2439-2452, mt_dcc_clk_connect). Left unset, every type defaults to
+		 * IDLE (mt6359.c:3051-3075 prints "use default (0)"), which is neither of the two
+		 * microphones on the board. AIN0 and AIN2 carry analog electret microphones, so
+		 * both are ACC (1).
+		 */
+		mediatek,mic-type-0 = <1>;
+		mediatek,mic-type-2 = <1>;
+
 		audio-routing =
 			"Spk Amp", "LINEOUT L",
 			"Rcv Amp", "Receiver";
