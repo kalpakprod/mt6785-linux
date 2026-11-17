@@ -459,6 +459,37 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(g->psy),
 				     "cannot register the power supply\n");
 
+	/*
+	 * The profile can only be read now: power_supply_get_battery_info() takes the
+	 * registered supply and looks up its fwnode (bq27xxx_battery_probe() does the same
+	 * thing in the same order). Every failure here is soft - the gauge still reports
+	 * charge, current and voltage - but each one names itself.
+	 */
+	ret = power_supply_get_battery_info(g->psy, &g->batt);
+	if (ret) {
+		dev_warn(&pdev->dev, "no battery profile (%d): capacity off\n", ret);
+		g->batt = NULL;
+	} else if (!g->batt->ocv_table[0] || g->batt->ocv_table_size[0] <= 0) {
+		/* The parser can succeed with no table; ocv2cap() would dereference NULL. */
+		dev_warn(&pdev->dev, "profile has no OCV table: capacity off\n");
+		g->batt = NULL;
+	} else {
+		int t, tables = 0;
+
+		for (t = 0; t < POWER_SUPPLY_OCV_TEMP_MAX; t++)
+			if (g->batt->ocv_table[t])
+				tables++;
+		/*
+		 * The numbers that settle "did the DT parse": the parser reads
+		 * ocv-capacity-celsius for the table count and ocv-capacity-table-N as
+		 * pairs of u32 (drivers/power/supply/power_supply_core.c:875-921).
+		 */
+		dev_info(&pdev->dev,
+			 "battery profile: %d uAh design, %d OCV table(s), table0 %d entries, %d C\n",
+			 g->batt->charge_full_design_uah, tables,
+			 g->batt->ocv_table_size[0], g->batt->ocv_temp[0]);
+	}
+
 	/* Anchor the counter on the resting voltage, once, through the profile. */
 	if (!g->batt || !g->vbat) {
 		dev_warn(&pdev->dev, "no %s: capacity stays off until the next boot\n",
