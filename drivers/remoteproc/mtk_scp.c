@@ -444,6 +444,12 @@ static int mt8183_scp_clk_get(struct mtk_scp *scp)
 		}
 	}
 
+	scp->spm_regmap = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,spm");
+	if (IS_ERR(scp->spm_regmap)) {
+		dev_info(dev, "no SPM phandle: the oscillator state will not be reported\n");
+		scp->spm_regmap = NULL;
+	}
+
 	scp->clk = devm_clk_get(dev, "main");
 	if (IS_ERR(scp->clk)) {
 		dev_err(dev, "Failed to get clock\n");
@@ -532,6 +538,7 @@ static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
 static int mt6785_scp_awake(struct mtk_scp *scp, bool lock);
 static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -612,6 +619,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 		 MT6785_SCP_PROBE_VALUE,
 		 readl(cluster->reg_base + MT6785_SCP_PROBE_REG));
 	mt6785_scp_log_wdt_sleep(scp, "before the release");
+	mt6785_scp_log_ulposc(scp, "before the release");
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -1313,6 +1321,7 @@ static int scp_start(struct rproc *rproc)
 				dev_info(scp->dev, "%u ms: clk_sw %#x clk_en %#x ctrl24 %#x\n",
 					 ms, clk_sw, clk_en,
 					 readl(clk + MT6785_SCP_CLK_CTRL_24));
+				mt6785_scp_log_ulposc(scp, "timeline");
 				dev_info(scp->dev, "%u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
 					 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
 					 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
@@ -2312,8 +2321,9 @@ static int mt6785_scp_awake(struct mtk_scp *scp, bool lock)
 				       !(val & 0x0f & (lock ? BIT(0) : BIT(1))), 10,
 				       MT6785_SCP_SYS_RESET_TIMEOUT_US);
 	if (ret)
-		dev_err(scp->dev, "%s: no ack (%#x) - is the SPM running?\n",
-			lock ? "awake lock" : "awake unlock", val);
+		dev_err(scp->dev, "%s: request bit still set after %u us (INFRA_IRQ_SET %#x): not acknowledged\n",
+			lock ? "awake lock" : "awake unlock",
+			MT6785_SCP_SYS_RESET_TIMEOUT_US, val);
 	else
 		dev_info(scp->dev, "%s: acknowledged (%#x)\n",
 			 lock ? "awake lock" : "awake unlock", val);
@@ -2352,6 +2362,31 @@ static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when)
 		 state == 1 ? "idle" : state == 2 ? "entering sleep" : state == 4 ? "in sleep" :
 		 state == 8 ? "entering active" : state == 16 ? "active" : "no known state",
 		 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS));
+}
+
+/*
+ * The SPM's own oscillator control, the register trial 43 read live as 0x0 with the SCP already
+ * dark: SPM + 0x440, whose bits the vendor names ULPOSC_EN (bit 0), ULPOSC_RST (1), ULPOSC_CG_EN
+ * (2) and ULPOSC_CLK_SEL (3) (mtk_spm_reg.h:1858-1862 in the MT6785 vendor tree). The vendor's AP
+ * kernel only ever reads it - as the idle check's "VCORE_ULPOSC on" condition, bit 0
+ * (mtk_idle_cond_check.c:1124) - and writes it nowhere in that tree, and the SPM resource requests
+ * have no ULPOSC bit at all (MAINPLL, DRAM, CK_26M, AXI_BUS, CPU; mtk_spm_resource_req.h:12-20).
+ * So whoever turns it on is the SPM's own PCM firmware, and this driver can only report it.
+ */
+static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when)
+{
+	struct regmap *spm = scp->spm_regmap;
+	u32 val;
+
+	if (IS_ERR_OR_NULL(spm))
+		return;
+
+	if (regmap_read(spm, MT6785_SPM_ULPOSC_CON, &val))
+		return;
+
+	dev_info(scp->dev, "%s: SPM ULPOSC_CON %#x (en %u, rst %u, cg %u, sel %u)\n",
+		 when, val, val & BIT(0) ? 1 : 0, val & BIT(1) ? 1 : 0,
+		 val & BIT(2) ? 1 : 0, val & BIT(3) ? 1 : 0);
 }
 
 /* the infracfg regmap, from the phandle the DT gives */

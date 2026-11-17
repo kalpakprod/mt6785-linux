@@ -119,6 +119,8 @@
 		mediatek,topckgen = <&topckgen>;
 		/* infracfg, for the SCP's module reset and its sleep protection */
 		mediatek,infracfg = <&infracfg>;
+		/* the SPM block, whose PCM firmware owns the ULPOSC the core may switch to */
+		mediatek,spm = <&scpsys>;
 
 		/*
 		 * This one is the driver's shared pool: of_reserved_mem_device_init() attaches a
