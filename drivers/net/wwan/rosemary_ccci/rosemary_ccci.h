@@ -490,6 +490,13 @@ void ccci_set_state(struct ccci_md *md, enum ccci_state state);
 /* the state's name, for logs and the debugfs dump */
 const char *ccci_state_name(enum ccci_state state);
 
+/* for the debugfs dump: the modem's two boot-stage words, and the AP's MD source
+ * request (the vendor holds it across any MD-side register access,
+ * md_cd_lock_modem_clock_src(), mt6785/md_sys1_platform.c:492-496)
+ */
+void ccci_md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1);
+void ccci_md_src_req(struct ccci_md *md, bool on);
+
 /* debugfs.c: read-only dumps of the modem's state */
 void rosemary_ccci_debugfs_add(struct ccci_md *md);
 void rosemary_ccci_debugfs_remove(struct ccci_md *md);

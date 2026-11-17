@@ -661,6 +661,17 @@ static void md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1)
 	*stage1 = readl(md->pll + MD1_CFG_BOOT_STATS);
 }
 
+/* the two helpers debugfs.c needs, so it does not reach into this file's statics */
+void ccci_md_boot_stage(struct ccci_md *md, u32 *stage0, u32 *stage1)
+{
+	md_boot_stage(md, stage0, stage1);
+}
+
+void ccci_md_src_req(struct ccci_md *md, bool on)
+{
+	ap_mdsrc_req(md, on);
+}
+
 /*
  * One line per step of the boot prefix.
  *

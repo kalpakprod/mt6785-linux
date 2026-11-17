@@ -17,23 +17,34 @@
  *
  * Two files:
  *
- *   state   -- the scalars that decide the questions the trials keep asking: is the
- *              domain on, does the modem hold its clock request, was the clamp
- *              attempted and what did it acknowledge, what did the loader leave.
- *   regions -- the vendor's read-only dump ranges (TOPSM, MD RGU, OST, CSC, ECT,
- *              the MD bus and PLL blocks), each line naming the block, its base and
- *              the vendor line it comes from, dumped as bounded windows because
- *              the vendor's own ranges run to tens of kilobytes.
+ *   state    -- the AP-side scalars that decide the questions the trials keep
+ *               asking: is the domain on, does the modem hold its clock request,
+ *               was the clamp attempted and what did it acknowledge, what did the
+ *               loader leave, and what is in the CCIF. Every address here is one
+ *               the vendor reads while the modem runs.
+ *   md_regs  -- the modem's own peripheral blocks (TOPSM, RGU, OST, CSC, ECT, bus,
+ *               PLL, USIP at 0x0d0d_xxxx and 0x0d0c_xxxx). ONE block per run,
+ *               selected through the md_block parameter, and ONLY in the state in
+ *               which the vendor reads them. Read the rest of this comment before
+ *               touching it.
  *
- * Deliberately left out, because the vendor's own code cannot read them without
- * writing first, or warns that they hang the bus:
+ * Why md_regs is fenced in: trial 31 read those blocks in the running state and
+ * hung the AP -- no panic, `androidboot.bootreason=SSPM_reboot`, i.e. the AP's
+ * transaction never completed and the SSPM watchdog reset the chip. The vendor
+ * knew: md_cd_dump_debug_register() opens with the comment "MD no need dump
+ * because of bus hang happened - open for debug" (mt6785/md_sys1_platform.c:467)
+ * and only reaches the MD-side blocks when the modem's own boot stage says it
+ * failed to come up (`:476-483`: only stage 0, 0x5443000C, or 0x53310000-0x5331_00FF),
+ * never while it is running normally. It also takes the AP's MD source request
+ * around the access (`md_cd_lock_modem_clock_src(1)`, `:492-496`, which is
+ * spm_ap_mdsrc_req(), :332-360), so the modem's bus is clocked while the AP reads.
  *
- *  - the PC monitor block (0x0d0d9000): the vendor stops and restarts the monitor
- *    around the dump (ap_md_reg_dump.c:59-85);
- *  - the bus-history block (0x0d0c6000): eight pre-action writes select the entry
- *    (ap_md_reg_dump.c:192-294);
- *  - ELM (0x20350000): "This dump might cause bus hang so enable it only when
- *    needed" (ap_md_reg_dump.c:373-378).
+ * Both of those are reproduced here: the same stage gate, and the request held
+ * across the read. Blocks the vendor cannot read without writing first, or warns
+ * hang the bus, are not offered at all: the PC monitor (it stops and restarts the
+ * monitor, ap_md_reg_dump.c:59-85), the bus-history selector (eight pre-action
+ * writes, :192-294) and ELM ("might cause bus hang so enable it only when needed",
+ * :373-378).
  */
 
 #include <linux/bitops.h>
@@ -43,6 +54,15 @@
 #include <linux/seq_file.h>
 
 #include "rosemary_ccci.h"
+
+/*
+ * Which of the modem's own blocks `md_regs` will read. Off by default, and it
+ * cannot be read at all in a state the vendor would not read either -- see the
+ * header comment.
+ */
+static char *md_block = "";
+module_param(md_block, charp, 0644);
+MODULE_PARM_DESC(md_block, "the modem block md_regs reads: topsm, rgu, ost, csc, ect, bus, pll or usip");
 
 /* one line per scalar: name, the register, its vendor citation, and its meaning */
 struct md_scalar {
@@ -190,12 +210,13 @@ static int md_state_show(struct seq_file *s, void *unused)
 }
 
 /*
- * The vendor's read-only dump ranges, bounded.
+ * The modem's own blocks, one per run, gated exactly as the vendor gates them.
  *
- * The vendor dumps whole blocks (TOPSM is 0x8e4 bytes, the bus block 0x19098); a
- * debugfs read that produces a hundred kilobytes of hex is not usable on a phone
- * terminal, so each block is dumped as a window with its name, base and the vendor
- * line it comes from. The head of each block is where the status words live.
+ * Selection through the writable module parameter `md_block` (below) instead of a
+ * parameter to the file: a debugfs file has no arguments, and the selector is what
+ * a reader sets *before* the read, so if the read hangs the phone's last known
+ * intent is in the log and in `state` -- which is how trial 31's hang would have
+ * been named in one line instead of guessed.
  */
 struct md_region {
 	const char *name;
@@ -205,53 +226,106 @@ struct md_region {
 	const char *what;
 };
 
-#define REGION_WINDOW	0x80
-
-static const struct md_region regions[] = {
-	{ "TOPSM", "ap_md_reg_dump.c:325-336 (0x0d0d0000, 0x8e4)", 0x0d0d0000, 0x8e4,
-	  "the modem's own top power state machine: sleep requests and their masks live here, which is why the AP can only read it (MD_DBG_DUMP_TOPSM, inc/ccci_modem.h:54)" },
-	{ "MD_RGU", "ap_md_reg_dump.c:338-352 (0x0d0d2100 + 0x200, 0xcc and 0x5c)", 0x0d0d2100, 0x25c,
+static const struct md_region md_regions[] = {
+	{ "topsm", "ap_md_reg_dump.c:325-336 (0x0d0d0000, 0x8e4)", 0x0d0d0000, 0x8e4,
+	  "the modem's top power state machine: its own sleep requests and masks" },
+	{ "rgu", "ap_md_reg_dump.c:338-352 (0x0d0d2100 + 0x200)", 0x0d0d2100, 0x25c,
 	  "the modem's reset generation unit: what reset it last, and what is held" },
-	{ "OST", "ap_md_reg_dump.c:354-368 (0x0d0d1000 + 0x200)", 0x0d0d1000, 0x208,
+	{ "ost", "ap_md_reg_dump.c:354-368 (0x0d0d1000 + 0x200)", 0x0d0d1000, 0x208,
 	  "the modem's own timer: a running counter means its software is alive and clocked" },
-	{ "CSC", "ap_md_reg_dump.c:370-383 (0x0d0d3000)", 0x0d0d3000, 0x214,
+	{ "csc", "ap_md_reg_dump.c:370-383 (0x0d0d3000)", 0x0d0d3000, 0x214,
 	  "modem core status capture" },
-	{ "ECT", "ap_md_reg_dump.c:302-322 (0x0d0cc130, selected words)", 0x0d0cc130, 0x1ee8,
+	{ "ect", "ap_md_reg_dump.c:302-322 (0x0d0cc130)", 0x0d0cc130, 0x1ee8,
 	  "the modem's event/exception trace block" },
-	{ "MD_BUS", "ap_md_reg_dump.c:154-170 (0x0d0c7000, 0x0d0c9000, 0x0d0e0000)", 0x0d0c7000, 0x19098,
-	  "the modem's internal bus: a stuck transaction shows up as a non-idle status here, which is the state that would explain a bus protect that never acks" },
-	{ "MD_PLL", "ap_md_reg_dump.c:85-153 (0x0d0c3800)", 0x0d0c3800, 0x1c85c,
-	  "the modem's clock control: whether its PLLs are up and which one it is running from" },
-	{ "USIP", "ap_md_reg_dump.c:384-… (0x0d0c4400)", 0x0d0c4400, 0x3500,
+	{ "bus", "ap_md_reg_dump.c:154-170 (0x0d0c7000 head)", 0x0d0c7000, 0x19098,
+	  "the modem's internal bus status: a stuck transaction shows up here" },
+	{ "pll", "ap_md_reg_dump.c:85-153 (0x0d0c3800 head)", 0x0d0c3800, 0x1c85c,
+	  "the modem's clock control: which PLL it runs from" },
+	{ "usip", "ap_md_reg_dump.c:384-420 (0x0d0c4400 head)", 0x0d0c4400, 0x3500,
 	  "the modem's serial interface block" },
 };
 
-static int md_regions_show(struct seq_file *s, void *unused)
+#define REGION_WINDOW	0x80
+
+/*
+ * The vendor's gate, verbatim in behaviour: only a modem whose own boot stage says
+ * it failed to come up is dumped (md_sys1_platform.c:476-483). A running modem --
+ * ours, stage 0x2c04010a -- is never read, because that is the state trial 31 hung
+ * the phone in.
+ */
+static bool md_regs_may_read(struct ccci_md *md, const char **why)
 {
-	size_t i;
+	u32 s0 = 0, s1 = 0;
 
-	for (i = 0; i < ARRAY_SIZE(regions); i++) {
-		const struct md_region *r = &regions[i];
-		void __iomem *p;
-		size_t len = min_t(size_t, r->len, REGION_WINDOW);
-		size_t off;
-
-		seq_printf(s, "[%s] base %#llx, window %#zx of %#zx\n  %s\n  %s\n",
-			   r->name, (unsigned long long)r->base, len, r->len,
-			   r->where, r->what);
-		p = ioremap(r->base, r->len);
-		if (!p) {
-			seq_printf(s, "  cannot map %#llx\n", (unsigned long long)r->base);
-			continue;
-		}
-		for (off = 0; off < len; off += 16) {
-			seq_printf(s, "  %08llx:", (unsigned long long)(r->base + off));
-			for (size_t k = 0; k < 16 && off + k < len; k += 4)
-				seq_printf(s, " %08x", readl(p + off + k));
-			seq_putc(s, '\n');
-		}
-		iounmap(p);
+	if (md->state != MD_STATE_EXCEPTION) {
+		*why = "the modem is not in exception; the vendor dumps these blocks only for a modem that failed to come up (md_sys1_platform.c:476-483)";
+		return false;
 	}
+	if (md->pll)
+		ccci_md_boot_stage(md, &s0, &s1);
+	if (!(s0 == 0 || s0 == 0x5443000c || (s0 >= 0x53310000 && s0 <= 0x533100ff))) {
+		*why = "the boot stage is not one the vendor dumps on (only 0, 0x5443000C or 0x53310000-0x533100FF)";
+		return false;
+	}
+	*why = NULL;
+	return true;
+}
+
+static int md_regs_show(struct seq_file *s, void *unused)
+{
+	struct ccci_md *md = s->private;
+	const struct md_region *r = NULL;
+	const char *why = NULL;
+	void __iomem *p;
+	size_t len, off;
+
+	for (size_t i = 0; i < ARRAY_SIZE(md_regions); i++)
+		if (!strcmp(md_regions[i].name, md_block))
+			r = &md_regions[i];
+
+	seq_printf(s, "selected block: %s\n",
+		   md_block && *md_block ? md_block : "(none)");
+	seq_printf(s, "driver state: %s, boot stats available: %u\n",
+		   ccci_state_name(md->state), (unsigned int)!!md->pll);
+	if (!r) {
+		seq_puts(s, "no such block; choose one of: topsm rgu ost csc ect bus pll usip\n");
+		return 0;
+	}
+	seq_printf(s, "block %s, base %#llx, window %#zx of %#zx\n  %s\n  %s\n",
+		   r->name, (unsigned long long)r->base,
+		   min_t(size_t, r->len, REGION_WINDOW), r->len, r->where, r->what);
+	if (!md_regs_may_read(md, &why)) {
+		seq_printf(s, "refusing to read: %s\n", why);
+		seq_puts(s, "trial 31 read these blocks while the modem was running and the AP's\n"
+			    "transaction never completed (bootreason SSPM_reboot).\n");
+		return 0;
+	}
+
+	/*
+	 * The vendor holds the AP's MD source request across the access
+	 * (md_cd_lock_modem_clock_src(1), md_sys1_platform.c:492-496, which is
+	 * spm_ap_mdsrc_req()). Do the same, and say so before the read, because a
+	 * hang here leaves no output.
+	 */
+	dev_info(md->dev, "md_regs: reading %s at %#llx (window %#zx), holding the AP MD source request\n",
+		 r->name, (unsigned long long)r->base,
+		 min_t(size_t, r->len, REGION_WINDOW));
+	ccci_md_src_req(md, true);
+	len = min_t(size_t, r->len, REGION_WINDOW);
+	p = ioremap(r->base, r->len);
+	if (!p) {
+		ccci_md_src_req(md, false);
+		seq_printf(s, "cannot map %#llx\n", (unsigned long long)r->base);
+		return 0;
+	}
+	for (off = 0; off < len; off += 16) {
+		seq_printf(s, "  %08llx:", (unsigned long long)(r->base + off));
+		for (size_t k = 0; k < 16 && off + k < len; k += 4)
+			seq_printf(s, " %08x", readl(p + off + k));
+		seq_putc(s, '\n');
+	}
+	iounmap(p);
+	ccci_md_src_req(md, false);
 	return 0;
 }
 
@@ -260,9 +334,9 @@ static int md_state_open(struct inode *inode, struct file *file)
 	return single_open(file, md_state_show, inode->i_private);
 }
 
-static int md_regions_open(struct inode *inode, struct file *file)
+static int md_regs_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, md_regions_show, inode->i_private);
+	return single_open(file, md_regs_show, inode->i_private);
 }
 
 static const struct file_operations md_state_fops = {
@@ -273,9 +347,9 @@ static const struct file_operations md_state_fops = {
 	.release = single_release,
 };
 
-static const struct file_operations md_regions_fops = {
+static const struct file_operations md_regs_fops = {
 	.owner = THIS_MODULE,
-	.open = md_regions_open,
+	.open = md_regs_open,
 	.read = seq_read,
 	.llseek = seq_lseek,
 	.release = single_release,
@@ -289,7 +363,7 @@ void rosemary_ccci_debugfs_add(struct ccci_md *md)
 		return;
 	}
 	debugfs_create_file("state", 0444, md->debugfs, md, &md_state_fops);
-	debugfs_create_file("regions", 0444, md->debugfs, md, &md_regions_fops);
+	debugfs_create_file("md_regs", 0444, md->debugfs, md, &md_regs_fops);
 }
 
 void rosemary_ccci_debugfs_remove(struct ccci_md *md)
