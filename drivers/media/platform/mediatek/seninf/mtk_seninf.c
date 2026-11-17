@@ -316,6 +316,38 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		}
 	}
 
+		/*
+	 * The map that got frames on the cezanne MT6885 port, and the one this SoC follows: the
+	 * CrOS isp_50 offsets (CSI2 at 0x0210/0x0a00, mux at 0x0d00) read back zero here, while the
+	 * cezanne layout - CSI2 control at instance +0xa00, the seninf mux at +0xd00 and the cam-mux
+	 * routing block at +0x400 (scratch/native/5-cameras/tmp/cez-cam/README.md:33-87) - is what
+	 * this receiver answers on. Each write is logged with its read-back, and the values that are
+	 * inferred rather than cited are marked where they are written.
+	 */
+	{
+		void __iomem *in = seninf->base;	/* instance 1: SENINF1, the one MIUI used */
+		struct { u32 off; u32 val; const char *what; } seq[] = {
+			/* CSI2 block: lane enable for four data lanes (cezanne: SENINF1_CSI2_CTL = 0xf). */
+			{ 0x0a00, 0x0000000f, "csi2 lane enable 4D1C" },
+			/* The seninf mux: on, RAW10 data type 0x2b. */
+			{ 0x0d00, 0x00000001, "seninf mux enable" },
+			{ 0x0d04, 0x002b0000, "seninf mux data type RAW10" },
+			/* Cam-mux routing: CTRL block at 0x400, camera mux 3 = CAMSV0, source seninf mux 1. */
+			{ 0x0400, 0x00000000, "cam mux ctrl0" },
+			{ 0x0404, 0x00000001, "cam mux ctrl1" },
+			{ 0x0408, 0x00000000, "cam mux ctrl2" },
+			{ 0x040c, 0x00000000, "cam mux ctrl3" },
+			{ 0x0410, 0x00000008, "cam mux enable, mux 3 (CAMSV0)" },
+		};
+		unsigned int i;
+
+		for (i = 0; i < ARRAY_SIZE(seq); i++) {
+			writel(seq[i].val, in + seq[i].off);
+			dev_info(seninf->dev, "prog %s: +0x%03x = 0x%08x -> 0x%08x\n",
+				 seq[i].what, seq[i].off, seq[i].val, readl(in + seq[i].off));
+		}
+	}
+
 	/* The port select first: which analog port this receiver instance is tied to. */
 	{
 		u32 before = readl(seninf->base + SENINF_TOP_PHY_SENINF_CTL_CSI0);
