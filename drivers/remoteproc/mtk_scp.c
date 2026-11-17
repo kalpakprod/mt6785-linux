@@ -14,6 +14,8 @@
 #include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 #include <linux/remoteproc.h>
 #include <linux/remoteproc/mtk_scp.h>
 #include <linux/rpmsg/mtk_rpmsg.h>
@@ -464,9 +466,17 @@ struct mt6785_scp_region_info {
 	u32 ap_params_start;
 };
 
+static int mt6785_scp_clocks_on(struct mtk_scp *scp);
+
 static int mt6785_scp_before_load(struct mtk_scp *scp)
 {
 	struct mtk_scp_of_cluster *cluster = scp->cluster;
+	int ret;
+
+	/* without these the whole SCP window reads back as zeros (audio16) */
+	ret = mt6785_scp_clocks_on(scp);
+	if (ret)
+		return ret;
 
 	/* Clear any stale SCP to host interrupt */
 	writel(MT8183_SCP_IPC_INT_BIT, cluster->reg_base + MT8183_SCP_TO_HOST);
@@ -592,10 +602,16 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	rstn = readl(cfg + MT8183_SW_RSTN);
 	tcm0 = readl(scp->sram_base);
 	tcm1 = readl(scp->sram_base + 4);
-	dev_err(scp->dev, "sw_rstn %#x (bit0 released), TCM[0] %#x TCM[4] %#x\n",
-		rstn, tcm0, tcm1);
+	/*
+	 * scp_reset_deassert() writes bit 0 of SW_RSTN to 1, so 1 is the released state: a 0 there
+	 * means the write did not land, and together with zero TCM words it means the whole window
+	 * reads back as zeros - the SCP's clock gates, not the core, are then the fault.
+	 */
+	dev_err(scp->dev, "sw_rstn %#x (bit0=1 released, 0 = write never landed)\n",
+		rstn);
+	dev_err(scp->dev, "TCM[0] %#x TCM[4] %#x\n", tcm0, tcm1);
 	if (!(tcm0 | tcm1))
-		dev_err(scp->dev, "TCM holds no vector table: the load or the TCM power is the fault, not the core\n");
+		dev_err(scp->dev, "TCM holds no vector table: load or TCM power is the fault, not the core\n");
 	else if (tcm0 >= scp->sram_size)
 		dev_err(scp->dev, "TCM[0] = %#x is not a stack pointer inside the TCM\n", tcm0);
 }
@@ -1729,6 +1745,69 @@ static const struct mtk_scp_sizes_data mt6785_scp_sizes = {
 };
 
 /*
+ * The SCP subsystem's clock gates, as the vendor's clock driver sets them at probe:
+ *
+ *	clk_writel(CLK_SCP_CFG_0, clk_readl(CLK_SCP_CFG_0) | 0x3FF);
+ *	clk_writel(CLK_SCP_CFG_1, clk_readl(CLK_SCP_CFG_1) | 0x11);
+ *
+ *	(vendor clk-mt6785.c:3144-3145, MTK's own comment there is "Need Confirm";
+ *	 CLK_SCP_CFG_0 = topckgen + 0x200, CLK_SCP_CFG_1 = topckgen + 0x210, :91-92)
+ *
+ * Nothing in mainline models these twelve bits, and with them clear the SCP's register window and
+ * its TCM read back as zeros however much the driver writes there - which is what audio16's dump
+ * showed (every cfg register zero, SW_RSTN included, after a write of 1 into it). So MT6785 sets
+ * them once, in before_load, exactly as the vendor's clock driver does at boot.
+ */
+static int mt6785_scp_clk_get(struct mtk_scp *scp)
+{
+	struct clk *infra;
+	int ret;
+
+	ret = mt8183_scp_clk_get(scp);
+	if (ret)
+		return ret;
+
+	/*
+	 * The SCP subsystem's own bus gate ("infra_scp", CLK_INFRA_SCP, infracfg gate 4).
+	 * Nothing else in this kernel consumes it, and while it is closed every access to the
+	 * SCP's register window and its TCM reads back as zero - the load "succeeds" and the
+	 * core then fetches zeros. It stays enabled for the life of the system: it is the bus
+	 * the SCP lives on, and gating it between the phases the remoteproc core drives would
+	 * only add a failure mode.
+	 */
+	infra = devm_clk_get_optional(scp->dev, "infra");
+	if (IS_ERR(infra))
+		return dev_err_probe(scp->dev, PTR_ERR(infra), "Failed to get the infra clock\n");
+	if (infra) {
+		ret = clk_prepare_enable(infra);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int mt6785_scp_clocks_on(struct mtk_scp *scp)
+{
+	struct regmap *topckgen;
+	u32 val;
+
+	topckgen = syscon_regmap_lookup_by_phandle(scp->dev->of_node,
+						   "mediatek,topckgen");
+	if (IS_ERR(topckgen)) {
+		dev_err(scp->dev, "no topckgen phandle: %ld\n", PTR_ERR(topckgen));
+		return PTR_ERR(topckgen);
+	}
+
+	regmap_read(topckgen, MT6785_SCP_CLK_CFG_0, &val);
+	regmap_write(topckgen, MT6785_SCP_CLK_CFG_0, val | 0x3ff);
+	regmap_read(topckgen, MT6785_SCP_CLK_CFG_1, &val);
+	regmap_write(topckgen, MT6785_SCP_CLK_CFG_1, val | 0x11);
+
+	return 0;
+}
+
+/*
  * MT6785 does need a clock, and d5b9b1de1 got this wrong: the vendor's own
  * scp@10500000 node lists no clocks, but the SCP's clock is driven from the
  * *scp_dvfs* block through the clock framework, and the vendor enables it
@@ -1746,7 +1825,7 @@ static const struct mtk_scp_sizes_data mt6785_scp_sizes = {
  * not on the MT8183 family's SCP_IPI_INIT = 0.
  */
 static const struct mtk_scp_of_data mt6785_of_data = {
-	.scp_clk_get = mt8183_scp_clk_get,
+	.scp_clk_get = mt6785_scp_clk_get,
 	.scp_before_load = mt6785_scp_before_load,
 	.scp_after_load = mt6785_scp_after_load,
 	.scp_irq_handler = mt8183_scp_irq_handler,
@@ -1755,6 +1834,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_stop = mt8183_scp_stop,
 	.scp_dump_regs = mt6785_scp_dump_regs,
 	.scp_ipi_ack = mt6785_scp_ipi_ack,
+	.scp_clocks_on = mt6785_scp_clocks_on,
 	.scp_da_to_va = mt8192_scp_da_to_va,
 	.host_to_scp_reg = MT8183_HOST_TO_SCP,
 	.host_to_scp_int_bit = MT8183_HOST_IPC_INT_BIT,

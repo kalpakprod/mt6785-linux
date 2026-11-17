@@ -82,6 +82,10 @@
 #define MT8195_SEC_CTRL				0x85000
 #define MT8195_CORE_OFFSET_ENABLE_D		BIT(13)
 #define MT8195_CORE_OFFSET_ENABLE_I		BIT(12)
+/* the vendor's SCP clock-gate registers inside topckgen (clk-mt6785.c:91-92) */
+#define MT6785_SCP_CLK_CFG_0			0x200
+#define MT6785_SCP_CLK_CFG_1			0x210
+
 #define MT8195_L2TCM_OFFSET_RANGE_0_LOW		0x850b0
 #define MT8195_L2TCM_OFFSET_RANGE_0_HIGH	0x850b4
 #define MT8195_L2TCM_OFFSET			0x850d0
@@ -123,6 +127,8 @@ struct mtk_scp_of_data {
 	void (*scp_dump_regs)(struct mtk_scp *scp);
 	/* ack an IPI the way the firmware expects, where it differs from the default */
 	void (*scp_ipi_ack)(struct mtk_scp *scp);
+	/* SoC clock gates that are not modelled as clocks and have to be opened before loading */
+	int (*scp_clocks_on)(struct mtk_scp *scp);
 	void *(*scp_da_to_va)(struct mtk_scp *scp, u64 da, size_t len);
 
 	u32 host_to_scp_reg;
