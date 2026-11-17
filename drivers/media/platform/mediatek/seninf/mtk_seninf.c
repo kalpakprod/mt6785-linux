@@ -241,6 +241,19 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		 readl(seninf->base + SENINF_CSI2_ERR_CNT));
 
 	/*
+	 * The routing at the moment the stream starts: the top mux decides which receiver
+	 * feeds which mux, the cam mux decides which engine reads it, and the per-instance mux
+	 * register shows what this receiver is attached to. Packets counted after a mux that is
+	 * not routed give zero, so the numbers belong next to each other. The analog MIPI block
+	 * (0x11c80000) is outside this node window and is not mapped here yet.
+	 */
+	dev_info(seninf->dev,
+		 "routing: TOP_MUX0 0x%08x, TOP_MUX1 0x%08x, CAM_MUX1 0x%08x, CAM_MUX2 0x%08x, MUX0 0x%08x\n",
+		 readl(seninf->base + 0x0010), readl(seninf->base + 0x0014),
+		 readl(seninf->base + 0x0404), readl(seninf->base + 0x0408),
+		 readl(seninf->base + 0x0d00));
+
+	/*
 	 * The receiver is programmed; now the sensor that feeds it has to transmit. Each entity in
 	 * the chain starts the one upstream of it, so the cascade stops at the sensor.
 	 */
