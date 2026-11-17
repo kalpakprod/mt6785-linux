@@ -21,6 +21,7 @@
 #include <linux/remoteproc/mtk_scp.h>
 #include <linux/rpmsg/mtk_rpmsg.h>
 #include <linux/string.h>
+#include <linux/regulator/consumer.h>
 
 #include "mtk_common.h"
 #include "remoteproc_internal.h"
@@ -550,6 +551,7 @@ static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
 static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_sspm(struct mtk_scp *scp);
+static void mt6785_scp_log_rails(struct mtk_scp *scp);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -634,6 +636,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	mt6785_scp_log_fmeter(scp, "before the release");
 	mt6785_scp_log_spm_handshake(scp, "before the release");
 	mt6785_scp_log_sspm(scp);
+	mt6785_scp_log_rails(scp);
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -2554,6 +2557,36 @@ static void mt6785_scp_log_sspm(struct mtk_scp *scp)
 	if (tail)
 		iounmap(tail);
 	iounmap(head);
+}
+
+/*
+ * The SCP's own two rails, as the regulator framework sees them. The stock kernel brings them up
+ * once at boot in mt_pmic_sshub_init (vendor scp/mt6785/scp_dvfs.c:919-946): VCORE_SSHUB 575 mV and
+ * VSRAM_OTHERS_SSHUB 800 mV, both enabled, RG_VR_SSHUB_MODE 0
+ * (vendor pmic/mt6359/v1/pmic.c:117-147).
+ * They are already configured by the board DT; this only reports what the framework holds, so a
+ * rail that is still off at the release is visible in the log.
+ */
+static void mt6785_scp_log_rails(struct mtk_scp *scp)
+{
+	static const char *const names[] = { "vcore_sshub", "vsram_others_sshub" };
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(names); i++) {
+		struct regulator *r = regulator_get_optional(scp->dev, names[i]);
+		int uv, en;
+
+		if (IS_ERR(r)) {
+			dev_info(scp->dev, "rail %s: not described (%ld)\n",
+				 names[i], PTR_ERR(r));
+			continue;
+		}
+		uv = regulator_get_voltage(r);
+		en = regulator_is_enabled(r);
+		dev_info(scp->dev, "rail %s: %d uV, %s\n", names[i], uv,
+			 en > 0 ? "enabled" : en == 0 ? "disabled" : "unknown");
+		regulator_put(r);
+	}
 }
 
 /* is this run of characters already in the loaded image? */

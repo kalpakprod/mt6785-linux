@@ -121,6 +121,9 @@
 		mediatek,infracfg = <&infracfg>;
 		/* the SPM block, whose PCM firmware owns the ULPOSC the core may switch to */
 		mediatek,spm = <&scpsys>;
+		/* the two rails the stock kernel keeps on for the SCP */
+		vcore_sshub-supply = <&mt6359_vcore_sshub_buck_reg>;
+		vsram_others_sshub-supply = <&mt6359_vsram_others_sshub_ldo>;
 		/* topckgen: the frequency meter the firmware measures its oscillator with */
 		mediatek,topckgen-meter = <&topckgen>;
 
@@ -161,4 +164,26 @@
  */
 &{/} {
 	/delete-node/ scp;
+};
+
+/*
+ * The SCP's own two rails. The stock kernel sets them up once at boot, in
+ * mt_pmic_sshub_init() (vendor scp/mt6785/scp_dvfs.c:919-946): VCORE_SSHUB at 575 mV and
+ * VSRAM_OTHERS_SSHUB at 800 mV with SSHUB_EN = 1 for both, RG_VR_SSHUB_MODE = 0
+ * (vendor pmic/mt6359/v1/pmic.c:117-147 for the enables and the mode, :117-127 for
+ * pmic_scp_ctrl_enable(true, true, false)). On our kernel both rails measured as disabled with no
+ * users, while the sensors' own rails on this board are always-on; these are the same two rails
+ * the SCP uses, so they are kept on here. The low-power (SRCLKEN11) and VR_SSHUB_MODE settings of
+ * the vendor's init have no regulator-API equivalent and are not written.
+ */
+&mt6359_vcore_sshub_buck_reg {
+	regulator-min-microvolt = <575000>;
+	regulator-max-microvolt = <575000>;
+	regulator-always-on;
+};
+
+&mt6359_vsram_others_sshub_ldo {
+	regulator-min-microvolt = <800000>;
+	regulator-max-microvolt = <800000>;
+	regulator-always-on;
 };
