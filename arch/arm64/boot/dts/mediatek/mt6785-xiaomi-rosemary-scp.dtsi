@@ -99,7 +99,13 @@
 		mediatek,infracfg = <&infracfg>;
 
 		memory-region = <&scp_mem_reserved>;
-		firmware-name = "mediatek/mt6785/scp.img";
+		/*
+		 * The vendor's own image, as shipped in the scp_a partition: MTK records with
+		 * tinysys-loader-CM4_A, tinysys-scp-CM4_A and tinysys-scp-CM4_A_dram inside
+		 * (pl_lk.txt:2311-2313, :2406-2411). Not an ELF: the driver parses the records the
+		 * way LK does.
+		 */
+		firmware-name = "mediatek/mt6785/scp-ext.img";
 	};
 
 	/*

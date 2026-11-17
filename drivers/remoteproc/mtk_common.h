@@ -159,6 +159,8 @@ struct mtk_scp_of_data {
 	bool scp_maybe_preloaded;
 	/* the SoC's loader leaves its loader and region info in the SRAM, which is worth keeping */
 	bool scp_use_lk_images;
+	/* the firmware file is the vendor's MTK image (records), not an ELF */
+	bool scp_mtk_image;
 	void *(*scp_da_to_va)(struct mtk_scp *scp, u64 da, size_t len);
 
 	u32 host_to_scp_reg;

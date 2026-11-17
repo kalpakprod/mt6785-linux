@@ -463,6 +463,9 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_LK_DRAM_OFS		0x100000
 /* LK's own sizes for that layout (pl_lk.txt:2311-2313, :2406-2411) */
 #define MT6785_SCP_LK_REGION_MIN	0x300000
+/* the TCM part of the vendor's scp record, and where its tail sits in the carve-out */
+#define MT6785_SCP_FIRMWARE_TCM_MAX	0xbb800
+#define MT6785_SCP_REST_OFS		0x1c0000
 #define MT6785_LK_LOADER_SIZE		0x438
 #define MT6785_LK_FIRMWARE_SIZE		0xbb800
 #define MT6785_LK_DRAM_SIZE		0x59968
@@ -509,6 +512,8 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
  */
 static struct regmap *mt6785_infracfg(struct mtk_scp *scp);
 static int mt6785_scp_check_windows(struct mtk_scp *scp);
+static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp,
+				      const struct firmware *fw);
 static void mt6785_scp_probe_lk_images(struct mtk_scp *scp);
 
 /*
@@ -703,6 +708,38 @@ static u32 mt6785_elf_segment_size(const struct firmware *fw, u32 paddr)
 
 	return 0;
 }
+
+/*
+ * The vendor's firmware file is not an ELF: it is the MTK image LK parses - a list of records,
+ * each with a 512-byte header (magic 0x58881688, size, name[32], load address, mode, then the
+ * extension header: magic 0x58891689, header size, header version, image type, list-end,
+ * alignment, 64-bit size and address) and its payload (LK's parser: ccci_util_lib_load_img.c:
+ * 1216-1260 in the vendor tree; the same layout the repacker in this port's tools reads).
+ * LK loads "tinysys-loader-CM4_A" (1080 bytes) at TCM 0, stages "tinysys-scp-CM4_A" for the
+ * loader to copy to core 0x800 and "tinysys-scp-CM4_A_dram" as the firmware's DRAM part
+ * (pl_lk.txt:2311-2313, :2406-2411).
+ */
+#define MTK_IMG_MAGIC		0x58881688
+#define MTK_IMG_EXT_MAGIC	0x58891689
+#define MTK_IMG_HDR_SIZE	0x200
+#define MTK_IMG_NAME_SIZE	32
+#define MTK_IMG_ALIGN		16
+
+struct mtk_img_header {
+	__le32 magic;
+	__le32 dsize;
+	char name[MTK_IMG_NAME_SIZE];
+	__le32 maddr;
+	__le32 mode;
+	__le32 ext_magic;
+	__le32 hdr_size;
+	__le32 hdr_version;
+	__le32 img_type;
+	__le32 img_list_end;
+	__le32 align_size;
+	__le32 dsize_extend;
+	__le32 maddr_extend;
+};
 
 /* the bytes the repacker staged above `base`: the record's tail and its DRAM part */
 static u32 mt6785_elf_dram_size(const struct firmware *fw, phys_addr_t base)
@@ -1144,6 +1181,18 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 	 */
 	if (scp->lk_staged) {
 		dev_info(dev, "not loading the ELF: LK's loader and region information are in place\n");
+		ret = 0;
+		goto leave;
+	}
+
+	/*
+	 * MT6785's firmware is the vendor image LK parses, not an ELF: stage the records into the
+	 * carve-out the way LK stages them into its own region, and let the loader do the rest.
+	 */
+	if (scp->data->scp_mtk_image) {
+		ret = mt6785_scp_stage_mtk_image(scp, fw);
+		if (ret)
+			goto leave;
 		ret = 0;
 		goto leave;
 	}
@@ -2255,6 +2304,113 @@ static void mt6785_scp_probe_lk_images(struct mtk_scp *scp)
 		 MT6785_LK_FIRMWARE_OFS, MT6785_LK_DRAM_OFS);
 }
 
+/*
+ * Find one record of the MTK image by name and return its payload, in the order LK walks them
+ * (a 512-byte header, the payload, then the next header 16-byte aligned after it).
+ */
+static const void *mtk_img_find(const struct firmware *fw, const char *want,
+				size_t *len)
+{
+	const u8 *buf = fw->data;
+	size_t off = 0;
+
+	while (off + MTK_IMG_HDR_SIZE <= fw->size) {
+		const struct mtk_img_header *h = (const void *)(buf + off);
+		u32 dsize = le32_to_cpu(h->dsize);
+		size_t next;
+
+		if (le32_to_cpu(h->magic) != MTK_IMG_MAGIC)
+			return NULL;
+		if (le32_to_cpu(h->ext_magic) != MTK_IMG_EXT_MAGIC ||
+		    le32_to_cpu(h->hdr_size) != MTK_IMG_HDR_SIZE)
+			return NULL;
+		if (off + MTK_IMG_HDR_SIZE + dsize > fw->size)
+			return NULL;
+
+		if (!strncmp(h->name, want, MTK_IMG_NAME_SIZE)) {
+			*len = dsize;
+			return buf + off + MTK_IMG_HDR_SIZE;
+		}
+
+		next = off + MTK_IMG_HDR_SIZE + dsize;
+		next = round_up(next, MTK_IMG_ALIGN);
+		if (next <= off)
+			return NULL;
+		off = next;
+
+		if (le32_to_cpu(h->img_list_end))
+			break;
+	}
+
+	return NULL;
+}
+
+/*
+ * Stage the vendor's own image the way LK does it, into this port's carve-out: the loader into
+ * the TCM, the scp record where the loader pulls it from (it copies ap_firmware_size bytes to
+ * core 0x800 itself, so only the part TCM can hold is announced - LK's own number for this
+ * record is 0xbb800, pl_lk.txt:2407), the record's tail and the dram record in the carve-out,
+ * and the region information pointing at all of it with LK's cache configuration.
+ *
+ * The carve-out is 0x50000000 with 4 MiB, this port's own reserved-memory node: the vendor's
+ * 0x9fc00000 cannot be relied on because a kernel without that reservation (the base kernel
+ * before a kexec trial) hands it to the allocator.
+ */
+static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware *fw)
+{
+	struct mt6785_scp_region_info ri = { 0 };
+	size_t loader_len = 0, scp_len = 0, dram_len = 0;
+	const void *loader, *scp_img, *dram;
+	u32 fw_len, rest_len;
+	dma_addr_t base = scp->dma_addr;
+
+	loader = mtk_img_find(fw, "tinysys-loader-CM4_A", &loader_len);
+	scp_img = mtk_img_find(fw, "tinysys-scp-CM4_A", &scp_len);
+	dram = mtk_img_find(fw, "tinysys-scp-CM4_A_dram", &dram_len);
+	if (!loader || !scp_img || !dram) {
+		dev_err(scp->dev, "not an MTK SCP image: loader %d scp %d dram %d\n",
+			!!loader, !!scp_img, !!dram);
+		return -EINVAL;
+	}
+	if (loader_len > MT6785_SCP_LOADER_SLOT ||
+	    base + MT6785_SCP_DRAM_OFS + dram_len >
+		    scp->dma_addr + scp->data->scp_sizes->max_dram_size) {
+		dev_err(scp->dev, "image does not fit: loader %#zx dram %#zx\n",
+			loader_len, dram_len);
+		return -EINVAL;
+	}
+
+	fw_len = min_t(size_t, scp_len, MT6785_SCP_FIRMWARE_TCM_MAX);
+	rest_len = scp_len - fw_len;
+
+	memcpy_toio(scp->sram_base, loader, loader_len);
+	memcpy_toio(scp->cpu_addr + MT6785_SCP_LOADER_SLOT, scp_img, fw_len);
+	if (rest_len)
+		memcpy_toio(scp->cpu_addr + MT6785_SCP_REST_OFS,
+			    scp_img + fw_len, rest_len);
+	memcpy_toio(scp->cpu_addr + MT6785_SCP_DRAM_OFS, dram, dram_len);
+
+	ri.ap_loader_start = base;
+	ri.ap_loader_size = MT6785_SCP_LOADER_SLOT;
+	ri.ap_firmware_start = base + MT6785_SCP_LOADER_SLOT;
+	ri.ap_firmware_size = fw_len;
+	ri.ap_dram_start = base + MT6785_SCP_DRAM_OFS;
+	ri.ap_dram_size = dram_len;
+	ri.ap_dram_backup_start = base + MT6785_SCP_DRAM_OFS * 2;
+	ri.il1c_con = MT6785_SCP_L1C_CON;
+	ri.dl1c_con = MT6785_SCP_L1C_CON;
+	ri.struct_size = sizeof(ri);
+	memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &ri, sizeof(ri));
+	/* the loader must see the region info before the core is released */
+	wmb();
+
+	dev_info(scp->dev, "staged the MTK image: loader %#zx into the TCM, firmware %#x (+%#x in the carve-out) at %#llx, dram %#zx at %#llx\n",
+		 loader_len, fw_len, rest_len, (u64)ri.ap_firmware_start,
+		 dram_len, (u64)ri.ap_dram_start);
+
+	return 0;
+}
+
 /* one line of block state, for the steps that must be told apart */
 static void mt6785_scp_state(struct mtk_scp *scp, const char *when)
 {
@@ -2356,6 +2512,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_keep_state_on_error = true,
 	.scp_maybe_preloaded = true,
 	.scp_use_lk_images = true,
+	.scp_mtk_image = true,
 	.scp_ipi_ack = mt6785_scp_ipi_ack,
 	.scp_clocks_on = mt6785_scp_clocks_on,
 	.scp_da_to_va = mt8192_scp_da_to_va,
