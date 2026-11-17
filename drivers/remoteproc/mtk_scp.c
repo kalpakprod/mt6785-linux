@@ -242,6 +242,17 @@ static void mt8183_scp_irq_handler(struct mtk_scp *scp)
 	u32 scp_to_host;
 
 	scp_to_host = readl(scp->cluster->reg_base + MT8183_SCP_TO_HOST);
+
+	/*
+	 * SCP_A_TO_HOST (GIC SPI 201) is the only readiness signal this driver trusts: the core
+	 * owns the bus once released, so a register read is not evidence of anything. Counting the
+	 * interrupts makes a trial say whether the firmware ever spoke.
+	 */
+	scp->to_host_irqs++;
+	if (scp->to_host_irqs <= 4)
+		dev_info(scp->dev, "SCP_A_TO_HOST interrupt #%u (to_host %#x)\n",
+			 scp->to_host_irqs, scp_to_host);
+
 	if (scp_to_host & MT8183_SCP_IPC_INT_BIT)
 		scp_ipi_handler(scp);
 	else
@@ -450,6 +461,14 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_LK_LOADER_PC		0x4
 #define MT6785_LK_FIRMWARE_OFS		0x800
 #define MT6785_LK_DRAM_OFS		0x100000
+/* LK's own sizes for that layout (pl_lk.txt:2311-2313, :2406-2411) */
+#define MT6785_SCP_LK_REGION_MIN	0x300000
+#define MT6785_LK_LOADER_SIZE		0x438
+#define MT6785_LK_FIRMWARE_SIZE		0xbb800
+#define MT6785_LK_DRAM_SIZE		0x59968
+/* the vendor's reboot handshake word: cfg + 0x64, ready-to-reboot = 0x34 (scp_reg.h:44-46) */
+#define MT6785_SCP_GPR_CM4_A_REBOOT	0x64
+#define MT6785_SCP_CM4_READY_TO_REBOOT	0x34
 #define MT6785_SCP_IPI_BUF_OFS		0x5c0
 #define MT6785_SCP_IPI_BUF_DATA_OFS	16
 #define MT6785_SCP_IPI_BUF_SIZE		272
@@ -605,6 +624,43 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 				scp->lk_images = false;
 		if (scp->lk_images)
 			dev_info(scp->dev, "LK's loader and region information survived: keeping them, releasing the core only\n");
+	}
+
+	/*
+	 * With the region information lost, rebuild what LK had: the loader image from
+	 * ap_loader_start in its reserved region into the TCM, and the region information in LK's
+	 * own layout - firmware at +0x800 with 0xbb800 bytes, DRAM at +0x100000 with 0x59968, the
+	 * backup at +0x200000, Il1c_con/Dl1c_con 0x10d (pl_lk.txt:2406-2414). This is the vendor's
+	 * own recovery copy (scp_awake.c:296-305) and the image LK staged, not our repacked ELF:
+	 * the loader pulls the firmware from DRAM itself, and that DRAM is the one LK prepared.
+	 */
+	if (scp->data->scp_use_lk_images && !scp->lk_images &&
+	    scp->lk_base && scp->lk_size >= MT6785_SCP_LK_REGION_MIN) {
+		struct mt6785_scp_region_info lk = { 0 };
+
+		memcpy_toio(scp->sram_base, scp->lk_base, MT6785_LK_LOADER_SIZE);
+
+		lk.ap_loader_start = scp->lk_phys;
+		lk.ap_loader_size = MT6785_LK_LOADER_SIZE;
+		lk.ap_firmware_start = scp->lk_phys + MT6785_LK_FIRMWARE_OFS;
+		lk.ap_firmware_size = MT6785_LK_FIRMWARE_SIZE;
+		lk.ap_dram_start = scp->lk_phys + MT6785_LK_DRAM_OFS;
+		lk.ap_dram_size = MT6785_LK_DRAM_SIZE;
+		lk.ap_dram_backup_start = scp->lk_phys + MT6785_LK_DRAM_OFS * 2;
+		lk.il1c_con = MT6785_SCP_L1C_CON;
+		lk.dl1c_con = MT6785_SCP_L1C_CON;
+		lk.struct_size = sizeof(lk);
+		memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &lk,
+			    sizeof(lk));
+		/* the loader must see the region info before the core is released */
+		wmb();
+		scp->lk_staged = true;
+
+		dev_info(scp->dev, "staged LK's own images: loader %#x from %#llx into the TCM, firmware %#llx+%#x, dram %#llx+%#x, l1c %#x\n",
+			 MT6785_LK_LOADER_SIZE, (u64)scp->lk_phys,
+			 (u64)lk.ap_firmware_start, MT6785_LK_FIRMWARE_SIZE,
+			 (u64)lk.ap_dram_start, MT6785_LK_DRAM_SIZE,
+			 MT6785_SCP_L1C_CON);
 	}
 
 	dev_info(scp->dev, "sram pdn after: %#x %#x %#x, clk_sw %#x, tcm[0] %#x\n",
@@ -1081,6 +1137,17 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 	if (ret < 0)
 		goto leave;
 
+	/*
+	 * LK's own images need no ELF load and no region-info rewrite: the loader copy and the
+	 * region information were written in before_load(), and the loader pulls the firmware from
+	 * the DRAM region LK prepared.
+	 */
+	if (scp->lk_staged) {
+		dev_info(dev, "not loading the ELF: LK's loader and region information are in place\n");
+		ret = 0;
+		goto leave;
+	}
+
 	ret = scp_elf_load_segments(rproc, fw);
 	if (ret)
 		goto leave;
@@ -1140,13 +1207,17 @@ static int scp_start(struct rproc *rproc)
 
 	run->signaled = false;
 
-	scp->data->scp_reset_deassert(scp);
+	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs)
+		dev_info(dev, "reboot handshake word before release: %#x (LK/vendor ready value %#x)\n",
+			 readl(scp->cluster->reg_base + MT6785_SCP_GPR_CM4_A_REBOOT),
+			 MT6785_SCP_CM4_READY_TO_REBOOT);
 
-	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs) {
-		/* the steps have to be told apart: this is right after the release write */
-		mt6785_scp_state(scp, "right after the core-release write");
-		mt6785_scp_state(scp, "a moment later");
-	}
+	scp->data->scp_reset_deassert(scp);
+	/*
+	 * Nothing reads the SCP's registers or its TCM from here on: the core owns the bus, and
+	 * the vendor's driver does not read it either. Readiness is the ready IPI over
+	 * SCP_A_TO_HOST, counted in the interrupt handler.
+	 */
 
 	ret = wait_event_interruptible_timeout(
 					run->wq,
@@ -2167,6 +2238,10 @@ static void mt6785_scp_probe_lk_images(struct mtk_scp *scp)
 		dev_warn(scp->dev, "the loader region %pR cannot be mapped\n", &res);
 		return;
 	}
+
+	scp->lk_base = base;
+	scp->lk_phys = res.start;
+	scp->lk_size = resource_size(&res);
 
 	sp = readl(base + MT6785_LK_LOADER_SP);
 	pc = readl(base + MT6785_LK_LOADER_PC);

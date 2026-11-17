@@ -216,6 +216,14 @@ struct mtk_scp {
 	bool preloaded;
 	/* LK's own loader and region information were still in the SRAM and are being used */
 	bool lk_images;
+	/* LK's copies in its reserved DRAM region were used as the image to load */
+	bool lk_staged;
+	/* SCP_A_TO_HOST interrupts (GIC SPI 201): the only readiness signal trusted here */
+	u32 to_host_irqs;
+	/* LK's reserved region: its mapping, physical base and size */
+	void __iomem *lk_base;
+	phys_addr_t lk_phys;
+	resource_size_t lk_size;
 
 	struct rproc_subdev *rpmsg_subdev;
 
