@@ -1471,10 +1471,18 @@ static int md_boot(struct ccci_md *md)
 		u32 busy = readl(md->ccif_ap + APCCIF_BUSY);
 
 		ccci_sram_read(md, SRAM_DL_HEADER, &h, sizeof(h));
-		dev_info(md->dev,
-			 "CCIF before the reset: RCHNUM %#x BUSY %#x, SRAM header %08x %08x ch %u seq %u assert %u reserved %08x\n",
-			 rchnum, busy, h.data[0], h.data[1], h.channel, h.seq_num,
-			 h.assert_bit, h.reserved);
+		{
+			u32 s0 = 0, s1 = 0, bv = 0;
+
+			if (md->pll)
+				md_boot_stage(md, &s0, &s1);
+			if (md->boot_vector)
+				bv = readl(md->boot_vector);
+			dev_info(md->dev,
+				 "CCIF before the reset: RCHNUM %#x BUSY %#x, SRAM header %08x %08x ch %u seq %u assert %u reserved %08x; MD_BOOT_VECTOR_EN %#x, boot stats %#x/%#x\n",
+				 rchnum, busy, h.data[0], h.data[1], h.channel, h.seq_num,
+				 h.assert_bit, h.reserved, bv, s0, s1);
+		}
 		if (md->first_boot)
 			hs1_pending = ccci_ccif_pending_hs1(md, &hs1_query);
 		if (hs1_pending)
@@ -1785,8 +1793,18 @@ static int md_boot(struct ccci_md *md)
 	md_md_access(md, false);
 	dev_info(md->dev, "MD_BOOT_VECTOR_EN at %#x: before %#x, after %#x\n",
 		 MD_BOOT_VECTOR_PHYS, before, after);
+	/*
+	 * Stock reads this register back too -- md_cd_let_md_go() writes 1 and logs
+	 * ccci_read32(md_boot_slave_En) immediately after (rosemary-r-oss
+	 * mt6785/md_sys1_platform.c:670-673, address MD_BOOT_VECTOR_EN 0x20000024 at
+	 * modem_reg_base.h:14) -- so a 0 read-back is a real measurement, not a missing
+	 * capability. What it cannot tell us is whether the modem consumed it on an earlier
+	 * boot: a consumed write and a write that never landed look the same here, which is
+	 * why the value at boot is printed before any reset as well.
+	 */
 	if (after != 1)
-		dev_warn(md->dev, "MD_BOOT_VECTOR_EN did not stick\n");
+		dev_warn(md->dev,
+			 "MD_BOOT_VECTOR_EN did not stick (stock logs the same read-back, so 0 here is a measurement: either consumed earlier or not sampled)\n");
 	md->first_boot = false;
 	enable_irq(md->irq_ccif);
 	enable_irq(md->irq_ccif_exp);
