@@ -224,6 +224,8 @@ struct mtk_scp {
 	u32 mtk_dram_ofs;
 	/* SCP_A_TO_HOST interrupts (GIC SPI 201): the only readiness signal trusted here */
 	u32 to_host_irqs;
+	/* the SCP's L1 cache control block (two instances 0x3000 apart) */
+	void __iomem *l1c_base;
 	/* LK's reserved region: its mapping, physical base and size */
 	void __iomem *lk_base;
 	phys_addr_t lk_phys;

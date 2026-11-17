@@ -451,6 +451,9 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_SCP_DRAM_OFS		0x200000
 /* the L1 cache configuration LK puts in the region info it leaves (pl_lk.txt:2409-2410) */
 #define MT6785_SCP_L1C_CON		0x10d
+/* LK's own L1C_CON value and the distance between the I and D instances (pl_lk.txt:2390-2393) */
+#define MT6785_SCP_L1C_CON_INIT		0x100
+#define MT6785_SCP_L1C_STRIDE		0x3000
 
 /*
  * LK's own layout inside its "SCP-reserved" region (pl_lk.txt:2305-2306, :2406-2411): the
@@ -515,6 +518,8 @@ static int mt6785_scp_check_windows(struct mtk_scp *scp);
 static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp,
 				      const struct firmware *fw);
 static void mt6785_scp_probe_lk_images(struct mtk_scp *scp);
+static void mt6785_scp_map_windows(struct platform_device *pdev,
+				   struct mtk_scp *scp);
 
 /*
  * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
@@ -542,8 +547,18 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	u32 val;
 	int ret;
 
-	/* what LK left in its own region, read where it is, not through the SCP */
-	mt6785_scp_probe_lk_images(scp);
+	/*
+	 * LK sets up the two L1 cache instances before it writes the region information:
+	 * L1C_CON = 0x100 for IL1C at 0x105d4000 and DL1C at 0x105d7000, and then reads
+	 * 105d4000 to report "l1c init status" (pl_lk.txt:2390-2393). The instances are 0x3000
+	 * apart (vendor scp_l1c.h:19-21).
+	 */
+	if (scp->l1c_base) {
+		writel(MT6785_SCP_L1C_CON_INIT, scp->l1c_base);
+		writel(MT6785_SCP_L1C_CON_INIT, scp->l1c_base + MT6785_SCP_L1C_STRIDE);
+		/* "l1c init status" is the first instance's L1C_CON read back */
+		dev_info(scp->dev, "l1c init status: %#x\n", readl(scp->l1c_base));
+	}
 
 	/* a wrong offset has to fail the probe, not the boot (audio25) */
 	ret = mt6785_scp_check_windows(scp);
@@ -812,6 +827,10 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 	 */
 	ri.il1c_con = MT6785_SCP_L1C_CON;
 	ri.dl1c_con = MT6785_SCP_L1C_CON;
+	/* the remaining fields LK prints as zero for this board (pl_lk.txt:2411-2414) */
+	ri.scp_log_thru_ap_uart = 0;
+	ri.scpctl = 0;
+	ri.ap_params_start = 0;
 	ri.struct_size = sizeof(ri);
 
 	memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &ri,
@@ -1870,6 +1889,10 @@ static int scp_add_single_core(struct platform_device *pdev,
 	int ret;
 
 	scp = scp_rproc_init(pdev, scp_cluster, of_device_get_match_data(dev), -1);
+
+	mt6785_scp_map_windows(pdev, scp);
+	mt6785_scp_probe_lk_images(scp);
+
 	if (IS_ERR(scp))
 		return PTR_ERR(scp);
 
@@ -2266,38 +2289,43 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp)
  * the loader's work survived instead of inferring it from SCP register reads that a running
  * core may not answer.
  */
+/* the named windows this SoC's bring-up uses beyond sram and cfg */
+static void mt6785_scp_map_windows(struct platform_device *pdev, struct mtk_scp *scp)
+{
+	struct resource *res;
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "l1c");
+	if (res)
+		scp->l1c_base = devm_ioremap_resource(&pdev->dev, res);
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "lk-images");
+	if (!res)
+		return;
+	scp->lk_base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (!scp->lk_base)
+		return;
+	scp->lk_phys = res->start;
+	scp->lk_size = resource_size(res);
+}
+
 static void mt6785_scp_probe_lk_images(struct mtk_scp *scp)
 {
-	struct device_node *np = scp->dev->of_node;
-	struct resource res;
-	void __iomem *base;
 	u32 sp, pc;
 
-	if (of_address_to_resource(np, 2, &res)) {
+	if (!scp->lk_base) {
 		dev_info(scp->dev, "no loader region named: nothing to probe\n");
 		return;
 	}
 
-	base = devm_ioremap(scp->dev, res.start, resource_size(&res));
-	if (!base) {
-		dev_warn(scp->dev, "the loader region %pR cannot be mapped\n", &res);
-		return;
-	}
-
-	scp->lk_base = base;
-	scp->lk_phys = res.start;
-	scp->lk_size = resource_size(&res);
-
-	sp = readl(base + MT6785_LK_LOADER_SP);
-	pc = readl(base + MT6785_LK_LOADER_PC);
-	dev_info(scp->dev, "loader region %pR: initial SP %#x reset vector %#x%s\n",
-		 &res, sp, pc,
+	sp = readl(scp->lk_base + MT6785_LK_LOADER_SP);
+	pc = readl(scp->lk_base + MT6785_LK_LOADER_PC);
+	dev_info(scp->dev, "loader region %#llx+%#zx: initial SP %#x reset vector %#x%s\n",
+		 (u64)scp->lk_phys, (size_t)scp->lk_size, sp, pc,
 		 (sp && sp < 0x10000 && pc && pc < 0x10000) ?
 		 " (looks like the loader's vector table)" : " (not a vector table)");
-	dev_info(scp->dev, "loader copies: firmware at %#llx, dram at %#llx (base+%#x, base+%#x)\n",
-		 (u64)res.start + MT6785_LK_FIRMWARE_OFS,
-		 (u64)res.start + MT6785_LK_DRAM_OFS,
-		 MT6785_LK_FIRMWARE_OFS, MT6785_LK_DRAM_OFS);
+	dev_info(scp->dev, "loader copies: firmware at %#llx, dram at %#llx\n",
+		 (u64)scp->lk_phys + MT6785_LK_FIRMWARE_OFS,
+		 (u64)scp->lk_phys + MT6785_LK_DRAM_OFS);
 }
 
 /*
@@ -2402,14 +2430,18 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 	ri.ap_dram_backup_start = base + MT6785_LK_DRAM_OFS * 2;
 	ri.il1c_con = MT6785_SCP_L1C_CON;
 	ri.dl1c_con = MT6785_SCP_L1C_CON;
+	/* the remaining fields LK prints as zero for this board (pl_lk.txt:2411-2414) */
+	ri.scp_log_thru_ap_uart = 0;
+	ri.scpctl = 0;
+	ri.ap_params_start = 0;
 	ri.struct_size = sizeof(ri);
 	memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &ri, sizeof(ri));
 	/* the loader must see the region info before the core is released */
 	wmb();
 
-	dev_info(scp->dev, "staged the MTK image: loader %#zx into the TCM, firmware %#x at %#llx, dram %#zx at %#llx\n",
+	dev_info(scp->dev, "staged: loader %#zx to the TCM, firmware %#x at %#llx, dram %#zx at %#llx, l1c %#x/%#x\n",
 		 loader_len, fw_len, (u64)ri.ap_firmware_start, dram_len,
-		 (u64)ri.ap_dram_start);
+		 (u64)ri.ap_dram_start, ri.il1c_con, ri.dl1c_con);
 
 	return 0;
 }
