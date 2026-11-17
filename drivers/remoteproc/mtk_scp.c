@@ -481,8 +481,14 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	/* Clear any stale SCP to host interrupt */
 	writel(MT8183_SCP_IPC_INT_BIT, cluster->reg_base + MT8183_SCP_TO_HOST);
 
-	/* Reset the clock selection before loading, as the vendor does */
-	writel(0x0, cluster->reg_base + MT8183_SCP_CLK_SW_SEL);
+	/*
+	 * No write to the SCP clock block at cfg + 0x4000 here, and that is deliberate:
+	 * mt8183's before_load writes CLK_SW_SEL there, but the vendor's MT6785 driver only
+	 * ever *reads* it (scp_excep.c:227 and :317, both dumps; the block is ioremapped for
+	 * those dumps at scp_helper.c:1764-1769) - the SCP's clock is chosen by topckgen's
+	 * mux, which the clock framework owns. Writing 0 into an undocumented mux select is
+	 * how a block ends up reading as zeros from the AP, which is what audio17 measured.
+	 */
 
 	/*
 	 * Turn the TCM on. On this phone the three power-down registers read
