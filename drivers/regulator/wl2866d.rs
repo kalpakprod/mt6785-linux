@@ -8,11 +8,13 @@
 //! SoC (`drivers/regulator/wl2866d.c` in the 4.19 drop): voltage selectors in `0x03..0x06`,
 //! output enables in `0x0E` (bit n for output n), discharge control in `0x02`.
 //!
-//! The vendor checks the chip identity by reading `0x03`, which is output 1's voltage
-//! selector - its own table writes `0x64` there, so the check passes by construction and
-//! proves nothing. This driver reads `0x00` and warns, but does not fail, when the value is
-//! not the expected id: the real id register is not documented in the vendor drop, and a
-//! camera rail that works should not be rejected over an unproven register.
+//! There is **no identity check**, on purpose. The vendor's own is not one - it reads `0x03`,
+//! which is output 1's voltage selector, so it passes by construction - and the parts'
+//! datasheet-level description does not give a readable id register either: on the phone
+//! `i2cdump` of `0-0028` reads `00 00 00 64 64 80 80 00`, i.e. `0x00` is zero while
+//! `0x03..0x06` hold the voltage selectors. What the driver checks is what exists: the first
+//! transfer must succeed (the I2C client only probes when the chip acknowledges its address),
+//! and the registers it later programs are the ones the phone's dump shows as real.
 
 use kernel::{
     device::Core,
@@ -31,9 +33,6 @@ const REG_DISCHARGE: u8 = 0x02;
 const REG_VSET0: u8 = 0x03;
 /// Output enable, bit n for output n.
 const REG_ENABLE: u8 = 0x0E;
-/// Where this driver looks for the chip identity.
-const REG_CHIP_ID: u8 = 0x00;
-const CHIP_ID_WL2866D: u8 = 0x64;
 
 /// Outputs 0-1 step 6 mV from 600 mV, outputs 2-3 step 12.5 mV from 1200 mV - the vendor's
 /// `VSET_BASE_12`/`VSET_STEP_MV` and `VSET_BASE_34`/`VSET_STEP_MV_34`, in microvolts.
@@ -191,11 +190,13 @@ impl<'a> i2c::Driver for Wl2866d<'a> {
         let client: &'bound i2c::I2cClient<kernel::device::Bound> = client;
         let dev = client.as_ref();
 
-        let id = client.smbus_io().try_read8(REG_CHIP_ID as usize)?;
-        if id != CHIP_ID_WL2866D {
-            dev_warn!(dev, "chip id 0x{id:02x}, expected 0x{CHIP_ID_WL2866D:02x}\n");
-        }
-
+        /*
+         * No identity register exists to check: the vendor's "id" read is output 1's voltage
+         * selector (0x03), which passes by construction, and the documented register map has no
+         * id byte - the phone's i2cdump shows 0x00 reading as zero. The chip answering its
+         * address at all is what the I2C probe already proved; the first write below is the
+         * first real evidence that it is the part the board expects.
+         */
         // Discharge off before anything is enabled, as the vendor's sequence does.
         client.smbus_io().try_write8(0x00, REG_DISCHARGE as usize)?;
 
