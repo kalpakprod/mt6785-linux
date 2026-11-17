@@ -1639,10 +1639,9 @@ static int scp_map_memory_region(struct mtk_scp *scp)
 		return 0;
 	}
 
-	if (ret) {
-		dev_err(scp->dev, "failed to assign memory-region: %d\n", ret);
-		return -ENOMEM;
-	}
+	if (ret)
+		return dev_err_probe(scp->dev, ret,
+				     "failed to assign memory-region\n");
 
 	/* Reserved SCP code size */
 	scp_sizes = scp->data->scp_sizes;
@@ -1814,8 +1813,15 @@ static struct mtk_scp *scp_rproc_init(struct platform_device *pdev,
 		return ERR_PTR(ret);
 
 	ret = scp_map_memory_region(scp);
-	if (ret)
+	if (ret) {
+		/*
+		 * Nothing below has been set up yet - no IPI locks, no share buffer - so the
+		 * teardown at release_dev_mem (which destroys those locks) must not run: it
+		 * would destroy uninitialised mutexes.
+		 */
+		of_reserved_mem_device_release(scp->dev);
 		return ERR_PTR(ret);
+	}
 
 	mutex_init(&scp->send_lock);
 	for (i = 0; i < SCP_IPI_MAX; i++)
@@ -2386,7 +2392,8 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 	size_t loader_len = 0, scp_len = 0, dram_len = 0;
 	const void *loader, *scp_img, *dram;
 	u32 fw_len, rest_len;
-	dma_addr_t base = scp->dma_addr;
+	/* the images go where the SCP master may read them: LK's own region */
+	dma_addr_t base = scp->lk_phys;
 
 	loader = mtk_img_find(fw, "tinysys-loader-CM4_A", &loader_len);
 	scp_img = mtk_img_find(fw, "tinysys-scp-CM4_A", &scp_len);
@@ -2397,8 +2404,7 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 		return -EINVAL;
 	}
 	if (loader_len > MT6785_SCP_LOADER_SLOT ||
-	    base + MT6785_LK_DRAM_OFS + dram_len >
-		    scp->dma_addr + scp->data->scp_sizes->max_dram_size) {
+	    MT6785_LK_DRAM_OFS + dram_len > scp->lk_size) {
 		dev_err(scp->dev, "image does not fit: loader %#zx dram %#zx\n",
 			loader_len, dram_len);
 		return -EINVAL;
@@ -2418,8 +2424,14 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 	/* LK's own copy puts the initial stack pointer and the reset vector here (0x538, 0x1e1) */
 	dev_info(scp->dev, "loader in the TCM: SP %#x reset vector %#x, %#zx bytes from the firmware\n",
 		 readl(scp->sram_base), readl(scp->sram_base + 4), loader_len);
-	memcpy_toio(scp->cpu_addr + MT6785_LK_FIRMWARE_OFS, scp_img, fw_len);
-	memcpy_toio(scp->cpu_addr + scp->mtk_dram_ofs, dram, dram_len);
+	if (!scp->lk_base) {
+		dev_err(scp->dev, "no region to stage the firmware into\n");
+		return -ENODEV;
+	}
+	memcpy_toio(scp->lk_base + MT6785_LK_FIRMWARE_OFS, scp_img, fw_len);
+	memcpy_toio(scp->lk_base + scp->mtk_dram_ofs, dram, dram_len);
+	/* the loader is staged in that region as well, where LK puts it */
+	memcpy_toio(scp->lk_base, loader, loader_len);
 
 	ri.ap_loader_start = base;
 	ri.ap_loader_size = MT6785_SCP_LOADER_SLOT;

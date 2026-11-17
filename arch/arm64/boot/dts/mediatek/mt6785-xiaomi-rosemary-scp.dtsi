@@ -107,13 +107,14 @@
 		mediatek,infracfg = <&infracfg>;
 
 		/*
-		 * The images live where the loader expects them and where the secure side
-		 * has already opened the SCP's DRAM access: LK's own region, 0x9fc00000 with
-		 * 3 MiB, for which LK programs EMI MPU region 6 (pl_lk.txt:2416). Linux
-		 * cannot program EMI MPU, so a carve-out of ours (0x50000000) is unreachable
-		 * for the SCP master and its firmware fetch would be blocked.
+		 * This one is the driver's shared pool: of_reserved_mem_device_init() attaches a
+		 * shared-dma-pool for dma_alloc_coherent(), and mtk_scp allocates its DRAM window
+		 * from it at probe. A plain no-map region such as LK's cannot be attached that way
+		 * (no compatible), so it is not the memory-region: the driver maps it with its own
+		 * "lk-images" window and stages the vendor images into it, where the SCP master may
+		 * read them (see the region's own comment).
 		 */
-		memory-region = <&scp_lk_mem>;
+		memory-region = <&scp_mem_reserved>;
 		/*
 		 * The vendor's own image, as shipped in the scp_a partition: MTK records with
 		 * tinysys-loader-CM4_A, tinysys-scp-CM4_A and tinysys-scp-CM4_A_dram inside
