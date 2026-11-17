@@ -80,3 +80,46 @@ In this order, because each one is checkable on its own and the next depends on 
 Until step 1 stands, the existing voltage-based hold service stays as it is; when the driver lands, the
 service switches from `voltage_now` on `fuel-gauge` to `capacity` on `mt6359_fg`, and the 45-50 % hold becomes
 a percentage instead of a voltage window.
+
+## rosemary's own battery tables: where they are and what they say
+
+Extracted while wiring the profile (lead note 40). The MT6785 vendor board data is
+included by the SoC dts and is therefore what rosemary runs - it is not a board
+override, and that is worth knowing before trusting it:
+
+    arch/arm64/boot/dts/mediatek/mt6785.dts:4843  mediatek/bat_setting/mt6785_battery_prop.dtsi
+    arch/arm64/boot/dts/mediatek/mt6785.dts:5933  mediatek/bat_setting/mt6785_battery_table.dtsi
+    (vendorfoulder: scratch/poco-lunaris-kernel/, same paths)
+
+Properties, `mt6785_battery_prop.dtsi:17-72`:
+
+    R_FG_VALUE            5      sense resistor, vendor units; DEFAULT_R_FG is 50
+                                 (mt6359_gauge.c:44), so the scaling the vendor applies
+                                 is 50/5 = 10 -> the resistor is 5 mOhm
+    TEMPERATURE_T0..T4    50, 25, 10, 0, -10   the five table temperatures (degC)
+    g_FG_PSEUDO100_T0..T4 97, 97, 97, 90, 86    the "100 %" point the vendor hides
+    Q_MAX_SYS_VOLTAGE_BAT0..3  3350 (0.1 mV)    pseudo-100 mV thresholds
+    CAR_TUNE_VALUE        100                    current calibration
+    FG_METER_RESISTANCE   100                    PCB resistance, 0.1 mOhm
+
+Tables, `mt6785_battery_table.dtsi` (1578 lines, one block per temperature):
+
+    battery0_profile_t0_num = <100>;  battery0_profile_t0_col = <3>;
+    battery0_profile_t0 = < 0 44120 730  500 44012 726  1000 43903 725 ... >;
+
+with, per row, capacity in **0.1 mAh**, open-circuit voltage in **0.1 mV** and
+resistance in **0.1 mOhm**: the first rows read 0 mAh / 4412.0 mV / 73.0 mOhm, and the
+tables run to about 4950 mAh, which matches the 5 Ah design capacity.
+
+That is exactly the input a `simple-battery` profile needs, in the standard units:
+
+    ocv-capacity-table-N : OCV in uV (column 2 * 100), capacity in % (column 1 / 10
+                           divided by the full charge, times 100)
+    resistance-temp-table : resistance in uOhm (column 3 * 100) against temperature
+
+Still to do: convert the five vendor tables into those properties in the board DT and
+use power_supply_ocv2cap_simple() for capacity, so the percentage comes from the
+battery's own curve instead of a constant. The sense-resistor unit above is already
+fixed in the driver (`mediatek,r-fg-value = <5>`, the vendor's number), because a
+factor of ten in the wrong place is exactly the kind of error the host test exists to
+prevent.

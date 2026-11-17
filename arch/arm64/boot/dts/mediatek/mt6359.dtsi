@@ -37,7 +37,7 @@
 		 */
 		gauge {
 			compatible = "mediatek,mt6359-gauge";
-			mediatek,r-fg-mohm = <50>;
+			mediatek,r-fg-value = <5>;
 			mediatek,charge-full-microamp-hours = <5000000>;
 		};
 

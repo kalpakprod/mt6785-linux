@@ -198,9 +198,19 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	g->dev = &pdev->dev;
 	g->regmap = chip->regmap;
 
-	g->r_fg_mohm = MT6359_R_FG_NOMINAL;
-	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,r-fg-mohm", &val))
-		g->r_fg_mohm = val;
+	/*
+	 * The sense resistor, in the vendor's own units. The vendor board data gives
+	 * R_FG_VALUE = 5 for this platform
+	 * (arch/arm64/boot/dts/mediatek/bat_setting/mt6785_battery_prop.dtsi:17,
+	 * "R_sense resistance") and the driver scales every current by
+	 * DEFAULT_R_FG / r_fg_value (mt6359_gauge.c:258-260), where DEFAULT_R_FG is 50
+	 * (:44) - so the resistor is 5 mOhm and the counter needs a factor of ten
+	 * against the nominal. Passing the vendor's number straight through keeps the
+	 * arithmetic identical to the vendor's.
+	 */
+	g->r_fg_mohm = MT6359_R_FG_NOMINAL / 10;	/* 5 mOhm: R_FG_VALUE in the board data */
+	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,r-fg-value", &val))
+		g->r_fg_mohm = MT6359_R_FG_NOMINAL / (val ? val : 1);
 
 	g->charge_full_uah = 5000000;	/* 5 Ah, as the vendor profile reports */
 	if (!of_property_read_u32(pdev->dev.of_node,
