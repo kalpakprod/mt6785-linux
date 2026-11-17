@@ -99,4 +99,20 @@ config MTK_SOCINFO
 	  information about the SoC to the userspace including the
 	  manufacturer name, marketing name and soc name.
 
+config MTK_SPM_MT6785_KICK
+	tristate "MT6785 SPM firmware kick (probe)"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Send the vendor's SPM firmware kick SMC on MT6785 and report what the
+	  secure monitor says about the PCM firmware before and after it.
+
+	  This is a probe, not a driver: it issues exactly the SMC the vendor's
+	  late_initcall(mtk_sleep_init) issues on this SoC
+	  (drivers/misc/mediatek/base/power/spm/mt6785/mtk_spm.c:405-408) and none
+	  of the SPM register programming that precedes it there. It exists to
+	  answer one question -- whether the PCM firmware can be brought to
+	  "loaded and kicked" without the vendor's setup -- because the modem's
+	  26 MHz request and the AP's own MD source request are only observable
+	  while that firmware runs.
+
 endmenu
