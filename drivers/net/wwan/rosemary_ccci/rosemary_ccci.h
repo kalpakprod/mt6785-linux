@@ -265,6 +265,9 @@ struct ap_query_md_feature_v2_1 {
 /* the MD bus protection: step1 BIT(7), step2 BIT(3)|BIT(4) (vendor clk-mt6785-pg.c) */
 #define INFRA_TOPAXI_PROTECTEN	0x220
 #define INFRA_TOPAXI_PROTECT_STA1 0x228	/* which of those the target acknowledged */
+/* the second MD protect block: step2_1 BIT(6) and its acknowledgement */
+#define INFRA_TOPAXI_PROTECTEN_1	0x250
+#define INFRA_TOPAXI_PROTECT_STA1_1	0x258
 #define INFRA_RST0_PD		0x150
 #define INFRA_RST1_PD		0x154
 
@@ -392,6 +395,7 @@ struct ccci_md {
 	bool rails_on;		/* this driver enabled vmodem and vsram_md */
 	bool pm_held;		/* the runtime-PM reference this driver owns */
 	bool wdt_irq_on;	/* the modem's watchdog interrupt is enabled */
+	struct dentry *debugfs;	/* the read-only state dumps */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;
 	enum ccci_state state;
@@ -482,5 +486,12 @@ void ccci_recv_control(struct ccci_md *md, const struct ccci_header *h,
 void ccci_ee_on_channel(struct ccci_md *md, unsigned int ch);
 void ccci_md_stop(struct ccci_md *md);
 void ccci_set_state(struct ccci_md *md, enum ccci_state state);
+
+/* the state's name, for logs and the debugfs dump */
+const char *ccci_state_name(enum ccci_state state);
+
+/* debugfs.c: read-only dumps of the modem's state */
+void rosemary_ccci_debugfs_add(struct ccci_md *md);
+void rosemary_ccci_debugfs_remove(struct ccci_md *md);
 
 #endif /* __ROSEMARY_CCCI_H */

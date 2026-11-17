@@ -76,6 +76,13 @@ static const char *const state_names[] = {
 	[MD_STATE_EXCEPTION] = "exception",
 };
 
+const char *ccci_state_name(enum ccci_state state)
+{
+	if (state >= ARRAY_SIZE(state_names))
+		return "?";
+	return state_names[state];
+}
+
 /* the stage the module was told to stop at; m0_only overrides it */
 static int stage_limit(void)
 {
@@ -1643,8 +1650,16 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(dev, "no packet data path: %d\n", ret);
 
+	/*
+	 * The read-only dumps: /sys/kernel/debug/rosemary_ccci/state and .../regions.
+	 * The modem on this port never parks, and the four clamp variants that tried
+	 * to explain it produced the same refusal, so what is left is reading the
+	 * state the vendor reads when its modem misbehaves (mt6785/ap_md_reg_dump.c).
+	 */
+	rosemary_ccci_debugfs_add(md);
+
 	dev_info(dev, "probed: stop_after %s, the modem stays %s until userspace boots it\n",
-		 stop_after ?: "?", state_names[md->state]);
+		 stop_after ?: "?", ccci_state_name(md->state));
 	return 0;
 }
 
@@ -1748,6 +1763,7 @@ static void rosemary_ccci_remove(struct platform_device *pdev)
 	 * "sysfs: cannot create duplicate filename '/class/ccci'" (-EEXIST), so the
 	 * driver could not be reloaded after a single rmmod.
 	 */
+	rosemary_ccci_debugfs_remove(md);
 	ccci_md_stop(md);
 	rosemary_ccci_dpmaif_exit(md);
 	ccci_ports_exit(md);
