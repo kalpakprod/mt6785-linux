@@ -1716,12 +1716,6 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	md->pm_held = true;
 	md_domain_trace(md, "probe after get");
 	md_loader_state(md, "probe");
-	/*
-	 * The first AP-state snapshot, taken before anything of ours touches the modem and
-	 * before any provider sync can power a domain off: this is the reference the later
-	 * diffs are measured against (trial 33's hypothesis, see md_ap_snapshot()).
-	 */
-	md_ap_snapshot(md, "probe");
 	regmap_read(md->spm_map, SPM_PWR_STATUS, &status);
 	/*
 	 * The reference is HELD from here until the modem is stopped, on purpose.
@@ -1753,6 +1747,14 @@ static int rosemary_ccci_probe(struct platform_device *pdev)
 	ret = md_map_regs(md);
 	if (ret)
 		return ret;
+	/*
+	 * The reference AP-state snapshot, and it has to be here: md_map_regs() is what maps
+	 * the SPM and infracfg windows this reads. Trial 34 had the call queued above the
+	 * mapping, where the guard returned early and the diff was empty by construction --
+	 * the log's first snapshot said "(first snapshot)" with "was 0x0" after the sync had
+	 * already happened.
+	 */
+	md_ap_snapshot(md, "probe");
 	ret = rosemary_ccci_tags_init(md);
 	if (ret) {
 		/*
