@@ -780,9 +780,22 @@ ntc_log:
 
 		mt6359_gauge_read_reg(g, 0xd92, &off0);
 		mt6359_gauge_read_reg(g, 0xd94, &off1);
+		/*
+		 * conn42 read 0xfe1f/0x0000, i.e. -481 in the current ADC's LSB - and the
+		 * counter still drifts ~330 counts/s (28 uAh/s, ~100 mA). The vendor applies
+		 * this trim in hardware to the current ADC only and leaves the CAR
+		 * accumulating the untrimmed current, and its coulomb path subtracts no
+		 * software offset at all: PMIC_FG_OFFSET is read and its use commented out
+		 * (mt6359_gauge.c:2548), gauge_get_coulomb() has no offset term
+		 * (mt6359_gauge.c:1464-1480), and the only calibration there is a slope fit,
+		 * fgauge_enable_car_tune_value_calibration (mt6359_gauge.c:2835), which
+		 * cannot remove a zero offset. Their capacity therefore comes from OCV tables
+		 * and the counter only integrates short intervals; that is the structure this
+		 * driver has to copy rather than a constant to subtract.
+		 */
 		dev_info(&pdev->dev,
-			 "FG offset trim FGADC_OFFSET_CON0/1 = 0x%04llx/0x%04llx\n",
-			 off0, off1);
+			 "FG offset trim FGADC_OFFSET_CON0/1 = 0x%04llx/0x%04llx (%lld as s16: hardware trim on the current ADC only, the CAR accumulates untrimmed)\n",
+			 off0, off1, (long long)(s16)off0);
 	}
 
 	debugfs_create_file("car_raw", 0444, NULL, g, &mt6359_gauge_car_fops);

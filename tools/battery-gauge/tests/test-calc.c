@@ -47,6 +47,17 @@ int main(int argc, char **argv)
 	expect("car 11900 -> uAh (conn40/conn41 fit)", mt6359_car_to_uah(11900, 5), 1011);
 	expect("discharge: car -11900 -> uAh", mt6359_car_to_uah(-11900, 5), -1011);
 	/*
+	 * conn42 end to end, the run that confirms the model on a charging-only log:
+	 * 46810 uAh integrated, 881676 raw counts, 884 s. The scale accounts for 557039 of
+	 * those counts and the rest is the offset term, 324637 counts over 884 s = 367
+	 * counts/s - the same order as conn40/conn41's 330, which is why the offset is a
+	 * real, separate fault and not a scale error.
+	 */
+	expect("conn42: charge part of the raw delta (uAh at the 85 constant)",
+	       mt6359_car_to_uah(46810 * 1000 / 85, 5), 46809);
+	expect("conn42: residual counts per second",
+	       (long long)((881676 - 46810 * 1000 / 85) / 884), 374);
+	/*
 	 * The vendor's current arithmetic (mt6359_gauge.c:250-266) with this board's
 	 * numbers: raw * 610352 / 100000, * 50 / 5, * 100 / 1000, in 0.1 mA.
 	 *   raw 1000 -> 6103 -> 61030 -> 6103 -> 610300 uA
