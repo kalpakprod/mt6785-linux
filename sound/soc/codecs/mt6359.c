@@ -2719,34 +2719,22 @@ static void mt6359_codec_dai_shutdown(struct snd_pcm_substream *substream,
 }
 
 /*
- * The MTKAIF transmitter's FIFOs are switched by the MTKAIF_TX supply widget's
- * DAPM events (mt_mtkaif_tx_event(): PRE_PMU enables them, POST_PMD writes the
- * disabled value). DAPM runs those sequences asynchronously, so when captures
- * follow one another the power-down of the previous stream can land after the
- * power-up of the next one, and the register then stays at its disabled value
- * for the whole capture: audio11 read AFE_AUD_PAD_TOP = 0x3000 during every
- * capture after the first while every widget, MTKAIF_TX included, read On. Set
- * the FIFOs again here, on the DAI's own trigger, which runs after the DAPM
- * stream event and immediately before samples flow.
+ * No .trigger on this codec, deliberately. The MTKAIF transmitter's FIFOs belong to
+ * the MTKAIF_TX supply widget's DAPM events (mt_mtkaif_tx_event(): PRE_PMU enables
+ * them, POST_PMD writes the disabled value), which is the upstream arrangement for
+ * this family - mt6358.c does the same from its own enable sequences
+ * (mt6358_mtkaif_tx_enable() at mt6358.c:1674 and :1765), and the DAI trigger of
+ * every mt63xx codec here has no register access at all. It cannot have one: this
+ * codec hangs off pwrap, whose reads sleep (pwrap_read16() ends in
+ * usleep_range_state()), and the PCM trigger runs with interrupts disabled. A
+ * regmap write from there is what audio14 reported as "BUG: scheduling while
+ * atomic" and then a preempt count of 0xffffffff, with the transmitter left at
+ * 0x3000 for the whole capture.
  */
-static int mt6359_codec_dai_trigger(struct snd_pcm_substream *substream, int cmd,
-				    struct snd_soc_dai *dai)
-{
-	struct snd_soc_component *cmpnt = dai->component;
-	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
-
-	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE &&
-	    cmd == SNDRV_PCM_TRIGGER_START)
-		mt6359_mtkaif_tx_enable_priv(priv);
-
-	return 0;
-}
-
 static const struct snd_soc_dai_ops mt6359_codec_dai_ops = {
 	.hw_params = mt6359_codec_dai_hw_params,
 	.startup = mt6359_codec_dai_startup,
 	.shutdown = mt6359_codec_dai_shutdown,
-	.trigger = mt6359_codec_dai_trigger,
 };
 
 #define MT6359_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_U16_LE |\
