@@ -60,16 +60,61 @@ void mtk_cam_core_put(struct mtk_cam_core *cam)
 EXPORT_SYMBOL_GPL(mtk_cam_core_put);
 
 /*
- * A pipeline entity bound. Two rules make a missing neighbour harmless:
+ * A pipeline entity bound. Links are made per entity, from the source side, so that an absent
+ * neighbour costs only its own link:
  *
- *  - the link for this entity is created from its own firmware endpoint as soon as it appears
- *    (`v4l2_create_fwnode_links_to_pad()` does the walk and the link), so one sensor failing
- *    never leaves the other without its link;
- *  - the subdevice nodes are registered once the receiver and the engine are there - the two
- *    entities the pipeline cannot work without - rather than in `.complete`, which upstream
- *    reaches only when every match has bound and which an optional sensor would hold open for
- *    ever.
+ *  - for each of this entity's *sink* pads, the firmware endpoint that pad is wired to names the
+ *    entity that feeds it; that entity is the source and this pad the destination, which is
+ *    exactly `v4l2_create_fwnode_links_to_pad(source_sd, sink_pad, flags)`;
+ *  - the subdevice nodes are registered once the receiver and the engine are present, rather than
+ *    in `.complete()`, which upstream reaches only when every match has bound.
  */
+static struct v4l2_subdev *cam_subdev_by_node(struct mtk_cam_core *cam,
+					      struct device_node *np)
+{
+	unsigned int i;
+
+	if (!np)
+		return NULL;
+
+	for (i = 0; i < cam->n_entities; i++)
+		if (cam->entities[i].np == np)
+			return cam->entities[i].sd;
+
+	return NULL;
+}
+
+/*
+ * The node this entity's pad @pad is wired to, through the endpoint the device tree declares.
+ * Port numbering follows the pads: pad N is port N of the entity's node.
+ */
+static struct device_node *cam_pad_remote_of(struct device_node *np, unsigned int pad)
+{
+	struct device_node *ports, *port, *ep, *remote = NULL;
+
+	port = of_get_child_by_name(np, "port");
+	if (!port) {
+		ports = of_get_child_by_name(np, "ports");
+		if (!ports)
+			return NULL;
+		port = of_get_child_by_name(ports, "port@%u");
+		of_node_put(ports);
+		(void)port;
+		port = NULL;
+	}
+
+	if (port) {
+		ep = of_get_child_by_name(port, "endpoint");
+		if (ep) {
+			remote = of_graph_get_remote_endpoint(ep);
+			of_node_put(ep);
+		}
+		of_node_put(port);
+	}
+
+	return remote;
+}
+
 static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 			      struct v4l2_subdev *sd,
 			      struct v4l2_async_connection *asc)
@@ -77,7 +122,6 @@ static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 	struct mtk_cam_core *cam =
 		container_of(notifier, struct mtk_cam_core, notifier);
 	struct v4l2_subdev *seninf = NULL, *camsv = NULL;
-	struct fwnode_handle *ep;
 	unsigned int i;
 
 	if (cam->n_entities < ARRAY_SIZE(cam->entities)) {
@@ -88,12 +132,31 @@ static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 
 	dev_info(cam->dev, "%s bound (%u entities)\n", sd->name, cam->n_entities);
 
-	/* The subdevice's endpoint names the entity it feeds; make that link now. */
-	fwnode_graph_for_each_endpoint(dev_fwnode(sd->dev), ep) {
-		fwnode_handle_get(ep);
-		if (v4l2_create_fwnode_links_to_pad(sd, &sd->entity.pads[0], 0))
-			dev_dbg(cam->dev, "%s: no link from endpoint %pfwf\n", sd->name, ep);
-		fwnode_handle_put(ep);
+	/*
+	 * Every sink pad of this entity is fed by the entity its firmware endpoint names; make that
+	 * link with the feeding entity as the source, never with this entity as its own source.
+	 */
+	for (i = 0; i < sd->entity.num_pads; i++) {
+		struct media_pad *pad = &sd->entity.pads[i];
+		struct device_node *remote_np;
+		struct v4l2_subdev *src;
+		int ret;
+
+		if (!(pad->flags & MEDIA_PAD_FL_SINK))
+			continue;
+
+		remote_np = cam_pad_remote_of(sd->dev->of_node, i);
+		if (!remote_np)
+			continue;
+
+		src = cam_subdev_by_node(cam, remote_np);
+		of_node_put(remote_np);
+		if (!src)
+			continue;
+
+		ret = v4l2_create_fwnode_links_to_pad(src, pad, 0);
+		if (!ret)
+			dev_info(cam->dev, "link %s -> %s:%u\n", src->name, sd->name, i);
 	}
 
 	for (i = 0; i < cam->n_entities; i++) {
@@ -104,11 +167,6 @@ static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 	}
 
 	if (seninf && camsv && !cam->nodes_registered) {
-		/* The engine's sink pad is fed by the receiver's source pad. */
-		if (!media_create_pad_link(&seninf->entity, seninf->entity.num_pads - 1,
-					   &camsv->entity, 0, MEDIA_LNK_FL_ENABLED))
-			dev_info(cam->dev, "link %s -> %s\n", seninf->name, camsv->name);
-
 		if (!v4l2_device_register_subdev_nodes(&cam->v4l2_dev))
 			cam->nodes_registered = true;
 	}

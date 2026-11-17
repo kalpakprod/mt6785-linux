@@ -529,6 +529,15 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_video;
 
+	/*
+	 * The video node is an entity of its own in the graph; without a link from the engine's
+	 * subdevice the pipeline cannot be validated at STREAMON.
+	 */
+	if (!media_create_pad_link(&camsv->subdev.entity, 0, &camsv->vdev.entity, 0,
+				   MEDIA_LNK_FL_ENABLED))
+		dev_info(dev, "link %s -> video%d\n", camsv->subdev.name,
+			 camsv->vdev.num);
+
 	dev_info(dev, "raw capture on /dev/video%d\n", camsv->vdev.num);
 
 	return 0;

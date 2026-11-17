@@ -285,6 +285,7 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	/* The receiver is a subdevice in the pipeline: sink pad from the sensor, source to CAMSV. */
 	v4l2_subdev_init(&seninf->sd, &mtk_seninf_subdev_ops);
 	seninf->sd.dev = dev;
+	seninf->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	seninf->sd.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
 	strscpy(seninf->sd.name, dev_name(dev), sizeof(seninf->sd.name));
 	seninf->pads[0].flags = MEDIA_PAD_FL_SINK;
