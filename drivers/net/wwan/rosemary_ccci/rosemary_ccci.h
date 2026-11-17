@@ -298,6 +298,18 @@ struct ap_query_md_feature_v2_1 {
 #define INFRA_BUS_DBG_CON	0x2fc
 
 /*
+ * topckgen's MD clock-mode register: bits 8 and 9 gate the modem's clocks at the clock
+ * controller. Not a guess -- the vendor's MT6785 power-off performs the same write
+ * ("gating md related clock", ap_topclkgen value |= (1 << 8) | (1 << 9),
+ * los-mt6785 mt6739/md_sys1_platform.c:966-970, the same shape in the mt6785 file), and the
+ * MT6878 mainline driver does it around its power change
+ * (plinius-kernel/mtk-ccci.c:101-102, set at :2528-2529, cleared at :2539-2540).
+ */
+#define TOPCKGEN_PHYS		0x10000000
+#define TOPCKGEN_MD_CLK_MODE	0x000
+#define MD_CLK_MODE_OFF		(BIT(8) | BIT(9))
+
+/*
  * TOPRGU, the watchdog block that also holds the per-peripheral software reset bits.
  * The MD's bit is MT6785_TOPRGU_MD_RST = 7 (include/dt-bindings/reset/
  * mediatek,mt6785-resets.h:22) and mainline's mtk_wdt writes it as
@@ -458,6 +470,7 @@ struct ccci_md {
 	bool snap_valid;
 	struct dentry *debugfs;	/* the read-only state dumps */
 	void __iomem *toprgu;	/* read-back of the MD reset bit */
+	void __iomem *topckgen;	/* the MD clock-mode bits live here */
 	int vmodem_uv;		/* the voltage this driver asked for (0: it did not) */
 	u64 vendor_on_ns;	/* when the vendor power-on wrote its clears */
 	u8 page_win;		/* debugfs page view: 0 NC, 1 C, 2 none selected */
