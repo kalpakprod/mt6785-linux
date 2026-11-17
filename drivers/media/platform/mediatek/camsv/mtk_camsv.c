@@ -100,6 +100,7 @@ struct mtk_camsv {
 	struct clk_bulk_data clks[1];
 	struct clk *main_clk;
 	struct clk *tg_clk;
+	struct clk *gals_clk;
 	int irq;
 
 	struct video_device vdev;
@@ -112,6 +113,7 @@ struct mtk_camsv {
 	struct vb2_queue queue;
 	struct media_pipeline pipeline;
 	phys_addr_t base_pa;
+	bool stream_dump;
 	unsigned int irq_count;
 	struct v4l2_format cur_fmt;
 	struct v4l2_mbus_framefmt mbus_fmt;
@@ -122,6 +124,21 @@ struct mtk_camsv {
 static inline struct mtk_camsv *to_camsv(struct video_device *vdev)
 {
 	return container_of(vdev, struct mtk_camsv, vdev);
+}
+
+/* DIAG (not for upstream): the engine's first 0x100, read-only, eight words a line. */
+static void camsv_dump_engine(struct mtk_camsv *camsv)
+{
+	unsigned int off;
+
+	for (off = 0; off < 0x100; off += 0x20)
+		dev_info(camsv->dev,
+			 "camsv 0x%08llx: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+			 (unsigned long long)camsv->base_pa + off,
+			 readl(camsv->base + off), readl(camsv->base + off + 4),
+			 readl(camsv->base + off + 8), readl(camsv->base + off + 0xc),
+			 readl(camsv->base + off + 0x10), readl(camsv->base + off + 0x14),
+			 readl(camsv->base + off + 0x18), readl(camsv->base + off + 0x1c));
 }
 
 /* ---- register programming, cezanne map ---- */
@@ -185,6 +202,10 @@ static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 
 	writel(CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK | CAMSV_MODULE_EN_UNPACK |
 	       CAMSV_MODULE_EN_IMGO, camsv->base + CAMSV_MODULE_EN);
 	/* The mask goes in last, once the engine is out of reset and running. */
+	/* DIAG: which of the engine's first 0x100 offsets are live on this generation. */
+	if (camsv->stream_dump)
+		camsv_dump_engine(camsv);
+
 	writel(CAMSV_INT_EN_VENDOR, camsv->base + CAMSV_INT_EN);
 	writel(BIT(0), camsv->base + CAMSV_TG_VF_CON);
 
@@ -282,6 +303,11 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 		dev_info(camsv->dev, "cam tg clock: %d, %lu Hz\n", ret,
 			 clk_get_rate(camsv->tg_clk));
 	}
+	if (camsv->gals_clk) {
+		ret = clk_prepare_enable(camsv->gals_clk);
+		dev_info(camsv->dev, "cam gals clock: %d, %lu Hz\n", ret,
+			 clk_get_rate(camsv->gals_clk));
+	}
 
 	/*
 	 * Start the chain from the source end: the receiver's s_stream() programs the CSI-2 side and
@@ -311,6 +337,10 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	/* The vendor mask is written here, not only when a buffer happens to be armed first
 	 * (cezanne map, 5-cameras.md §3.2: INT_EN 0x0018 = 0x31871), so the engine can report a
 	 * frame even if userspace queues late. */
+	/* DIAG: which of the engine's first 0x100 offsets are live on this generation. */
+	if (camsv->stream_dump)
+		camsv_dump_engine(camsv);
+
 	writel(CAMSV_INT_EN_VENDOR, camsv->base + CAMSV_INT_EN);
 
 	dev_info(camsv->dev, "stream on: %u buffers, %ux%u, INT_EN 0x%08x (0x%08llx)\n", count,
@@ -353,6 +383,8 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 	}
 
 	camsv_hw_stop(camsv);
+	if (camsv->gals_clk)
+		clk_disable_unprepare(camsv->gals_clk);
 	if (camsv->tg_clk)
 		clk_disable_unprepare(camsv->tg_clk);
 	if (camsv->main_clk)
@@ -561,6 +593,7 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 		return PTR_ERR(camsv->base);
 
 	camsv->base_pa = platform_get_resource(pdev, IORESOURCE_MEM, 0)->start;
+	camsv->stream_dump = true;
 	camsv->irq = platform_get_irq(pdev, 0);
 	if (camsv->irq < 0)
 		return camsv->irq;
@@ -578,6 +611,7 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	 */
 	camsv->main_clk = devm_clk_get_optional(dev, "main");
 	camsv->tg_clk = devm_clk_get_optional(dev, "tg");
+	camsv->gals_clk = devm_clk_get_optional(dev, "gals");
 
 	mutex_init(&camsv->vdev_lock);
 	platform_set_drvdata(pdev, camsv);

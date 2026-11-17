@@ -2151,9 +2151,15 @@
 			reg = <0 0x1a050000 0 0x1000>;
 			mediatek,cam = <&cam>;
 			interrupts = <GIC_SPI 279 IRQ_TYPE_LEVEL_LOW>;
+			/*
+			 * The engine's own gate, the camera subsystem's main and TG gates, and the GALS
+			 * that carries its DMA out to the MM subsystem: the vendor's camera clock list
+			 * names all four (camsys gates, clk-mt6785-cam.c:25,27-30), and without GALS a
+			 * frame cannot reach memory however well the engine is programmed.
+			 */
 			clocks = <&camsys CLK_CAM_SV0>, <&camsys CLK_CAM_MAIN>,
-				 <&camsys CLK_CAM_TG>;
-			clock-names = "sv", "main", "tg";
+				 <&camsys CLK_CAM_TG>, <&camsys CLK_CAM_GALS>;
+			clock-names = "sv", "main", "tg", "gals";
 			iommus = <&iommu M4U_PORT_CAM_IMGO>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
 			status = "disabled";

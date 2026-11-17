@@ -331,8 +331,14 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	{
 		void __iomem *in = seninf->base;	/* instance 1: SENINF1, the one MIUI used */
 		struct { u32 off; u32 val; const char *what; } seq[] = {
-			/* CSI2 block: lane enable for four data lanes (cezanne: SENINF1_CSI2_CTL = 0xf). */
-			{ 0x0a00, 0x0000000f, "csi2 lane enable 4D1C" },
+			/*
+			 * 0x0A00 is the CSI2 enable word and nothing else (vendor dump, common/v1_1/
+			 * seninf.c:219), so the lane count lives where the vendor's per-instance block
+			 * puts it - 0x0210, written by the stream path - and this register gets one
+			 * meaning: enable. It used to be written twice, 0xf here and 0x1 later, and
+			 * read back 0x1 during the stream.
+			 */
+			{ 0x0a00, 0x00000001, "csi2 enable" },
 			/* The seninf mux: on, RAW10 data type 0x2b. */
 			{ 0x0d00, 0x00000001, "seninf mux enable" },
 			{ 0x0d04, 0x002b0000, "seninf mux data type RAW10" },
