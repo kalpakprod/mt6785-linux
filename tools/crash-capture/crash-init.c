@@ -383,6 +383,38 @@ static int mount_userdata(void)
 	return 0;
 }
 
+#ifdef CRASH_TEST
+/*
+ * In the test build a mount is simulated by copying the planted
+ * <root>/cmdline-template over <root>/proc/cmdline: before this runs there is no
+ * /proc/cmdline in the fake root, which is the whole point of the ordering test.
+ */
+static void simulate_mount(const char *fs)
+{
+	char tmpl[512], dst[512];
+	FILE *in, *out;
+	char buf[4096];
+	size_t n;
+
+	if (strcmp(fs, "proc"))
+		return;
+	snprintf(tmpl, sizeof(tmpl), "%s/cmdline-template", MOUNT_DIR);
+	snprintf(dst, sizeof(dst), "%s%s", MOUNT_DIR, "/proc/cmdline");
+	in = fopen(tmpl, "r");
+	if (!in)
+		return;
+	out = fopen(dst, "w");
+	if (!out) {
+		fclose(in);
+		return;
+	}
+	while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+		fwrite(buf, 1, n, out);
+	fclose(in);
+	fclose(out);
+}
+#endif
+
 static int mkdir_p(const char *path)
 {
 	char tmp[512];
@@ -554,12 +586,32 @@ int main(int argc, char **argv)
 	(void)argv;
 
 	umask(0);
-	read_cmdline();
 
-#ifndef CRASH_TEST
+	/*
+	 * Mount first, read the command line second. This is a fresh initramfs: until
+	 * /proc is mounted there is no /proc/cmdline at all, so reading it first left
+	 * crashdev, crashdir, selftest and crashhold unset - the boot was then taken as
+	 * "no /proc/vmcore, nothing to do", crash-init rebooted at once through PSCI,
+	 * and that is why every capture run left no file and no record. The live-phone
+	 * run of this program passed only because /proc/cmdline already existed there,
+	 * and so did every host test.
+	 */
+#ifdef CRASH_TEST
+	/* The simulated mount is what makes the command line appear, exactly as a real
+	 * procfs mount does in the initramfs. CRASH_OLD_ORDER reproduces the ordering bug
+	 * so the test can show it fails. */
+	if (getenv("CRASH_OLD_ORDER")) {
+		read_cmdline();		/* the bug: nothing is there yet */
+		simulate_mount("proc");
+	} else {
+		simulate_mount("proc");
+		read_cmdline();
+	}
+#else
 	do_mount("proc", "/proc", "proc", 0);
 	do_mount("sysfs", "/sys", "sysfs", 0);
 	do_mount("devtmpfs", "/dev", "devtmpfs", 0);
+	read_cmdline();
 #endif
 
 	{

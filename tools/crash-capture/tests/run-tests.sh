@@ -32,6 +32,8 @@ run_case() {
 	root=$work/$name
 	mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt"
 	[ "$mode" = novmcore ] || printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+	# No /proc/cmdline yet: the simulated proc mount creates it, which is what the
+	# ordering test below depends on.
 	# The capture kernel mounts the phone filesystem before it writes anything; in
 	# this test build the attempts are simulated, so a case has to plant the one
 	# that succeeds. ext4 read-write is what a real capture boot does.
@@ -133,7 +135,7 @@ fi
 root=$work/partlabel
 mkdir -p "$root/sys/class/block" "$root/dev" "$root/proc" "$root/var/lib/poco/crash" "$root/mnt"
 printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
-printf 'poco.crashdev=PARTLABEL=userdata poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'poco.crashdev=PARTLABEL=userdata poco.crashdir=/var/lib/poco/crash\n' > "$root/cmdline-template"
 printf 'kernel: waiting for userdata\n' > "$root/dev/kmsg"
 (
 	usleep 250000 2>/dev/null || sleep 0.25
@@ -156,7 +158,7 @@ fi
 root=$work/nopartlabel
 mkdir -p "$root/sys/class/block" "$root/dev" "$root/proc" "$root/var/lib/poco/crash" "$root/mnt"
 printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
-printf 'poco.crashdev=PARTLABEL=userdata poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'poco.crashdev=PARTLABEL=userdata poco.crashdir=/var/lib/poco/crash\n' > "$root/cmdline-template"
 printf 'kernel: no userdata here\n' > "$root/dev/kmsg"
 CRASH_TEST_ROOT=$root CRASH_TEST_TRIES=2 CRASH_TEST_POLL_US=1000 \
 	"$work/crash-init" >"$root/log.txt" 2>&1 || true
@@ -172,7 +174,7 @@ root=$work/mountfallback
 mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
 printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
 printf 'kernel: boot\n' > "$root/dev/kmsg"
-printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/cmdline-template"
 : > "$root/mount-ok.ext4.rw"
 CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
 if [ "$(head -1 "$root/mount-attempts.txt" 2>/dev/null)" = "f2fs rw" ] &&
@@ -188,7 +190,7 @@ root=$work/mountro
 mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
 printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
 printf 'kernel: boot\n' > "$root/dev/kmsg"
-printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/cmdline-template"
 : > "$root/mount-ok.ext4.ro"
 CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
 if grep -q "^ext4 ro$" "$root/mount-attempts.txt" 2>/dev/null &&
@@ -203,7 +205,7 @@ root=$work/nomount
 mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
 printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
 printf 'kernel: boot\n' > "$root/dev/kmsg"
-printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/cmdline-template"
 CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
 if [ "$(wc -l < "$root/mount-attempts.txt" 2>/dev/null)" = 8 ] &&
    ! ls "$root"/var/lib/poco/crash/*.txt >/dev/null 2>&1; then
@@ -217,7 +219,7 @@ root=$work/hold
 mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
 printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
 printf 'kernel: boot\n' > "$root/dev/kmsg"
-printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash poco.crashhold=1\n' > "$root/proc/cmdline"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash poco.crashhold=1\n' > "$root/cmdline-template"
 : > "$root/mount-ok.ext4.rw"
 CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
 if [ -f "$root/crashhold.txt" ] &&
@@ -232,7 +234,7 @@ root=$work/nohold
 mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
 printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
 printf 'kernel: boot\n' > "$root/dev/kmsg"
-printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/cmdline-template"
 : > "$root/mount-ok.ext4.rw"
 CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
 if [ ! -f "$root/crashhold.txt" ] &&
@@ -240,6 +242,23 @@ if [ ! -f "$root/crashhold.txt" ] &&
 	pass "without the flag the capture still takes the reboot path"
 else
 	fail "without the flag the capture still takes the reboot path"
+fi
+
+# --- 15. planted fault: the old order (read the command line before mounting /proc)
+#        must fail, because a fresh initramfs has no /proc/cmdline at that point
+root=$work/oldorder
+mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'kernel: boot\n' > "$root/dev/kmsg"
+# The directory is deliberately not the compiled-in default: with the old order the
+# template is never read, so nothing may appear in it.
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash-old-order\n' > "$root/cmdline-template"
+: > "$root/mount-ok.ext4.rw"
+CRASH_OLD_ORDER=1 CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
+if ! ls "$root"/var/lib/poco/crash-old-order/* >/dev/null 2>&1; then
+	pass "reading the command line before mounting /proc leaves nothing, as it must"
+else
+	fail "reading the command line before mounting /proc leaves nothing, as it must"
 fi
 
 echo
