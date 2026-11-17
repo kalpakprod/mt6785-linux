@@ -32,6 +32,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/phy/phy.h>
 #include <linux/seq_file.h>
@@ -224,6 +225,10 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 
 	unsigned int port;
 
+	dev_info(seninf->dev, "lane state: DGB_PORT 0x%08x LNRD_FSM 0x%08x (0x%08llx)\n",
+		 readl(seninf->base + 0x0a1c), readl(seninf->base + 0x0a2c),
+		 (unsigned long long)seninf->base_pa + 0x0a1c);
+
 	/* This instance first, then one line per receiver port of the block. */
 	dev_info(seninf->dev,
 		 "500 ms in: CSI2_EN 0x%08x, packet cnt %u, err cnt %u, INTSTA 0x%08x\n",
@@ -320,53 +325,69 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		}
 	}
 
-		/*
-	 * The map that got frames on the cezanne MT6885 port, and the one this SoC follows: the
-	 * CrOS isp_50 offsets (CSI2 at 0x0210/0x0a00, mux at 0x0d00) read back zero here, while the
-	 * cezanne layout - CSI2 control at instance +0xa00, the seninf mux at +0xd00 and the cam-mux
-	 * routing block at +0x400 (scratch/native/5-cameras/tmp/cez-cam/README.md:33-87) - is what
-	 * this receiver answers on. Each write is logged with its read-back, and the values that are
-	 * inferred rather than cited are marked where they are written.
+	/*
+	 * The complete kernel-side sequence for this receiver, taken verbatim from the ChromeOS
+	 * mt8183 driver - the same ISP 5.0 generation - with its own masks, order and values
+	 * (scratch/native/5-cameras/tmp/cros/mtk_seninf.c:321-408 for the CSI/MIPI part). Offsets come
+	 * from its header (mtk_seninf_reg.h) and agree with this phone's vendor dump. 4D1C D-PHY on
+	 * CSI0, four lanes, RAW10.
 	 */
 	{
-		void __iomem *in = seninf->base;	/* instance 1: SENINF1, the one MIUI used */
-		struct { u32 off; u32 val; const char *what; } seq[] = {
-			/*
-			 * 0x0A00 is the CSI2 enable word and nothing else (vendor dump, common/v1_1/
-			 * seninf.c:219), so the lane count lives where the vendor's per-instance block
-			 * puts it - 0x0210, written by the stream path - and this register gets one
-			 * meaning: enable. It used to be written twice, 0xf here and 0x1 later, and
-			 * read back 0x1 during the stream.
-			 */
-			{ 0x0a00, 0x00000001, "csi2 enable" },
-			/* The seninf mux: on, RAW10 data type 0x2b. */
-			{ 0x0d00, 0x00000001, "seninf mux enable" },
-			{ 0x0d04, 0x002b0000, "seninf mux data type RAW10" },
-			/* Cam-mux routing: CTRL block at 0x400, camera mux 3 = CAMSV0, source seninf mux 1. */
-			{ 0x0400, 0x00000000, "cam mux ctrl0" },
-			{ 0x0404, 0x00000001, "cam mux ctrl1" },
-			{ 0x0408, 0x00000000, "cam mux ctrl2" },
-			{ 0x040c, 0x00000000, "cam mux ctrl3" },
-			{ 0x0410, 0x00000008, "cam mux enable, mux 3 (CAMSV0)" },
-		};
-		unsigned int i;
+		void __iomem *in = seninf->base;	/* SENINF1: instance base 0x1a040000 */
+		u32 val;
 
-		for (i = 0; i < ARRAY_SIZE(seq); i++) {
-			writel(seq[i].val, in + seq[i].off);
-			dev_info(seninf->dev,
-				 "prog %s: 0x%08llx = 0x%08x -> 0x%08x\n", seq[i].what,
-				 (unsigned long long)seninf->base_pa + seq[i].off,
-				 seq[i].val, readl(in + seq[i].off));
-		}
+#define WR32(_off, _val, _what) do { \
+		writel((_val), in + (_off)); \
+		dev_info(seninf->dev, "seninf %s: 0x%08llx = 0x%08x -> 0x%08x\n", (_what), \
+			 (unsigned long long)seninf->base_pa + (_off), (u32)(_val), \
+			 readl(in + (_off))); \
+	} while (0)
+
+		/// cros :351-356 - the 4D1C case for CSI0.
+		WR32(0x001c, (0x7fffc8fe & readl(in + 0x001c)) | 0x80001100,
+		     "TOP_PHY_SENINF_CTL_CSI0 (4D1C)");
+
+		/// cros :360-366 - enable the interface, select the pad, clear the source select.
+		WR32(0x0200, readl(in + 0x0200) | 0x1, "SENINF1_CTRL enable");
+		WR32(0x0200, (0x8fffffff & readl(in + 0x0200)) | (1 << 28),
+		     "SENINF1_CTRL pad_sel 10bit");
+		WR32(0x0200, 0xffff0fff & readl(in + 0x0200), "SENINF1_CTRL src sel");
+		WR32(0x0204, (0xffffff9f & readl(in + 0x0204)) | 0x40, "SENINF1_CTRL_EXT");
+
+		/// cros :372-392 - DPCM, settle, lanes, header order, resync, mode, sync, trail.
+		WR32(0x0a0c, 0, "CSI2_DPCM");
+		WR32(0x0a08, (0xffff00ff & readl(in + 0x0a08)) | (0x15 << 8),
+		     "CSI2_LNRD_TIMING settle 0x15");
+		val = readl(in + 0x0a00) | (1 << 16) | 0x10 | ((1 << 4) - 1);
+		WR32(0x0a00, val, "CSI2_CTL 4 lanes, header order");
+		WR32(0x0a74, (0xfffff3f8 & readl(in + 0x0a74)) | 0x3, "CSI2_RESYNC_MERGE_CTL");
+		WR32(0x0ae8, 0xfffff800 & readl(in + 0x0ae8), "CSI2_MODE");
+		WR32(0x0b20, 0x1dff00, "CSI2_DPHY_SYNC");
+		WR32(0x0a20, 0xfffffffe & readl(in + 0x0a20), "CSI2_SPARE0");
+		WR32(0x0a00, (0xf5ffff7f & readl(in + 0x0a00)) | 0x2000000,
+		     "CSI2_CTL |= 0x2000000");
+		WR32(0x0a40, (0xffffff00 & readl(in + 0x0a40)) | 0x8, "CSI2_HS_TRAIL 0x8");
+
+		/// cros :394-408 - debug port, interrupt enables, then the one-microsecond enable pulse.
+		WR32(0x0a18, 0x8000001a, "CSI2_DGB_SEL");
+		WR32(0x0a10, 0xffffffff, "CSI2_INT_EN");
+		WR32(0x0a14, 0xffffffff, "CSI2_INT_STATUS clear");
+		WR32(0x0b10, 0x1f, "CSI2_INT_EN_EXT");
+		WR32(0x0200, (0xffffff7f & readl(in + 0x0200)) | 0x80, "SENINF1_CTRL |= 0x80");
+		udelay(1);
+		WR32(0x0200, 0xffffff7f & readl(in + 0x0200), "SENINF1_CTRL clear 0x80");
+#undef WR32
+
+		/* The cam-mux block stays at this SoC's own offsets (vendor dump, note 44). */
+		writel(0x00000000, in + 0x0400);
+		writel(0x00000001, in + 0x0404);
+		writel(0x00000000, in + 0x0408);
+		writel(0x00000000, in + 0x040c);
+		writel(0x00000008, in + 0x0410);
+		dev_info(seninf->dev, "cam mux: CTRL1 0x%08x EN 0x%08x\n",
+			 readl(in + 0x0404), readl(in + 0x0410));
 	}
 
-	/*
-	 * The CrOS port-select register (SENINF_TOP_PHY_SENINF_CTL_CSI0, 0x001c by its header) is
-	 * NOT programmed: it reads back zero on this SoC and the vendor's own register dump does not
-	 * list it at all - its top-level registers are 0x0010/0x0014 (imgsensor/src/common/v1_1/
-	 * seninf.c:177-178). Writing an address the vendor does not know is what "nothing sticks"
-	 * looked like, so it is dropped rather than guessed at again.
-	 */
 
 	/* The receiver's D-PHY first: without it no port can see anything on the wire. */
 	if (seninf->phy) {
