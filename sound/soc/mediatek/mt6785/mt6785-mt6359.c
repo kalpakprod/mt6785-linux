@@ -235,6 +235,16 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 			prev_cycle_3 = cycle_3;
 		}
 
+		/*
+		 * The numbers matter, not only the phase: a monitor that never changes means the
+		 * codec's MISO is not driving, and the phase that gets chosen afterwards is then a
+		 * fallback (a phase that never toggled keeps 0) rather than a measurement. Print
+		 * every phase's monitor and its three cycle counts.
+		 */
+		dev_info(afe->dev, "mtkaif phase %d: monitor %#x, cycles %d/%d/%d (done %d%d%d)\n",
+			 phase, monitor, cycle_1, cycle_2, cycle_3,
+			 test_done_1, test_done_2, test_done_3);
+
 		if (cycle_1 != prev_cycle_1 && afe_priv->mtkaif_chosen_phase[0] < 0) {
 			afe_priv->mtkaif_chosen_phase[0] = phase - 1;
 			afe_priv->mtkaif_phase_cycle[0] = prev_cycle_1;
@@ -255,6 +265,15 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 		    afe_priv->mtkaif_chosen_phase[2] >= 0)
 			break;
 	}
+
+	dev_info(afe->dev, "mtkaif calibration result: chosen %d/%d/%d, cycles %d/%d/%d%s\n",
+		 afe_priv->mtkaif_chosen_phase[0], afe_priv->mtkaif_chosen_phase[1],
+		 afe_priv->mtkaif_chosen_phase[2], afe_priv->mtkaif_phase_cycle[0],
+		 afe_priv->mtkaif_phase_cycle[1], afe_priv->mtkaif_phase_cycle[2],
+		 (afe_priv->mtkaif_chosen_phase[0] < 0 ||
+		  afe_priv->mtkaif_chosen_phase[1] < 0 ||
+		  afe_priv->mtkaif_chosen_phase[2] < 0) ?
+		 " - a phase never toggled: the fallback is used" : " - measured");
 
 	/* a phase that never toggled keeps the default 0, as upstream does */
 	mt6359_set_mtkaif_calibration_phase(cmpnt_codec,
