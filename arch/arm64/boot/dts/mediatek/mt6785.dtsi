@@ -2094,6 +2094,25 @@
 			#phy-cells = <1>;
 		};
 
+		/*
+		 * The other two analog ports, the same pair of halves each and the same window size:
+		 * CSI1A/CSI1B at 0x11c82000/0x11c83000 and CSI2A/CSI2B at 0x11c84000/0x11c85000
+		 * (vendor mt6785.dts:1497-1525, mipi_rx_ana_csi1a/csi1b and csi2a/csi2b).
+		 */
+		csi_rx_phy1: phy@11c82000 {
+			compatible = "mediatek,mt8365-csi-rx";
+			reg = <0 0x11c82000 0 0x2000>;
+			num-lanes = <4>;
+			#phy-cells = <1>;
+		};
+
+		csi_rx_phy2: phy@11c84000 {
+			compatible = "mediatek,mt8365-csi-rx";
+			reg = <0 0x11c84000 0 0x2000>;
+			num-lanes = <4>;
+			#phy-cells = <1>;
+		};
+
 		seninf1: csi@1a040000 {
 			compatible = "mediatek,mt6785-seninf";
 			/*
@@ -2103,8 +2122,14 @@
 			 */
 			reg = <0 0x1a040000 0 0x5000>;
 			mediatek,cam = <&cam>;
-			phys = <&csi_rx_phy PHY_TYPE_DPHY>;
-			phy-names = "csi-rx";
+			/*
+			 * All three analog ports: the port a sensor lands on is a HAL setting, and
+			 * neither the vendor device tree nor the stock one names it, so the driver
+			 * picks one at run time (mtk_seninf.csi_port) and this describes them all.
+			 */
+			phys = <&csi_rx_phy PHY_TYPE_DPHY>, <&csi_rx_phy1 PHY_TYPE_DPHY>,
+			       <&csi_rx_phy2 PHY_TYPE_DPHY>;
+			phy-names = "csi-rx0", "csi-rx1", "csi-rx2";
 			clocks = <&camsys CLK_CAM_SENINF>, <&topckgen CLK_TOP_SENINF0>;
 			clock-names = "seninf", "mux";
 			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;

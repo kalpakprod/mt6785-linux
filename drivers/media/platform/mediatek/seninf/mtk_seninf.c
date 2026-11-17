@@ -101,7 +101,7 @@ struct mtk_seninf {
 	/* The CSI-2 RX PHY: nobody else turns the D-PHY receiver on, and without it a port never
 	 * sees an LP->HS transition - which is what every port measuring zero packets and zero
 	 * errors means. The upstream driver for this block family is phy-mtk-mipi-csi-0-5. */
-	struct phy *phy;
+	struct phy *phy[3];
 	/* The block's physical base, so logs can name absolute addresses. */
 	phys_addr_t base_pa;
 	struct dentry *debugfs;
@@ -288,8 +288,8 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 		cancel_delayed_work_sync(&seninf->late_counters);
 		writel(0, seninf->base + SENINF_CSI2_EN);
-		if (seninf->phy)
-			phy_power_off(seninf->phy);
+			if (seninf->phy[csi_port])
+			phy_power_off(seninf->phy[csi_port]);
 		pm_runtime_put_autosuspend(seninf->dev);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
 			 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
@@ -373,11 +373,15 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 
 	/* The receiver's D-PHY first: without it no port can see anything on the wire. */
-	if (seninf->phy) {
-		ret = phy_set_mode_ext(seninf->phy, PHY_MODE_MIPI_DPHY, 4);
-		if (!ret)
-			ret = phy_power_on(seninf->phy);
-		dev_info(seninf->dev, "csi rx phy on: %d\n", ret);
+	dev_info(seninf->dev, "analog port %d (%s), instance %d\n", csi_port,
+		 seninf->phy[csi_port] ? "present" : "absent", csi_port + 1);
+	if (seninf->phy[csi_port]) {
+		ret = phy_set_mode_ext(seninf->phy[csi_port], PHY_MODE_MIPI_DPHY, 4);
+		dev_info(seninf->dev, "phy set mode: %d\n", ret);
+		{
+			ret = phy_power_on(seninf->phy[csi_port]);
+			dev_info(seninf->dev, "csi rx phy %d on: %d\n", csi_port, ret);
+		}
 	}
 
 	/*
@@ -500,6 +504,7 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct mtk_seninf *seninf;
 	int ret;
+	unsigned int i;
 
 	seninf = devm_kzalloc(dev, sizeof(*seninf), GFP_KERNEL);
 	if (!seninf)
@@ -528,7 +533,17 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	 */
 	seninf->mipi_sel = devm_gpiod_get_optional(dev, "mipi-sel", GPIOD_OUT_LOW);
 
-	seninf->phy = devm_phy_optional_get(dev, "csi-rx");
+	/* Every analog port the device tree describes, so csi_port can pick one. */
+	for (i = 0; i < ARRAY_SIZE(seninf->phy); i++) {
+		static const char * const names[] = { "csi-rx0", "csi-rx1", "csi-rx2" };
+		struct phy *p = devm_phy_optional_get(dev, names[i]);
+
+		if (IS_ERR(p)) {
+			ret = PTR_ERR(p);
+			continue;
+		}
+		seninf->phy[i] = p;
+	}
 	if (IS_ERR(seninf->phy))
 		return dev_err_probe(dev, PTR_ERR(seninf->phy),
 				     "failed to get the CSI-2 RX phy\n");
