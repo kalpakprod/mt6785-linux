@@ -92,6 +92,9 @@
 #define MT6785_INFRACFG_MODULE_RESET_CLR	0x144
 #define MT6785_INFRACFG_MODULE_RESET_STATUS	0x148
 #define MT6785_INFRACFG_SLP_PROT_SET		0x220
+/* a free cfg scratch word (GENERAL_REG0, cfg + 0x50, scp_reg.h:39-42) and the value put in it */
+#define MT6785_SCP_PROBE_REG		0x50
+#define MT6785_SCP_PROBE_VALUE		0x5a5a1234
 /* the AP's awake handshake with the SCP, through the SPM (scp_reg.h:114-120) */
 #define MT6785_INFRACFG_IRQ_SET			0xB14
 #define MT6785_INFRACFG_IRQ_CLEAR		0xB18

@@ -581,6 +581,17 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	if (ret)
 		return ret;
 
+	/*
+	 * A word with a known value in the cfg block, written before the release and read
+	 * back right after it: the post-mortem's 0x1 is the bus timing out, so this tells
+	 * whether the bus went dark at the release or later. GENERAL_REG0 (cfg + 0x50) is a
+	 * free scratch word in the vendor's map (scp_reg.h:39-42), unused by this driver.
+	 */
+	writel(MT6785_SCP_PROBE_VALUE, cluster->reg_base + MT6785_SCP_PROBE_REG);
+	dev_info(scp->dev, "probe word written before the release: %#x reads %#x\n",
+		 MT6785_SCP_PROBE_VALUE,
+		 readl(cluster->reg_base + MT6785_SCP_PROBE_REG));
+
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
 	if (ret)
@@ -770,15 +781,16 @@ static void mt6785_scp_ipi_ack(struct mtk_scp *scp)
 static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 {
 	void __iomem *cfg = scp->cluster->reg_base;
-	u32 rstn, tcm0, tcm1;
 
-	dev_err(scp->dev, "post-mortem, cfg registers, each announced below\n");
-	dev_err(scp->dev, "  reading cfg + %#x (PC) %#x (LR) %#x (SP) %#x (PSP)\n",
-		MT8183_SCP_DEBUG_PC, MT8183_SCP_DEBUG_LR, MT8183_SCP_DEBUG_SP,
-		MT8183_SCP_DEBUG_PSP);
-	dev_err(scp->dev, "core PC %#x LR %#x SP %#x PSP %#x\n",
-		readl(cfg + MT8183_SCP_DEBUG_PC), readl(cfg + MT8183_SCP_DEBUG_LR),
-		readl(cfg + MT8183_SCP_DEBUG_SP), readl(cfg + MT8183_SCP_DEBUG_PSP));
+	/*
+	 * One probe word, not the whole register set: the core's state words and the status
+	 * words all read as the same timeout value (audio37's journal: 13 ms per access), so
+	 * only the word this driver wrote with a known value can say anything.
+	 */
+	dev_err(scp->dev, "post-mortem: reading the probe word at cfg + %#x\n",
+		MT6785_SCP_PROBE_REG);
+	dev_err(scp->dev, "post-mortem: probe word %#x (expected %#x)\n",
+		readl(cfg + MT6785_SCP_PROBE_REG), MT6785_SCP_PROBE_VALUE);
 	mt6785_scp_log_dram_state(scp, "at the timeout");
 	mt6785_scp_log_pages(scp, "at the timeout");
 	mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE,
@@ -787,34 +799,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 			   "backup at the timeout");
 	mt6785_scp_scan_text(scp);
 
-	/*
-	 * Not one bulk read of the SCP's SRAM: audio37 hung the phone doing exactly that - the
-	 * core owns its SRAM and a stalled slave hangs the AP's bus that touched it. The vendor
-	 * reads the whole TCM only in its coredump path, after the core has been halted
-	 * (scp_excep.c:404-406, reached from scp_sys_reset_ws()); at run time its only SRAM access
-	 * is the share buffer inside the IPI handler, bounded by the message length
-	 * (scp_ipi.c:41-43). So the same limit applies here: 16 bytes, word by word, each one
-	 * announced first, so a hang names the address that caused it.
-	 */
-	dev_err(scp->dev, "post-mortem, reading only the share buffer at TCM + %#x, word by word:\n",
-		MT6785_SCP_IPI_BUF_OFS);
-	{
-		unsigned int w;
-
-		for (w = 0; w < 4; w++) {
-			dev_err(scp->dev, "  reading TCM + %#x\n",
-				MT6785_SCP_IPI_BUF_OFS + 4 * w);
-			dev_err(scp->dev, "  TCM + %#x = %#x\n",
-				MT6785_SCP_IPI_BUF_OFS + 4 * w,
-				readl(scp->sram_base + MT6785_SCP_IPI_BUF_OFS + 4 * w));
-		}
-	}
 	dev_err(scp->dev, "SCP_A_TO_HOST interrupts seen: %u\n", scp->to_host_irqs);
-	dev_err(scp->dev, "  reading cfg + %#x (sleep) %#x (to_host) %#x (gipc_in)\n",
-		MT8183_SCP_SLEEP_STATUS, MT8183_SCP_TO_HOST, MT8183_HOST_TO_SCP);
-	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
-		readl(cfg + MT8183_SCP_SLEEP_STATUS),
-		readl(cfg + MT8183_SCP_TO_HOST), readl(cfg + MT8183_HOST_TO_SCP));
 
 	/*
 	 * The two questions the core's own state cannot answer by itself: is the block out of
@@ -824,21 +809,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	 * vector's initial stack pointer (0x538 for the vendor's loader record at TCM 0 - while a
 	 * zero there means the ELF segment never landed or the TCM is not powered).
 	 */
-	rstn = readl(cfg + MT8183_SW_RSTN);
-	tcm0 = readl(scp->sram_base);
-	tcm1 = readl(scp->sram_base + 4);
-	/*
-	 * scp_reset_deassert() writes bit 0 of SW_RSTN to 1, so 1 is the released state: a 0 there
-	 * means the write did not land, and together with zero TCM words it means the whole window
-	 * reads back as zeros - the SCP's clock gates, not the core, are then the fault.
-	 */
-	dev_err(scp->dev, "sw_rstn %#x (bit0=1 released, 0 = write never landed)\n",
-		rstn);
-	dev_err(scp->dev, "TCM[0] %#x TCM[4] %#x\n", tcm0, tcm1);
-	if (!(tcm0 | tcm1))
-		dev_err(scp->dev, "TCM holds no vector table: load or TCM power is the fault, not the core\n");
-	else if (tcm0 >= scp->sram_size)
-		dev_err(scp->dev, "TCM[0] = %#x is not a stack pointer inside the TCM\n", tcm0);
+	/* nothing more: every other cfg or SRAM word is the bus timeout's 0x1 */
 }
 
 static int mt6785_scp_after_load(struct mtk_scp *scp,
@@ -1271,16 +1242,27 @@ static int scp_start(struct rproc *rproc)
 			 readl(scp->cluster->reg_base + MT6785_SCP_GPR_CM4_A_REBOOT),
 			 MT6785_SCP_CM4_READY_TO_REBOOT);
 
+	scp->data->scp_reset_deassert(scp);
+
 	/*
-	 * The AP asks the SCP (through the SPM) to stay awake before releasing the core, and holds
-	 * that request until the ready IPI has arrived or the wait has failed: the vendor does the
-	 * same around every access it makes to the SCP, and releases it afterwards
-	 * (scp_awake.c:79-100 for the lock, :162-178 for the unlock; the register is scpsys + 0xB14
-	 * with 0xA0 | bit, bit 0 = AP_AWAKE_LOCK, bit 1 = AP_AWAKE_UNLOCK, and the request is
-	 * acknowledged when that bit clears).
+	 * Two reads right after the release, before the core can have gone to sleep: the
+	 * probe word this driver wrote before the release, and the vendor's own reboot word.
+	 * A probe word that still holds its pattern means the bus answered at that moment;
+	 * the 0x1 the post-mortem reads is the bus waiting out its timeout.
+	 */
+	mt6785_scp_state(scp, "right after the release");
+	dev_info(dev, "probe word after the release: %#x (expected %#x), sw_rstn %#x\n",
+		 readl(scp->cluster->reg_base + MT6785_SCP_PROBE_REG),
+		 MT6785_SCP_PROBE_VALUE,
+		 readl(scp->cluster->reg_base + MT8183_SW_RSTN));
+
+	/*
+	 * The awake request goes here, not before: its acknowledgment is the SCP firmware's ISR
+	 * clearing the bit (scp_awake.c:82-96), so a core still in reset cannot answer it. The
+	 * vendor takes it around every access it makes to a *running* SCP (scp_awake.c:79-100, the
+	 * unlock at :162-178), and holds it until the ready IPI has arrived or the wait failed.
 	 */
 	mt6785_scp_awake(scp, true);
-	scp->data->scp_reset_deassert(scp);
 
 	/*
 	 * One read back, immediately: the core has just been released and cannot have taken the
@@ -2454,7 +2436,6 @@ static void mt6785_scp_log_tcm(struct mtk_scp *scp, const char *when)
 	u32 crc = ~0, page, first = 0, total = MT6785_SCP_FIRMWARE_TCM_MAX / SZ_4K;
 	bool in_range = false;
 	size_t done;
-
 
 	if (!scp->sram_base)
 		return;
