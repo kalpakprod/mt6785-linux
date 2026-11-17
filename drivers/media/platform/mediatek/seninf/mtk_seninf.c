@@ -404,6 +404,23 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		 * and setSeninfCamMuxSrc (:0x30f40) puts the mux index in bits 0..3 of [0x400+0x0] and
 		 * the virtual channel in [0x400+0x104].
 		 */
+		/*
+		 * The top-side PHY selection for the CSI port in use. The register is per port:
+		 * CSI0 at 0x1c, CSI1 at 0x20, CSI2 at 0x24 (mtk_seninf_reg.h:142-144), and only
+		 * CSI0's was ever written here, while the sensor sits on port 2. Written after the
+		 * PHYs are up, in the ChromeOS order (:351-356), with its 4D1C value and mask.
+		 */
+		{
+			unsigned int ctl = 0x001c + 4 * phy_idx;
+
+			writel((0x7fffc8fe & readl(seninf->base + ctl)) | 0x80001100,
+			       seninf->base + ctl);
+			dev_info(seninf->dev,
+				 "top PHY select CSI%u: 0x%08llx = 0x%08x -> 0x%08x\n", phy_idx,
+				 (unsigned long long)seninf->base_pa + ctl,
+				 0x80001100u, readl(seninf->base + ctl));
+		}
+
 		{
 			void __iomem *cmux = seninf->base + 0x400;
 			unsigned int n = 3;	/* CAMSV0's camera mux */
@@ -452,11 +469,10 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	writel(SENINF_CSI2_EN_ON, inst + SENINF_CSI2_EN);
 
 	dev_info(seninf->dev,
-		 "stream on: CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, packet cnt %u, err cnt %u\n",
-		 readl(seninf->base + SENINF_CSI2_CTRL),
-		 readl(seninf->base + SENINF_CSI2_EN),
-		 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
-		 readl(seninf->base + SENINF_CSI2_ERR_CNT));
+		 "stream on (instance %u, 0x%08llx): CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, packet cnt %u, err cnt %u\n",
+		 seninf_idx + 1, (unsigned long long)seninf->inst_pa,
+		 readl(inst + SENINF_CSI2_CTRL), readl(inst + SENINF_CSI2_EN),
+		 readl(inst + SENINF_CSI2_PACKET_CNT), readl(inst + SENINF_CSI2_ERR_CNT));
 
 	/*
 	 * The routing at the moment the stream starts: the top mux decides which receiver
@@ -643,8 +659,8 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	}
 
 	dev_info(dev, "receiver on, CSI2_EN 0x%08x, packet counter %u\n",
-		 readl(seninf->base + SENINF_CSI2_EN),
-		 readl(seninf->base + SENINF_CSI2_PACKET_CNT));
+		 readl(seninf_inst(seninf) + SENINF_CSI2_EN),
+		 readl(seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT));
 
 	pm_runtime_put_autosuspend(dev);
 
