@@ -522,6 +522,10 @@ static void mt6785_scp_probe_lk_images(struct mtk_scp *scp);
 static void mt6785_scp_map_windows(struct platform_device *pdev,
 				   struct mtk_scp *scp);
 static void mt6785_scp_log_dram_state(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_log_pages(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_hexdump(struct mtk_scp *scp, u32 ofs, size_t len,
+			       const char *label);
+static void mt6785_scp_scan_text(struct mtk_scp *scp);
 
 /*
  * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
@@ -767,6 +771,12 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 		readl(cfg + MT8183_SCP_DEBUG_PC), readl(cfg + MT8183_SCP_DEBUG_LR),
 		readl(cfg + MT8183_SCP_DEBUG_SP), readl(cfg + MT8183_SCP_DEBUG_PSP));
 	mt6785_scp_log_dram_state(scp, "at the timeout");
+	mt6785_scp_log_pages(scp, "at the timeout");
+	mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE,
+			   "dram part at the timeout");
+	mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE,
+			   "backup at the timeout");
+	mt6785_scp_scan_text(scp);
 	dev_err(scp->dev, "SCP_A_TO_HOST interrupts seen: %u\n", scp->to_host_irqs);
 	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
 		readl(cfg + MT8183_SCP_SLEEP_STATUS),
@@ -1214,8 +1224,12 @@ static int scp_start(struct rproc *rproc)
 
 	run->signaled = false;
 
-	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs)
+	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs) {
 		mt6785_scp_log_dram_state(scp, "before the release");
+		mt6785_scp_log_pages(scp, "before");
+		mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE,
+				   "dram part before the release");
+	}
 
 	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs)
 		dev_info(dev, "reboot handshake word before release: %#x (LK/vendor ready value %#x)\n",
@@ -2350,6 +2364,118 @@ static void mt6785_scp_log_dram_state(struct mtk_scp *scp, const char *when)
 		 MT6785_LK_DRAM_SIZE,
 		 mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE),
 		 mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE));
+}
+
+/* one zone's first and last 256 bytes, hex, 32 bytes a line */
+static void mt6785_scp_hexdump(struct mtk_scp *scp, u32 ofs, size_t len,
+			       const char *label)
+{
+	u8 buf[32];
+	size_t at, end;
+
+	if (!scp->lk_base || ofs + len > scp->lk_size)
+		return;
+
+	dev_info(scp->dev, "%s: first 0x%zx bytes at %#x\n", label, (size_t)256, ofs);
+	for (at = 0; at < 256 && at < len; at += sizeof(buf)) {
+		size_t n = min(sizeof(buf), len - at);
+
+		memcpy_fromio(buf, scp->lk_base + ofs + at, n);
+		dev_info(scp->dev, "  %04zx: %*ph\n", at, (int)n, buf);
+	}
+
+	end = len > 256 ? len - 256 : 0;
+	dev_info(scp->dev, "%s: last 0x100 bytes ending at %#zx\n", label, ofs + len);
+	for (at = end; at < len; at += sizeof(buf)) {
+		size_t n = min(sizeof(buf), len - at);
+
+		memcpy_fromio(buf, scp->lk_base + ofs + at, n);
+		dev_info(scp->dev, "  %04zx: %*ph\n", at, (int)n, buf);
+	}
+}
+
+/* which 4 KiB pages of the region hold anything, as ranges */
+static void mt6785_scp_log_pages(struct mtk_scp *scp, const char *when)
+{
+	u32 page, first = 0, total = scp->lk_size / SZ_4K;
+	bool in_range = false, any = false;
+	u8 buf[16];
+	size_t i, n;
+	int dumped = 0;
+
+	if (!scp->lk_base)
+		return;
+
+	for (page = 0; page < total; page++) {
+		bool nz = false;
+
+		for (i = 0; i < SZ_4K && !nz; i += sizeof(buf)) {
+			memcpy_fromio(buf, scp->lk_base + page * SZ_4K + i, sizeof(buf));
+			for (n = 0; n < sizeof(buf); n++)
+				if (buf[n]) {
+					nz = true;
+					break;
+				}
+		}
+
+		if (nz && !in_range) {
+			first = page;
+			in_range = true;
+			any = true;
+		} else if (!nz && in_range) {
+			dev_info(scp->dev, "  %s non-zero pages %#x..%#x\n", when,
+				 first * SZ_4K, page * SZ_4K - 1);
+			if (++dumped > 40)
+				break;
+			in_range = false;
+		}
+	}
+	if (in_range)
+		dev_info(scp->dev, "  %s non-zero pages %#x..%#x\n", when,
+			 first * SZ_4K, total * SZ_4K - 1);
+	if (!any)
+		dev_info(scp->dev, "  %s the whole region is zeros\n", when);
+}
+
+/*
+ * Any printable text in the region: the firmware keeps a log ring in its DRAM, and if it is in
+ * this region its text says where the firmware stopped (vendor scp_logger.c runs the AP-side
+ * reader, the ring itself lives in the SCP's DRAM).
+ */
+static void mt6785_scp_scan_text(struct mtk_scp *scp)
+{
+	u8 *buf;
+	size_t len = scp->lk_size, i, start = 0, run = 0;
+	int shown = 0;
+
+	if (!scp->lk_base)
+		return;
+
+	buf = kmalloc(len, GFP_KERNEL);
+	if (!buf)
+		return;
+	memcpy_fromio(buf, scp->lk_base, len);
+
+	for (i = 0; i < len; i++) {
+		bool printable = buf[i] >= 0x20 && buf[i] < 0x7f;
+
+		if (printable) {
+			if (!run)
+				start = i;
+			run++;
+			continue;
+		}
+		if (run >= 24 && shown < 12) {
+			dev_info(scp->dev, "  text at %#zx: %.*s\n", start,
+				 (int)min(run, (size_t)96), buf + start);
+			shown++;
+		}
+		run = 0;
+	}
+	if (!shown)
+		dev_info(scp->dev, "  no printable text in the region\n");
+
+	kfree(buf);
 }
 
 /* the named windows this SoC's bring-up uses beyond sram and cfg */
