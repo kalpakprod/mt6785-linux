@@ -217,9 +217,12 @@ static inline int mt6359_uah_to_capacity(long long uah, long long full_uah)
  * half the instantaneous current's 610.352 uA LSB, and emphatically not the same unit.
  */
 #define MT6359_UNIT_FG_IAVG	305176
-#define MT6359_IAVG_VLD		(1u << 15)
+#ifndef BIT
+#define BIT(n) (1u << (n))
+#endif
+#define MT6359_IAVG_VLD		BIT(15)
 #define MT6359_IAVG_HI_MASK	0x0fff
-#define MT6359_IAVG_HI_SIGN	(1u << 11)
+#define MT6359_IAVG_HI_SIGN	BIT(11)
 
 static inline bool mt6359_iavg_valid(unsigned int con1)
 {

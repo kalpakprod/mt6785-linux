@@ -21,9 +21,12 @@ properties:
 
   monitored-battery:
     description: |
-      The battery profile (a simple-battery node). Its OCV table turns the
-      anchored open-circuit voltage into a percentage, and its design charge is
-      the denominator for the counter afterwards.
+      The battery, described by the generic simple-battery binding
+      (Documentation/devicetree/bindings/power/supply/battery.yaml): its
+      ocv-capacity-table turns the anchored open-circuit voltage into a
+      percentage, and charge-full-design-microamp-hours is the denominator for
+      the coulomb counter afterwards. No private table properties are defined
+      here - the generic ones carry everything this gauge needs.
     $ref: /schemas/types.yaml#/definitions/phandle
 
   io-channels:
@@ -51,8 +54,9 @@ properties:
       gauge (CAR_TUNE_VALUE in the vendor battery profile).
     $ref: /schemas/types.yaml#/definitions/uint32
 
-  mediatek,charge-full-microamp-hours:
-    description: Design charge, used when the battery profile carries none.
+  vdd-supply:
+    description: The NTC divider's pull-up; the battery temperature is read through
+      the PMIC's AUXADC BAT_TEMP channel and divided down against this rail.
 
 required:
   - compatible
@@ -72,6 +76,5 @@ examples:
             io-channel-names = "vbat", "ntc";
             mediatek,r-fg-value = <5>;
             mediatek,car-tune-value = <100>;
-            mediatek,charge-full-microamp-hours = <5000000>;
         };
     };
