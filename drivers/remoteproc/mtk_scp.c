@@ -508,11 +508,23 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	 * scp_enable_sram() releases the banks one at a time and only then the L1/TCM-tail bits
 	 * (scp_awake.c:196-214).
 	 */
+	dev_info(scp->dev, "sram pdn before: %#x %#x %#x\n",
+		 readl(cluster->reg_base + MT8183_SCP_SRAM_PDN),
+		 readl(cluster->reg_base + MT8183_SCP_L1_SRAM_PD),
+		 readl(cluster->reg_base + MT8183_SCP_TCM_TAIL_SRAM_PD));
+
 	for (val = 0xffffffff; val; val >>= 1)
 		writel(val, cluster->reg_base + MT8183_SCP_SRAM_PDN);
 	writel(0x0, cluster->reg_base + MT8183_SCP_SRAM_PDN);
 	writel(0x0, cluster->reg_base + MT8183_SCP_L1_SRAM_PD);
 	writel(0x0, cluster->reg_base + MT8183_SCP_TCM_TAIL_SRAM_PD);
+
+	dev_info(scp->dev, "sram pdn after: %#x %#x %#x, clk_sw %#x, tcm[0] %#x\n",
+		 readl(cluster->reg_base + MT8183_SCP_SRAM_PDN),
+		 readl(cluster->reg_base + MT8183_SCP_L1_SRAM_PD),
+		 readl(cluster->reg_base + MT8183_SCP_TCM_TAIL_SRAM_PD),
+		 readl(cluster->reg_base + MT8183_SCP_CLK_SW_SEL),
+		 readl(scp->sram_base));
 
 	return 0;
 }
@@ -1828,6 +1840,7 @@ static int mt6785_infracfg_reset(struct mtk_scp *scp, const char *what,
 		return PTR_ERR(infracfg);
 
 	regmap_read(infracfg, set_reg, &val);
+	dev_info(scp->dev, "%s: %#x = %#x, setting %#x\n", what, set_reg, val, bits);
 	regmap_write(infracfg, set_reg, val | bits);
 	/* regmap writes are posted on this bus: the status read below must see this one first */
 	wmb();
@@ -1837,6 +1850,9 @@ static int mt6785_infracfg_reset(struct mtk_scp *scp, const char *what,
 				       MT6785_SCP_SYS_RESET_TIMEOUT_US);
 	if (ret)
 		dev_err(scp->dev, "%s: timeout (status %#x)\n", what, val);
+	else
+		dev_info(scp->dev, "%s: status %#x = %#x (acknowledged)\n",
+			 what, stat_reg, val);
 
 	return ret;
 }
@@ -1851,13 +1867,34 @@ static int mt6785_infracfg_reset(struct mtk_scp *scp, const char *what,
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp)
 {
 	struct regmap *infracfg = mt6785_infracfg(scp);
-	u32 val;
+	u32 status, clk_sw, val;
 	int ret;
 
 	if (IS_ERR(infracfg))
 		return PTR_ERR(infracfg);
 
-	/* the PD bits are active high: 0xffffffff is "all down", measured on the base kernel */
+	/*
+	 * Whether the subsystem needs its reset cycled at all is decided by its own clock block:
+	 * on the base kernel (no driver) cfg + 0x4000 reads 0x201, i.e. the block is alive and only
+	 * the SRAM is down. audio18 left the whole block reading zero after this sequence had run,
+	 * which is what an *asserted* reset looks like - and the likely reason is the secure reset
+	 * bit below, which the non-secure world can set but not clear.
+	 */
+	clk_sw = readl(scp->cluster->reg_base + MT8183_SCP_CLK_SW_SEL);
+	regmap_read(infracfg, MT6785_INFRACFG_MODULE_RESET_STATUS, &status);
+	dev_info(scp->dev, "state: clk_sw %#x reset_status %#x\n", clk_sw, status);
+
+	if (clk_sw && clk_sw != ~0U) {
+		dev_info(scp->dev, "the SCP clock block reads alive: no module reset\n");
+		return 0;
+	}
+
+	/*
+	 * The block is dead, so cycle the subsystem's reset the way the vendor's full reset does -
+	 * but with the SCP bit only (bit 3). The vendor also sets SCP_SEC_RESET_BIT (bit 10,
+	 * scp_awake.c:268-283): writing it is possible from here, clearing it is the secure world's
+	 * privilege, and leaving it asserted holds the whole block unreadable from the AP.
+	 */
 	ret = mt6785_infracfg_reset(scp, "sleep protect", MT6785_INFRACFG_SLP_PROT_SET,
 				    MT6785_INFRACFG_SLP_PROT_STAT,
 				    MT6785_SCP_TO_INFRA_BIT | MT6785_SCP_TO_AUDIO_BIT);
@@ -1867,16 +1904,18 @@ static int mt6785_scp_subsys_reset(struct mtk_scp *scp)
 	ret = mt6785_infracfg_reset(scp, "subsys reset",
 				    MT6785_INFRACFG_MODULE_RESET_SET,
 				    MT6785_INFRACFG_MODULE_RESET_STATUS,
-				    MT6785_SCP_RESET_BIT | MT6785_SCP_SEC_RESET_BIT);
+				    MT6785_SCP_RESET_BIT);
 	if (ret)
 		return ret;
 
 	/* "finish the shutdown process by clearing reset bit" (scp_awake.c:276-281) */
 	regmap_read(infracfg, MT6785_INFRACFG_MODULE_RESET_CLR, &val);
-	regmap_write(infracfg, MT6785_INFRACFG_MODULE_RESET_CLR,
-		     val | MT6785_SCP_RESET_BIT | MT6785_SCP_SEC_RESET_BIT);
+	regmap_write(infracfg, MT6785_INFRACFG_MODULE_RESET_CLR, val | MT6785_SCP_RESET_BIT);
 	/* and the SRAM writes that follow must not overtake it */
 	wmb();
+	usleep_range(50, 60);
+	regmap_read(infracfg, MT6785_INFRACFG_MODULE_RESET_STATUS, &status);
+	dev_info(scp->dev, "after the reset cycle: reset_status %#x\n", status);
 
 	return 0;
 }
