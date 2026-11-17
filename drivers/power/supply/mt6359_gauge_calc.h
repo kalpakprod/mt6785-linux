@@ -80,6 +80,71 @@ static inline long long mt6359_current_to_ua(long long raw, unsigned int r_fg_va
 	return v * 100;
 }
 
+/*
+ * Battery NTC. The MT6359 AUXADC's BAT_TEMP channel (index 1,
+ * MT6359_AUXADC_BAT_TEMP, include/dt-bindings/iio/adc/mediatek,mt6359-auxadc.h:8)
+ * is the NTC in a divider against RBAT_PULL_UP_R, and the vendor profile pairs it with
+ * RBAT_PULL_UP_VOLT 2800 mV and the 10k-beta table whose 25 degC point is 100000 ohm
+ * (drivers/misc/mediatek/include/mt-plat/mt6785/include/mach/mtk_battery_table.h:
+ * :205 RBAT_PULL_UP_R 100000, :208 RBAT_PULL_UP_VOLT 2800, :213-237 the 23-point
+ * Fg_Temperature_Table from -40 to +70 degC). RAW is a 12-bit code.
+ */
+/* Kept usable outside the kernel: the host test builds this header directly. */
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(a)	(sizeof(a) / sizeof((a)[0]))
+#endif
+#ifndef ENODATA
+#define ENODATA		61
+#endif
+
+#ifndef MT6359_NTC_PULL_UP_OHM
+#define MT6359_NTC_PULL_UP_OHM	100000
+#endif
+#define MT6359_NTC_ADC_MAX	4095
+
+struct mt6359_ntc_point {
+	int temp_c;
+	long ohm;
+};
+
+static const struct mt6359_ntc_point mt6359_ntc_table[] = {
+	{ -40, 4251000 }, { -35, 3005000 }, { -30, 2149000 }, { -25, 1554000 },
+	{ -20, 1135000 }, { -15, 837800 },  { -10, 624100 },  { -5, 469100 },
+	{ 0, 355600 },    { 5, 271800 },    { 10, 209400 },   { 15, 162500 },
+	{ 20, 127000 },   { 25, 100000 },   { 30, 79230 },    { 35, 63180 },
+	{ 40, 50680 },    { 45, 40900 },    { 50, 33190 },    { 55, 27090 },
+	{ 60, 22220 },    { 65, 18320 },    { 70, 15180 },
+};
+
+/*
+ * A raw BAT_TEMP code -> tenths of a degree Celsius, interpolating the vendor table.
+ * The divider is the vendor's: R_NTC = R_pull_up * raw / (full scale - raw).
+ */
+static inline int mt6359_ntc_raw_to_temp(unsigned int raw)
+{
+	long ohm;
+	size_t i;
+
+	if (raw == 0 || raw >= MT6359_NTC_ADC_MAX)
+		return -ENODATA;
+	ohm = (MT6359_NTC_PULL_UP_OHM * (long)raw) / (MT6359_NTC_ADC_MAX - (long)raw);
+
+	if (ohm >= mt6359_ntc_table[0].ohm)
+		return mt6359_ntc_table[0].temp_c * 10;
+	for (i = 1; i < ARRAY_SIZE(mt6359_ntc_table); i++) {
+		const struct mt6359_ntc_point *hi = &mt6359_ntc_table[i - 1];
+		const struct mt6359_ntc_point *lo = &mt6359_ntc_table[i];
+
+		if (ohm <= hi->ohm && ohm >= lo->ohm) {
+			long span = hi->ohm - lo->ohm;
+			int dt = (int)((hi->ohm - ohm) * (lo->temp_c - hi->temp_c) / span);
+
+			return hi->temp_c * 10 + dt * 10;
+		}
+	}
+	return mt6359_ntc_table[ARRAY_SIZE(mt6359_ntc_table) - 1].temp_c * 10;
+}
+
 /* Charge in uAh -> capacity in percent, clamped to 0..100. */
 static inline int mt6359_uah_to_capacity(long long uah, long long full_uah)
 {

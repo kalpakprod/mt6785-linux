@@ -286,6 +286,21 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 */
 		val->intval *= 1000;
 		return 0;
+	case POWER_SUPPLY_PROP_TEMP:
+		/*
+		 * The battery NTC is the MT6359 AUXADC's BAT_TEMP channel (index 1), the one
+		 * that fell from 1085 to 961 under a four-CPU load while the charger was
+		 * attached - an NTC, and the only temperature channel that moved that way.
+		 */
+		if (!g->ntc)
+			return -ENODATA;
+		ret = iio_read_channel_raw(g->ntc, &val->intval);
+		if (ret < 0)
+			return ret;
+		val->intval = mt6359_ntc_raw_to_temp((unsigned int)val->intval);
+		if (val->intval == -ENODATA)
+			return -ENODATA;
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -304,6 +319,7 @@ static enum power_supply_property mt6359_gauge_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_TEMP,
 	/*
 	 * CAPACITY and TEMP are deliberately absent. Capacity without an OCV table
 	 * would be the coulomb count against a design charge from a counter that

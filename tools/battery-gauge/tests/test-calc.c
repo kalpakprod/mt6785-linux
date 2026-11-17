@@ -58,6 +58,20 @@ int main(int argc, char **argv)
 	 * that is 3268 LSBs, and 3268 * 85 / 1000 = 277 uAh. */
 	expect("car 3268 -> uAh", mt6359_car_to_uah(3268, 50), 277);
 
+	/*
+	 * The NTC: the vendor divider and table (RBAT_PULL_UP_R 100k, 12-bit code, 23
+	 * points). A code of 2048 is exactly half the pull-up, i.e. 100 kOhm, which is
+	 * the table's 25 degC point.
+	 */
+	/* A code of 2048 gives 100048 ohm, not exactly 100000: the divider is
+	 * raw / (4095 - raw), so the exact 25 degC point is a code of 2047.5 - and the
+	 * table's 20..25 degC segment puts this one at 24.0 degC, which is the interpolation
+	 * doing its job. */
+	expect("ntc raw 2048 -> 24.0 C", mt6359_ntc_raw_to_temp(2048), 240);
+	/* Twice the resistance is colder: 2048*2/3 ~ 2730 is 200 kOhm, ~17 degC. */
+	expect("ntc colder than 25 C", mt6359_ntc_raw_to_temp(2730) < 250, 1);
+	expect("ntc warmer than 25 C", mt6359_ntc_raw_to_temp(1365) > 250, 1);
+
 	if (planted) {
 		/* With a planted constant one of the values above must have failed. */
 		printf("%s planted-constant build %s\n",

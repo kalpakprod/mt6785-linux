@@ -18,6 +18,16 @@ else
 fi
 
 echo
+echo "== the NTC conversion is pinned by exact values, not by a planted constant"
+if $cc "-DMT6359_NTC_PULL_UP_OHM=200000" -I "$inc" -o "$out/tn" "$here/test-calc.c" &&
+   ! "$out/tn" >/dev/null 2>&1; then
+	echo "PASS  a doubled pull-up fails the exact NTC points"
+else
+	echo "FAIL  a doubled pull-up was not caught by the exact NTC points"
+	fails=$((fails + 1))
+fi
+
+echo
 echo "== planted fault: one wrong constant must fail"
 for bad in "-DMT6359_CHARGE_LSB_NUM=86" "-DMT6359_R_FG_NOMINAL=51" \
 	   "-DMT6359_UNIT_FGCURRENT=305176"; do

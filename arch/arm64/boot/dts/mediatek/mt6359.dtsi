@@ -40,6 +40,11 @@
 			/* Rosemary's battery profile, the simple-battery node of the board
 			 * DT: the gauge turns its OCV table into a capacity at boot. */
 			monitored-battery = <&battery>;
+			/* The battery NTC: MT6359 AUXADC BAT_TEMP, channel index 1
+			 * (MT6359_AUXADC_BAT_TEMP), the channel that fell with temperature
+			 * in the conn26 measurement. */
+			io-channels = <&pmic_adc 1>;
+			io-channel-names = "ntc";
 			mediatek,r-fg-value = <5>;
 			/* The battery voltage channel is set by the board: it is the MT6360
 			 * ADC channel the generic adc-battery already reads (channel 4 in
