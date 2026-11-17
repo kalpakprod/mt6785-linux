@@ -66,6 +66,7 @@
  * parent's regmap, with a struct clk_hw per output and devm registration.
  */
 #include <linux/clk-provider.h>
+#include <linux/mfd/mt6397/core.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -192,15 +193,26 @@ static int mt6359_clkbuf_probe(struct platform_device *pdev)
 	struct clk_hw_onecell_data *onecell;
 	struct mt6359_clkbuf *bufs;
 	struct device *dev = &pdev->dev;
+	struct mt6397_chip *chip = dev_get_drvdata(dev->parent);
 	struct regmap *regmap;
 	unsigned int i;
 	u32 rate = MT6359_XO_DEFAULT_HZ;
 	int ret;
 
-	regmap = dev_get_regmap(dev->parent, NULL);
+	/*
+	 * The regmap is the PMIC chip's, not the parent device's: mt6397-core takes
+	 * it from *its* parent (the pwrap) and keeps it in struct mt6397_chip
+	 * (drivers/mfd/mt6397-core.c:382), which every sibling uses - e.g.
+	 * mt6359_regulator_probe() (drivers/regulator/mt6359-regulator.c:1040).
+	 * dev_get_regmap(dev->parent) finds nothing here, because the MFD device owns
+	 * no regmap of its own: that was the -ENODEV on conn16 that kept st-nci
+	 * deferred on its clock supplier.
+	 */
+	if (!chip)
+		return dev_err_probe(dev, -ENODEV, "no MT6397 chip from the parent\n");
+	regmap = chip->regmap;
 	if (!regmap)
-		return dev_err_probe(dev, -ENODEV,
-				     "no PMIC regmap from the parent\n");
+		return dev_err_probe(dev, -ENODEV, "the MT6397 chip has no regmap\n");
 
 	of_property_read_u32(dev->of_node, "clock-frequency", &rate);
 

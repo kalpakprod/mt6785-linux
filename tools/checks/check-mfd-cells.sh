@@ -103,6 +103,45 @@ if [ "$self_test" = 1 ]; then
 	else
 		echo "PASS  planted fault 'clock-buffer cell removed' caught"
 	fi
+
+	# The regmap fault: a child file that goes back to dev_get_regmap(dev->parent).
+	mkdir -p "$work/tree/drivers/clk/mediatek"
+	cat > "$work/tree/drivers/clk/mediatek/mt6359-fake-clkbuf.c" <<'EOC'
+static int probe(void *dev)
+{
+	return dev_get_regmap(dev->parent, 0) != 0;
+}
+EOC
+	if CHILDREN_ROOT="$work/tree" "$0" $target >/dev/null 2>&1; then
+		echo "FAIL  planted fault 'regmap from the parent' was not caught"
+		fails=$((fails + 1))
+	else
+		echo "PASS  planted fault 'regmap from the parent' caught"
+	fi
+fi
+
+# Every MFD child of the MT6397 family gets its regmap through struct mt6397_chip,
+# because the MFD device owns no regmap of its own: mt6397-core takes it from the
+# pwrap parent and stores it in chip->regmap (drivers/mfd/mt6397-core.c:382). A child
+# that reaches for dev_get_regmap(dev->parent) probes with -ENODEV instead - that is
+# what happened to the MT6359 clock buffer on conn16.
+echo
+echo "== MT6397 children take their regmap from the chip, not from the parent"
+children=${CHILDREN_ROOT:-.}
+# Only the MT63xx files are looked at: a recursive grep over drivers/ takes minutes
+# on this tree, and these are the only files whose parent is the MT6397 MFD.
+bad=$(ls "$children"/drivers/clk/mediatek/mt63*.c \
+	 "$children"/drivers/regulator/mt63*.c \
+	 "$children"/drivers/power/supply/mt63*.c 2>/dev/null |
+	grep -E "mt63[0-9][0-9]" |
+	xargs -r grep -l "dev_get_regmap(dev->parent" 2>/dev/null || true)
+if [ -z "$bad" ]; then
+	echo "PASS  no MT63xx child asks its parent device for a regmap"
+else
+	for f in $bad; do
+		echo "FAIL  $f calls dev_get_regmap(dev->parent): use chip->regmap from dev_get_drvdata()"
+		fails=$((fails + 1))
+	done
 fi
 
 echo
