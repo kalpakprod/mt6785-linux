@@ -5,6 +5,7 @@
  */
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h>
 
 /*
  * The camera LDO controller: address 0x28 on the bus this node's label resolves to (the phone
@@ -97,6 +98,8 @@
 		dvdd-supply = <&wl2866d_dvdd1>;
 		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
 		reset-gpios = <&pio 125 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk3_4ma>;
 
 		port {
 			imx355_out: endpoint {
@@ -131,6 +134,8 @@
 		dvdd-supply = <&wl2866d_dvdd1>;
 		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
 		reset-gpios = <&pio 124 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk2_4ma>;
 
 		port {
 			ov13b10_out: endpoint {
@@ -180,4 +185,28 @@
 /* The receiver's analog block: enabled for the trial so the D-PHY is powered for the IMX355. */
 &csi_rx_phy {
 	status = "okay";
+};
+
+/*
+ * The camera MCLK pads. The vendor board file drives them the same way, one group per drive
+ * strength, four groups each (cust_rosemary_camera.dtsi:133-186: PINMUX_GPIO121__FUNC_CMMCLK3 for
+ * the rear 8 MP sensor, PINMUX_GPIO120__FUNC_CMMCLK2 for the front one), and its clock driver picks
+ * the 4 mA group as the enabled state (mclk.c:16-23: "off", "2mA", "4mA", "6mA", "8mA";
+ * MCLK_STATE_ENABLE = MCLK_STATE_ENABLE_4MA). This tree set neither, so the pads stayed in whatever
+ * state the bootloader left them.
+ */
+&pio {
+	cam_mclk3_4ma: cam-mclk3-4ma {
+		pins-cmd-dat {
+			pinmux = <PINMUX_GPIO121__FUNC_CMMCLK3>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam_mclk2_4ma: cam-mclk2-4ma {
+		pins-cmd-dat {
+			pinmux = <PINMUX_GPIO120__FUNC_CMMCLK2>;
+			drive-strength = <4>;
+		};
+	};
 };
