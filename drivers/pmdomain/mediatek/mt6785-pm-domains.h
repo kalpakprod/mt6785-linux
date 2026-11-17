@@ -3,6 +3,28 @@
 #ifndef __SOC_MEDIATEK_MT6785_PM_DOMAINS_H
 #define __SOC_MEDIATEK_MT6785_PM_DOMAINS_H
 
+/*
+ * DIAGNOSTIC BUILD -- revert before anything is merged.
+ *
+ * One question is being measured: whether the modem's bus master is stuck on a
+ * transaction toward a slave in a power domain that the forced provider sync
+ * powered off (the modem never acknowledges its bus protect, and a master with an
+ * outstanding transaction cannot). Trial 34's PWR_STATUS diff was
+ * 0x83f7ffff -> 0x27dffd, i.e. bits 1, 13, 20, 22, 23, 24, 25 and 31; mapped to the
+ * domains below, exactly two of them are ones a modem bus master could plausibly be
+ * waiting on: conn (bit 1, the coexistence path over the connectivity CCIF and the
+ * SPM source requests) and audio (bit 24, the modem's PCM back end in the audio front
+ * end). The other six are GPU cores, camera and vdec, which the modem cannot address.
+ *
+ * So this build marks exactly those two MTK_SCPD_ALWAYS_ON: genpd then skips them in
+ * genpd_power_off() (mtk-pm-domains.c:1058 sets GENPD_FLAG_ALWAYS_ON), including on the
+ * sync_state path (genpd_provider_sync_state(), GENPD_SYNC_STATE_SIMPLE,
+ * drivers/pmdomain/core.c:3740-3756). The trial is then the same write of state_synced
+ * and the same clamp with those two domains still on.
+ *
+ * Revert: delete the two .caps lines marked DIAGNOSTIC and this comment.
+ */
+
 #include "mtk-pm-domains.h"
 #include <dt-bindings/power/mediatek,mt6785-power.h>
 
@@ -70,6 +92,12 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6785[] = {
 		.bp_cfg = {
 			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(31)),
 		},
+		/*
+		 * DIAGNOSTIC, TO BE REVERTED: see the file header. Keeps the domain on
+		 * through the sync_state so the modem can be clamped with it still
+		 * powered (PWR_STATUS bit 24).
+		 */
+		.caps = MTK_SCPD_ALWAYS_ON,
 	},
 	[MT6785_POWER_DOMAIN_CAM] = {
 		.name = "cam",
@@ -97,6 +125,12 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6785[] = {
 			MT6785_BUS_PROT_INFRA_WR_TOPAXI_1(BIT(10)),
 			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(14)),
 		},
+		/*
+		 * DIAGNOSTIC, TO BE REVERTED: see the file header. Keeps the domain on
+		 * through the power controller's sync_state so the modem can be clamped
+		 * with it still powered (PWR_STATUS bit 1).
+		 */
+		.caps = MTK_SCPD_ALWAYS_ON,
 	},
 	[MT6785_POWER_DOMAIN_ISP] = {
 		.name = "isp",
