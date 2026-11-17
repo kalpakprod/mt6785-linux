@@ -384,16 +384,41 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			{ 0x0a18, 0x0000000a, "CSI2 debug select (sticky)" },
 			{ 0x0d00, 0x00000001, "seninf mux enable" },
 			{ 0x0d04, 0x002b0000, "seninf mux data type RAW10" },
-			{ 0x0400, 0x00000000, "cam mux ctrl0" },
-			{ 0x0404, 0x00000001, "cam mux ctrl1" },
-			{ 0x0408, 0x00000000, "cam mux ctrl2" },
-			{ 0x040c, 0x00000000, "cam mux ctrl3" },
-			{ 0x0410, 0x00000008, "cam mux enable, mux 3 (CAMSV0)" },
 		};
 		unsigned int i;
 
 		dev_info(seninf->dev, "programming receiver instance %d at 0x%08llx\n",
 			 port + 1, (unsigned long long)seninf->base_pa + 0x1000 * seninf_idx);
+
+		/*
+		 * The camera multiplexer is not part of a receiver instance. The stock HAL keeps its
+		 * base in the object at this+0x180, and init() builds it as the seninf block's own
+		 * mmap base plus 0x400 (libcam.halsensor.so init 0x2e7fc-0x2e814: x11 is [this+0x38],
+		 * the 19-page seninf mapping, and x8 = x11 + 0x400). That is why the same values read
+		 * back zero at instance 5's 0x1a0444xx while the block's top window holds live values.
+		 *
+		 * enableCamMUX (:0x2fd00) does, for camera mux n:
+		 *   [0x400+0x10] |= 1 << n     -> 0x1a040410
+		 *   [0x400+0xa0] |= 3 << 2n    -> 0x1a0404a0
+		 *   [0x400+0xa8]  = 3 << 2n    -> 0x1a0404a8
+		 * and setSeninfCamMuxSrc (:0x30f40) puts the mux index in bits 0..3 of [0x400+0x0] and
+		 * the virtual channel in [0x400+0x104].
+		 */
+		{
+			void __iomem *cmux = seninf->base + 0x400;
+			unsigned int n = 3;	/* CAMSV0's camera mux */
+
+			writel(readl(cmux + 0x10) | (1 << n), cmux + 0x10);
+			writel(readl(cmux + 0xa0) | (3 << (2 * n)), cmux + 0xa0);
+			writel(3 << (2 * n), cmux + 0xa8);
+			writel((readl(cmux) & ~0xf) | (n & 0xf), cmux);
+
+			dev_info(seninf->dev,
+				 "cam mux 0x%08llx: ctrl 0x%08x, en 0x%08x, src 0x%08x, sel 0x%08x\n",
+				 (unsigned long long)seninf->base_pa + 0x400,
+				 readl(cmux), readl(cmux + 0x10), readl(cmux + 0xa0),
+				 readl(cmux + 0xa8));
+		}
 
 		for (i = 0; i < ARRAY_SIZE(seq); i++) {
 			writel(seq[i].val, in + seq[i].off);
