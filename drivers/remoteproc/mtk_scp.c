@@ -539,6 +539,7 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
 static int mt6785_scp_awake(struct mtk_scp *scp, bool lock);
 static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_prepare_dvfs(struct mtk_scp *scp);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -620,6 +621,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 		 readl(cluster->reg_base + MT6785_SCP_PROBE_REG));
 	mt6785_scp_log_wdt_sleep(scp, "before the release");
 	mt6785_scp_log_ulposc(scp, "before the release");
+	mt6785_scp_prepare_dvfs(scp);
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -1322,6 +1324,9 @@ static int scp_start(struct rproc *rproc)
 					 ms, clk_sw, clk_en,
 					 readl(clk + MT6785_SCP_CLK_CTRL_24));
 				mt6785_scp_log_ulposc(scp, "timeline");
+				dev_info(scp->dev, "%u ms: freq expected %u current %u MHz\n",
+					 ms, readl(cfg + MT6785_SCP_EXPECTED_FREQ),
+					 readl(cfg + MT6785_SCP_CURRENT_FREQ));
 				dev_info(scp->dev, "%u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
 					 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
 					 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
@@ -2387,6 +2392,31 @@ static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when)
 	dev_info(scp->dev, "%s: SPM ULPOSC_CON %#x (en %u, rst %u, cg %u, sel %u)\n",
 		 when, val, val & BIT(0) ? 1 : 0, val & BIT(1) ? 1 : 0,
 		 val & BIT(2) ? 1 : 0, val & BIT(3) ? 1 : 0);
+}
+
+/*
+ * The SCP's own DVFS words, the way the MT6885 port drives them (scp_cezanne.c: the port that
+ * brings this SCP family up on mainline):
+ *
+ *  - cfg + 0x20 is SCP_SCP2SPM_VOL_LV, the voltage level the SCP asks the SPM for; the cezanne
+ *    port writes 0x0008 there before requesting its fixed OPP, with the note that 0.575 V is
+ *    enough and VCORE is higher (scp_cezanne.c:51, :614);
+ *  - cfg + 0x4c is EXPECTED_FREQ_REG and cfg + 0x50 CURRENT_FREQ_REG, in MHz
+ *    (scp_cezanne.c:61-62), which the same port writes and polls (:608-625).
+ *
+ * The voltage level is written here, before the core is released, because it is a request the
+ * SCP's firmware uses when it raises its clock; the two frequency words are read only, so the
+ * timeline shows what the firmware itself asks for when it switches at 1 s.
+ */
+static void mt6785_scp_prepare_dvfs(struct mtk_scp *scp)
+{
+	void __iomem *cfg = scp->cluster->reg_base;
+
+	writel(MT6785_SCP_VOL_LV_VALUE, cfg + MT6785_SCP_VOL_LV);
+	dev_info(scp->dev, "SCP voltage level request %#x reads back %#x\n",
+		 MT6785_SCP_VOL_LV_VALUE, readl(cfg + MT6785_SCP_VOL_LV));
+	dev_info(scp->dev, "SCP frequency words: expected %u MHz, current %u MHz\n",
+		 readl(cfg + MT6785_SCP_EXPECTED_FREQ), readl(cfg + MT6785_SCP_CURRENT_FREQ));
 }
 
 /* the infracfg regmap, from the phandle the DT gives */
