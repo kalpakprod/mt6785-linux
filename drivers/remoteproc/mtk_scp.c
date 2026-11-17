@@ -548,6 +548,7 @@ static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
+static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -630,6 +631,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	mt6785_scp_log_wdt_sleep(scp, "before the release");
 	mt6785_scp_log_ulposc(scp, "before the release");
 	mt6785_scp_log_fmeter(scp, "before the release");
+	mt6785_scp_log_spm_handshake(scp, "before the release");
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -1338,6 +1340,7 @@ static int scp_start(struct rproc *rproc)
 					 readl(clk + MT6785_SCP_CLK_CTRL_24));
 				mt6785_scp_log_ulposc(scp, "timeline");
 				mt6785_scp_log_fmeter(scp, "timeline");
+				mt6785_scp_log_spm_handshake(scp, "timeline");
 				dev_info(scp->dev, "%u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
 					 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
 					 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
@@ -2496,6 +2499,20 @@ static bool mt6785_scp_log_like(const char *s, size_t n)
 	}
 
 	return space && lower;
+}
+
+/*
+ * The SCP's own request to the SPM, as its firmware uses it: the request word is cfg + 0x20
+ * (SCP_TO_SPM_REG, vendor scp_reg.h:17) and the firmware writes 1 there and then polls bit 0 of
+ * cfg + 0x1c (image 0x2c2a6-0x2c2ae and 0x2c328-0x2c32c). Reporting both shows whether a request
+ * was ever made and whether an acknowledgment ever came back.
+ */
+static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when)
+{
+	void __iomem *cfg = scp->cluster->reg_base;
+
+	dev_info(scp->dev, "%s: SCP->SPM request %#x, status %#x\n", when,
+		 readl(cfg + MT6785_SCP_TO_SPM_REG), readl(cfg + MT6785_SCP_SPM_STATUS));
 }
 
 /* is this run of characters already in the loaded image? */

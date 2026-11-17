@@ -95,6 +95,9 @@
 /* a free cfg scratch word (GENERAL_REG0, cfg + 0x50, scp_reg.h:39-42) and the value put in it */
 #define MT6785_SCP_PROBE_REG		0x50
 #define MT6785_SCP_PROBE_VALUE		0x5a5a1234
+/* the SCP's request word for the SPM and the status it polls (scp_reg.h:17, firmware 0x2c328) */
+#define MT6785_SCP_TO_SPM_REG		0x20
+#define MT6785_SCP_SPM_STATUS		0x1c
 /* the two candidates for a core that loses its bus, and the probe's timing (scp_reg.h) */
 #define MT6785_SPM_ULPOSC_CON		0x440
 /* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
