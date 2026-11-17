@@ -205,12 +205,41 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 	struct mtk_seninf *seninf =
 		container_of(to_delayed_work(work), struct mtk_seninf, late_counters);
 
+	unsigned int port;
+
+	/* This instance first, then one line per receiver port of the block. */
 	dev_info(seninf->dev,
 		 "500 ms in: CSI2_EN 0x%08x, packet cnt %u, err cnt %u, INTSTA 0x%08x\n",
 		 readl(seninf->base + SENINF_CSI2_EN),
 		 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
 		 readl(seninf->base + SENINF_CSI2_ERR_CNT),
 		 readl(seninf->base + 0x0ac8));
+
+	/*
+	 * Measured, not guessed: the per-index port assignment lives in the closed HAL, so the port
+	 * the streaming sensor really arrives on is whichever of these moves. One line per receiver
+	 * instance (5 x 0x1000 from this node's base): its CSI-2 control, enable, packet and error
+	 * counters and status word.
+	 */
+	for (port = 0; port < 5; port++) {
+		void __iomem *p = seninf->base + 0x1000 * port;
+
+		dev_info(seninf->dev,
+			 "port %u: CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, pkt %u, err %u, INTSTA 0x%08x\n",
+			 port + 1, readl(p + SENINF_CSI2_CTRL), readl(p + SENINF_CSI2_EN),
+			 readl(p + SENINF_CSI2_PACKET_CNT), readl(p + SENINF_CSI2_ERR_CNT),
+			 readl(p + 0x0ac8));
+	}
+
+	if (!IS_ERR_OR_NULL(seninf->ana)) {
+		unsigned int i;
+
+		dev_info(seninf->dev, "analog MIPI RX, per-lane status:\n");
+		for (i = 0; i < 16; i += 4)
+			dev_info(seninf->dev, "  ana 0x%02x: 0x%08x 0x%08x 0x%08x 0x%08x\n",
+				 i, readl(seninf->ana + i), readl(seninf->ana + i + 4),
+				 readl(seninf->ana + i + 8), readl(seninf->ana + i + 12));
+	}
 }
 
 static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)

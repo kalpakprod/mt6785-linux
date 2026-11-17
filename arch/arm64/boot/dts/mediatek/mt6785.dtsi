@@ -2083,7 +2083,7 @@
 			 * gives this SoC; the second window is what lanes, termination and settling
 			 * are programmed in.
 			 */
-			reg = <0 0x1a040000 0 0x1000>,
+			reg = <0 0x1a040000 0 0x5000>,
 			      <0 0x11c80000 0 0x1000>;
 			mediatek,cam = <&cam>;
 			clocks = <&camsys CLK_CAM_SENINF>, <&topckgen CLK_TOP_SENINF0>;
