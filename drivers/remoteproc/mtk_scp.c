@@ -1236,7 +1236,12 @@ static int scp_parse_fw(struct rproc *rproc, const struct firmware *fw)
 		return ret;
 	}
 
-	ret = scp_ipi_init(scp, fw);
+	/*
+	 * The IPI buffer address is read out of the firmware's ELF; the vendor's MTK image has no
+	 * ELF, so the SoC data's own offset is what the client uses.
+	 */
+	if (!scp->data->scp_mtk_image)
+		ret = scp_ipi_init(scp, fw);
 	clk_disable(scp->clk);
 	return ret;
 }
@@ -1527,6 +1532,44 @@ static int scp_unprepare(struct rproc *rproc)
 	return 0;
 }
 
+/*
+ * The vendor's SCP firmware is not an ELF but the MTK record list the loader parses, so the ELF
+ * sanity check the remoteproc core runs by default rejects it ("Image is corrupted (bad magic)",
+ * trial 28). This is the same walk mt6785_scp_stage_mtk_image() does, kept separate so the check
+ * happens before anything is written: every record's magic and extension header have to be right
+ * and its payload has to fit inside the file.
+ */
+static int mtk_img_sanity_check(struct rproc *rproc, const struct firmware *fw)
+{
+	const u8 *buf = fw->data;
+	size_t off = 0, records = 0;
+
+	while (off + MTK_IMG_HDR_SIZE <= fw->size) {
+		const struct mtk_img_header *h = (const void *)(buf + off);
+		u32 dsize = le32_to_cpu(h->dsize);
+		size_t next;
+
+		if (le32_to_cpu(h->magic) != MTK_IMG_MAGIC)
+			return -EINVAL;
+		if (le32_to_cpu(h->ext_magic) != MTK_IMG_EXT_MAGIC ||
+		    le32_to_cpu(h->hdr_size) != MTK_IMG_HDR_SIZE)
+			return -EINVAL;
+		if (off + MTK_IMG_HDR_SIZE + dsize > fw->size)
+			return -EINVAL;
+
+		records++;
+		next = round_up(off + MTK_IMG_HDR_SIZE + dsize, MTK_IMG_ALIGN);
+		if (next <= off)
+			return -EINVAL;
+		off = next;
+
+		if (le32_to_cpu(h->img_list_end))
+			break;
+	}
+
+	return records ? 0 : -EINVAL;
+}
+
 static const struct rproc_ops scp_ops = {
 	.prepare	= scp_prepare,
 	.unprepare	= scp_unprepare,
@@ -1537,6 +1580,23 @@ static const struct rproc_ops scp_ops = {
 	.da_to_va	= scp_da_to_va,
 	.parse_fw	= scp_parse_fw,
 	.sanity_check	= rproc_elf_sanity_check,
+};
+
+/*
+ * MT6785 loads the vendor's record list, so it needs its own ops: no ELF sanity check, no ELF
+ * resource table and no ELF entry point (imx_dsp_rproc and qcom's mdt loaders build their ops the
+ * same way - the ELF hooks simply are not in the table).
+ */
+static const struct rproc_ops scp_mtk_ops = {
+	.prepare	= scp_prepare,
+	.unprepare	= scp_unprepare,
+	.start		= scp_start,
+	.stop		= scp_stop,
+	.attach		= mtk_scp_attach,
+	.load		= scp_load,
+	.da_to_va	= scp_da_to_va,
+	.parse_fw	= scp_parse_fw,
+	.sanity_check	= mtk_img_sanity_check,
 };
 
 /**
@@ -1771,7 +1831,9 @@ static struct mtk_scp *scp_rproc_init(struct platform_device *pdev,
 		}
 	}
 
-	rproc = devm_rproc_alloc(dev, np->name, &scp_ops, fw_name, sizeof(*scp));
+	rproc = devm_rproc_alloc(dev, np->name,
+				 of_data->scp_mtk_image ? &scp_mtk_ops : &scp_ops,
+				 fw_name, sizeof(*scp));
 	if (!rproc) {
 		dev_err(dev, "unable to allocate remoteproc\n");
 		return ERR_PTR(-ENOMEM);
