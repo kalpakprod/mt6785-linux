@@ -265,6 +265,11 @@ static const struct mfd_cell mt6359_devs[] = {
 		.of_compatible = "mediatek,mt6359-clkbuf",
 	},
 	{
+		/* The coulomb-counting fuel gauge (drivers/power/supply/mt6359_gauge.c). */
+		.name = "mt6359-gauge",
+		.of_compatible = "mediatek,mt6359-gauge",
+	},
+	{
 		.name = "mt6359-accdet",
 		.of_compatible = "mediatek,mt6359-accdet",
 		.num_resources = ARRAY_SIZE(mt6359_accdet_resources),

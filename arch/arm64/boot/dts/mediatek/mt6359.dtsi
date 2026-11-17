@@ -29,6 +29,18 @@
 		};
 
 
+		/*
+		 * The coulomb-counting fuel gauge. The sense resistor and the full charge
+		 * are board values: 50 mOhm nominal and 5 Ah are what the vendor profile
+		 * for this battery reports; the ADC channels come from the PMIC's own
+		 * converter, the same one the generic adc-battery reads today.
+		 */
+		gauge {
+			compatible = "mediatek,mt6359-gauge";
+			mediatek,r-fg-mohm = <50>;
+			mediatek,charge-full-microamp-hours = <5000000>;
+		};
+
 		mt6359codec: audio-codec {
 			compatible = "mediatek,mt6359-codec";
 		};
