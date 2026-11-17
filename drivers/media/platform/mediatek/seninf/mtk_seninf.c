@@ -71,6 +71,7 @@ struct mtk_seninf {
 	struct device *dev;
 	void __iomem *base;
 	struct clk_bulk_data clks[2];
+	struct delayed_work late_counters;
 	/* The analog MIPI RX block lives outside this node's window but is part of the receiver. */
 	void __iomem *ana;
 	struct dentry *debugfs;
@@ -196,6 +197,19 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 			    &mtk_seninf_clear_fops);
 }
 
+static void mtk_seninf_late_counters(struct work_struct *work)
+{
+	struct mtk_seninf *seninf =
+		container_of(to_delayed_work(work), struct mtk_seninf, late_counters);
+
+	dev_info(seninf->dev,
+		 "500 ms in: CSI2_EN 0x%08x, packet cnt %u, err cnt %u, INTSTA 0x%08x\n",
+		 readl(seninf->base + SENINF_CSI2_EN),
+		 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
+		 readl(seninf->base + SENINF_CSI2_ERR_CNT),
+		 readl(seninf->base + 0x0ac8));
+}
+
 static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct mtk_seninf *seninf = container_of(sd, struct mtk_seninf, sd);
@@ -216,6 +230,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			}
 		}
 
+		cancel_delayed_work_sync(&seninf->late_counters);
 		writel(0, seninf->base + SENINF_CSI2_EN);
 		pm_runtime_put_autosuspend(seninf->dev);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
@@ -300,6 +315,9 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	dev_info(seninf->dev, "stream on holds the receiver: pm usage %d\n",
 		 pm_runtime_active(seninf->dev));
 
+	/* And once more half a second later, when the sensor has really been transmitting. */
+	schedule_delayed_work(&seninf->late_counters, msecs_to_jiffies(500));
+
 	return 0;
 }
 
@@ -363,6 +381,7 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret, "failed to get the receiver clocks\n");
 
 	platform_set_drvdata(pdev, seninf);
+	INIT_DELAYED_WORK(&seninf->late_counters, mtk_seninf_late_counters);
 	pm_runtime_set_autosuspend_delay(dev, 100);
 	pm_runtime_use_autosuspend(dev);
 	ret = devm_pm_runtime_enable(dev);

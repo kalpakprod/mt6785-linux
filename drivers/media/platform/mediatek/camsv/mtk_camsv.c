@@ -141,9 +141,18 @@ static void camsv_hw_reset(struct mtk_camsv *camsv)
 	 * which reads 1 when the engine is idle - the state the sequence waits for before it programs
 	 * anything. Rates: 100 microseconds per poll, ten milliseconds in total.
 	 */
-	writel(BIT(2) | BIT(0), camsv->base + CAMSV_SW_CTL);
-	udelay(10);
+	/*
+	 * Both bits are pulses, not levels: the hardware reset (bit2) is asserted, released, and only
+	 * then the trigger (bit0) is pulsed. Leaving bit2 set - which the driver did - holds the engine
+	 * in reset for ever, which is exactly what "SW_CTL 0x00000004" measured.
+	 */
 	writel(BIT(2), camsv->base + CAMSV_SW_CTL);
+	udelay(10);
+	writel(0, camsv->base + CAMSV_SW_CTL);
+	udelay(10);
+	writel(BIT(0), camsv->base + CAMSV_SW_CTL);
+	udelay(10);
+	writel(0, camsv->base + CAMSV_SW_CTL);
 
 	for (i = 0; i < 100; i++) {
 		val = readl(camsv->base + CAMSV_SW_CTL);
@@ -174,6 +183,7 @@ static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 
 	writel(BIT(0) | BIT(16), camsv->base + CAMSV_TG_SEN_MODE);
 	writel(CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK | CAMSV_MODULE_EN_UNPACK |
 	       CAMSV_MODULE_EN_IMGO, camsv->base + CAMSV_MODULE_EN);
+	/* The mask goes in last, once the engine is out of reset and running. */
 	writel(CAMSV_INT_EN_VENDOR, camsv->base + CAMSV_INT_EN);
 	writel(BIT(0), camsv->base + CAMSV_TG_VF_CON);
 
