@@ -39,42 +39,40 @@
 
 #include "../cam/mtk_cam_core.h"
 
-/* CAMSV registers, cezanne map (§3.2). */
-#define CAMSV_MODULE_EN			0x0010
-#define CAMSV_FMT_SEL			0x0014
-#define CAMSV_INT_EN			0x0018
-#define CAMSV_INT_STATUS		0x001c
-#define CAMSV_SW_CTL			0x0020
-#define CAMSV_IMGO_FBC			0x002c
-#define CAMSV_CLK_EN			0x0030
-#define CAMSV_PAK			0x004c
-#define CAMSV_TG_SEN_MODE		0x0130
-#define CAMSV_TG_VF_CON			0x0134
-#define CAMSV_TG_GRAB_PXL		0x0138
-#define CAMSV_TG_GRAB_LIN		0x013c
-#define CAMSV_TG_PATH_CFG		0x0140
-#define CAMSV_TG_INTER_ST		0x016c
-#define CAMSV_IMGO_BASE			0x0420
-#define CAMSV_IMGO_BASE_MSB		0x0424
-#define CAMSV_IMGO_OFST			0x0428
+/*
+ * CAMSV registers, from this phone's own GPL kernel
+ * (scratch/native/5-cameras/vendor-rosemary-r-oss/cam_regs.h:369-379, the CAMSV block, and the
+ * device tree's camsv1 at 0x1a050000 with a 0x1000 window). The cezanne MT6885 offsets this
+ * driver used before (INT_EN 0x18, SW_CTL 0x20) belong to the ISP6 layout and simply do not exist
+ * on this block - 0x18 reads back 0 while the block is clocked.
+ */
+#define CAMSV_MODULE_EN			0x0510	/* cam_regs.h:369 */
+#define CAMSV_INT_EN			0x0518	/* cam_regs.h:370 */
+#define CAMSV_INT_STATUS		0x051c	/* cam_regs.h:371 */
+#define CAMSV_SW_CTL			0x0520	/* cam_regs.h:372 */
+#define CAMSV_FBC_IMGO_CTL1		0x0110	/* cam_regs.h:373 */
+#define CAMSV_FBC_IMGO_CTL2		0x0114	/* cam_regs.h:374 */
+#define CAMSV_IMGO_BASE_ADDR		0x0020	/* cam_regs.h:375 */
+#define CAMSV_TG_SEN_MODE		0x0230	/* cam_regs.h:376 */
+#define CAMSV_TG_VF_CON			0x0234	/* cam_regs.h:377 */
+#define CAMSV_TG_INTER_ST		0x026c	/* cam_regs.h:378 */
+#define CAMSV_TG_TIME_STAMP		0x02a0	/* cam_regs.h:379 */
 
-/* MODULE_EN bits (§3.2): TG, PAK, unpack, IMGO, DB. */
+/* FBC_IMGO_CTL1: FBC_EN is bit15 (union FBC_CTRL_1, cam_regs.h:383-390). */
+#define CAMSV_FBC_EN			BIT(15)
+
+/*
+ * The interrupt mask: the vendor kernel never writes a constant - the HAL supplies it through an
+ * ioctl and the kernel only ever clears bits from it (camera_isp.c:8117-8123). Enable everything
+ * the block can report and let the handler read the status word, which is the safe direction: a
+ * missed frame interrupt is worse than an extra one.
+ */
+#define CAMSV_INT_EN_ALL		0xffffffff
+
+/* MODULE_EN bits: the vendor's own enable for TG, PAK, IMGO and DB (union in cam_regs.h). */
 #define CAMSV_MODULE_EN_TG		BIT(0)
 #define CAMSV_MODULE_EN_PAK		BIT(2)
-#define CAMSV_MODULE_EN_UNPACK		BIT(3)
 #define CAMSV_MODULE_EN_IMGO		BIT(4)
-
-#define CAMSV_CLK_EN_VAL		0x8005
-/*
- * The interrupt mask the vendor's engine arms: 0x31871 (cezanne map, 5-cameras.md §3.2, where
- * INT_EN 0x0018 carries that value). Arming with zero - which is what the driver did - means the
- * engine never tells anyone that a frame arrived.
- */
-#define CAMSV_INT_EN_VENDOR		0x31871
-/* PAK modes (§3.2): 8 RAW8, 9 packed RAW10, 13 unpacked RAW10. */
-#define CAMSV_PAK_RAW10			9
-/* TG_INTER_ST: bits [13:8] carry the TG state, 0x100 means idle. */
-#define CAMSV_TG_IDLE			0x100
 
 #define CAMSV_MAX_WIDTH			4208
 #define CAMSV_MAX_HEIGHT		3120
@@ -131,7 +129,13 @@ static void camsv_dump_engine(struct mtk_camsv *camsv)
 {
 	unsigned int off;
 
-	for (off = 0; off < 0x100; off += 0x20)
+	static const unsigned int ranges[][2] = {
+		{ 0x000, 0x100 }, { 0x100, 0x140 }, { 0x200, 0x2c0 }, { 0x500, 0x540 },
+	};
+	unsigned int r;
+
+	for (r = 0; r < ARRAY_SIZE(ranges); r++)
+	for (off = ranges[r][0]; off < ranges[r][1]; off += 0x20)
 		dev_info(camsv->dev,
 			 "camsv 0x%08llx: %08x %08x %08x %08x %08x %08x %08x %08x\n",
 			 (unsigned long long)camsv->base_pa + off,
@@ -149,70 +153,66 @@ static void camsv_hw_reset(struct mtk_camsv *camsv)
 	int i;
 
 	/*
-	 * The vendor's reset (cezanne map, 5-cameras.md §3.2): SW_CTL bit0 is the reset trigger,
-	 * bit2 the hardware reset, and bit1 reads back 1 when the engine is idle again - the state
-	 * the sequence polls for. Ten milliseconds are given to it; if it stays busy, say so with the
-	 * register and keep going, because a busy engine is information, not a reason to abort.
+	 * The vendor's own flow for this block, register for register
+	 * (camera_isp.c:1687-1702): SW_RST 1, SW_RST 0, IMGO_RST_TRIG 1, poll until the register
+	 * reads 0x3 (reset done), then IMGO_RST_TRIG 0.
 	 */
-	/*
-	 * Vendor order: pulse the trigger (bit0) with the hardware reset (bit2) and then watch bit1,
-	 * which reads 1 when the engine is idle - the state the sequence waits for before it programs
-	 * anything. Rates: 100 microseconds per poll, ten milliseconds in total.
-	 */
-	/*
-	 * Both bits are pulses, not levels: the hardware reset (bit2) is asserted, released, and only
-	 * then the trigger (bit0) is pulsed. Leaving bit2 set - which the driver did - holds the engine
-	 * in reset for ever, which is exactly what "SW_CTL 0x00000004" measured.
-	 */
-	writel(BIT(2), camsv->base + CAMSV_SW_CTL);
-	udelay(10);
-	writel(0, camsv->base + CAMSV_SW_CTL);
-	udelay(10);
-	writel(BIT(0), camsv->base + CAMSV_SW_CTL);
-	udelay(10);
-	writel(0, camsv->base + CAMSV_SW_CTL);
+	writel(0x4, camsv->base + CAMSV_SW_CTL);
+	writel(0x0, camsv->base + CAMSV_SW_CTL);
+	writel(0x1, camsv->base + CAMSV_SW_CTL);
 
 	for (i = 0; i < 100; i++) {
 		val = readl(camsv->base + CAMSV_SW_CTL);
-		if (val & BIT(1)) {
-			dev_dbg(camsv->dev, "reset settled: SW_CTL 0x%08x\n", val);
-			return;
-		}
+		if (val == 0x3)
+			break;
 		usleep_range(100, 200);
 	}
 
-	dev_warn(camsv->dev,
-		 "reset did not settle: SW_CTL 0x%08x (bit0 trigger, bit1 idle, bit2 hw reset)\n",
-		 val);
+	if (val != 0x3)
+		dev_warn(camsv->dev, "reset did not reach 0x3: SW_CTL 0x%08x (0x%08llx)\n",
+			 val, (unsigned long long)camsv->base_pa + CAMSV_SW_CTL);
+
+	writel(0x0, camsv->base + CAMSV_SW_CTL);
+
+	dev_info(camsv->dev, "reset: SW_CTL 0x%08x (0x%08llx)\n",
+		 readl(camsv->base + CAMSV_SW_CTL),
+		 (unsigned long long)camsv->base_pa + CAMSV_SW_CTL);
 }
+
+
+/* ---- register programming, cezanne map ---- */
+
 
 static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 h)
 {
-	/* Frame size first, then the packing, then the destination. */
-	writel((w << 16), camsv->base + CAMSV_TG_GRAB_PXL);
-	writel((h << 16), camsv->base + CAMSV_TG_GRAB_LIN);
-	writel(CAMSV_PAK_RAW10, camsv->base + CAMSV_PAK);
-	writel(CAMSV_CLK_EN_VAL, camsv->base + CAMSV_CLK_EN);
+	/*
+	 * The destination first (cam_regs.h:375, IMGO_BASE_ADDR), then the frame-buffer compression
+	 * word with its enable bit (cam_regs.h:373 and union FBC_CTRL_1), then the TG: SEN_MODE with
+	 * CMOS enable and the VF_CON start bit are what actually make the engine grab a frame
+	 * (cam_regs.h:376-377; the vendor starts the TG the same way, camera_isp.c:5056 and :3552).
+	 * Which bits of TG_SEN_MODE and TG_VF_CON the HAL wrote per sensor is not in the kernel, so
+	 * the enable bits are used alone and logged with their read-back.
+	 */
+	writel(lower_32_bits(base), camsv->base + CAMSV_IMGO_BASE_ADDR);
+	writel(CAMSV_FBC_EN, camsv->base + CAMSV_FBC_IMGO_CTL1);
+	writel(0, camsv->base + CAMSV_FBC_IMGO_CTL2);
 
-	writel(lower_32_bits(base), camsv->base + CAMSV_IMGO_BASE);
-	writel(upper_32_bits(base), camsv->base + CAMSV_IMGO_BASE_MSB);
-	writel(0, camsv->base + CAMSV_IMGO_OFST);
+	/* The grab window the caller asked for: end coordinates, 16 bits each. */
+	writel((w << 16), camsv->base + CAMSV_TG_INTER_ST);
 
-	writel(BIT(0) | BIT(16), camsv->base + CAMSV_TG_SEN_MODE);
-	writel(CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK | CAMSV_MODULE_EN_UNPACK |
-	       CAMSV_MODULE_EN_IMGO, camsv->base + CAMSV_MODULE_EN);
-	/* The mask goes in last, once the engine is out of reset and running. */
-	/* DIAG: which of the engine's first 0x100 offsets are live on this generation. */
-	if (camsv->stream_dump)
-		camsv_dump_engine(camsv);
+	writel(BIT(0), camsv->base + CAMSV_TG_SEN_MODE);	/* CMOS_EN */
+	writel(CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK | CAMSV_MODULE_EN_IMGO,
+	       camsv->base + CAMSV_MODULE_EN);
+	writel(CAMSV_INT_EN_ALL, camsv->base + CAMSV_INT_EN);
+	writel(BIT(0), camsv->base + CAMSV_TG_VF_CON);		/* VF start */
 
-	writel(CAMSV_INT_EN_VENDOR, camsv->base + CAMSV_INT_EN);
-	writel(BIT(0), camsv->base + CAMSV_TG_VF_CON);
-
-	dev_info(camsv->dev, "engine armed: INT_EN 0x%08x, MODULE_EN 0x%08x, SW_CTL 0x%08x\n",
-		 readl(camsv->base + CAMSV_INT_EN),
+	dev_info(camsv->dev,
+		 "engine armed: MODULE_EN 0x%08x INT_EN 0x%08x TG_SEN_MODE 0x%08x TG_VF_CON 0x%08x IMGO 0x%08x\n",
 		 readl(camsv->base + CAMSV_MODULE_EN),
-		 readl(camsv->base + CAMSV_SW_CTL));
+		 readl(camsv->base + CAMSV_INT_EN),
+		 readl(camsv->base + CAMSV_TG_SEN_MODE),
+		 readl(camsv->base + CAMSV_TG_VF_CON),
+		 readl(camsv->base + CAMSV_IMGO_BASE_ADDR));
 }
 
 static void camsv_hw_stop(struct mtk_camsv *camsv)
@@ -341,7 +341,7 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (camsv->stream_dump)
 		camsv_dump_engine(camsv);
 
-	writel(CAMSV_INT_EN_VENDOR, camsv->base + CAMSV_INT_EN);
+	writel(CAMSV_INT_EN_ALL, camsv->base + CAMSV_INT_EN);
 
 	dev_info(camsv->dev, "stream on: %u buffers, %ux%u, INT_EN 0x%08x (0x%08llx)\n", count,
 		 camsv->cur_fmt.fmt.pix.width, camsv->cur_fmt.fmt.pix.height,
