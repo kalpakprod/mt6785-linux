@@ -134,6 +134,15 @@ static int mt6359_gauge_read_reg(struct mt6359_gauge *g, unsigned int reg,
 			break;
 		usleep_range(1000, 2000);
 	}
+	/*
+	 * No ready flag means the value in the register belongs to whatever update was
+	 * in flight - the vendor polls for exactly this before reading
+	 * (mt6359_gauge.c:216-220, and again after the release at :529-540). A read that
+	 * never became ready is not reported at all: conn28 saw a current with the wrong
+	 * sign at idle, which is what a torn update looks like.
+	 */
+	if (!(v & MT6359_FGADC_CON1_ST))
+		return -EAGAIN;
 
 	ret = regmap_read(g->regmap, reg, &v);
 	if (ret)
@@ -319,7 +328,15 @@ static enum power_supply_property mt6359_gauge_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
-	POWER_SUPPLY_PROP_TEMP,
+	/*
+	 * TEMP is deliberately absent until the NTC divider is calibrated: with the
+	 * vendor's 100k pull-up the conn28 measurement (raw 1085) works out at 45-50 degC
+	 * while every other sensor in the phone sat at 35-41 degC at the same moment, so
+	 * the conversion is not trustworthy yet. The raw value is logged at probe for the
+	 * calibration instead, and publishing a temperature that is ten degrees off is
+	 * worse than publishing none. The conversion itself is kept and tested, so wiring
+	 * it back is one line once the pull-up is known.
+	 */
 	/*
 	 * CAPACITY and TEMP are deliberately absent. Capacity without an OCV table
 	 * would be the coulomb count against a design charge from a counter that
@@ -443,26 +460,44 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 				     "cannot register the power supply\n");
 
 	/* Anchor the counter on the resting voltage, once, through the profile. */
-	if (!g->vbat)
-		return dev_err_probe(&pdev->dev, -ENODATA,
-				     "no vbat channel: cannot anchor capacity\n");
+	if (!g->batt || !g->vbat) {
+		dev_warn(&pdev->dev, "no %s: capacity stays off until the next boot\n",
+			 g->batt ? "vbat channel" : "battery profile");
+		goto no_anchor;
+	}
 	{
 		int ocv = 0, pct;
 
 		ret = iio_read_channel_processed(g->vbat, &ocv);
-		if (ret < 0)
-			return dev_err_probe(&pdev->dev, ret,
-					     "cannot read the resting voltage\n");
+		if (ret < 0) {
+			dev_warn(&pdev->dev, "no resting voltage (%d): capacity off\n",
+				 ret);
+			goto no_anchor;
+		}
 		ocv *= 1000;	/* the channel reports mV */
 		pct = power_supply_batinfo_ocv2cap(g->batt, ocv,
 						   g->batt->ocv_temp[0]);
-		if (pct <= 0)
-			return dev_err_probe(&pdev->dev, -ENODATA,
-					     "the OCV table gave no capacity\n");
+		if (pct <= 0) {
+			dev_warn(&pdev->dev, "the OCV table gave no capacity\n");
+			goto no_anchor;
+		}
 		g->base_uah = g->charge_full_uah * pct / 100;
 		g->base_car = mt6359_car_to_uah(g->last_car, MT6359_R_FG_NOMINAL);
 		dev_info(&pdev->dev, "capacity anchored at %d %% (%d uV, %d C)\n",
 			 pct, ocv, g->batt->ocv_temp[0]);
+	}
+
+no_anchor:
+
+	/* Calibration data for the NTC divider: raw and the two candidates. */
+	if (g->ntc) {
+		int raw = 0;
+
+		if (!iio_read_channel_raw(g->ntc, &raw))
+			dev_info(&pdev->dev,
+				 "NTC raw %d (pull-up %d ohm -> %d C by the vendor table)\n",
+				 raw, MT6359_NTC_PULL_UP_OHM,
+				 mt6359_ntc_raw_to_temp(raw) / 10);
 	}
 
 	INIT_DELAYED_WORK(&g->sample, mt6359_gauge_sample);
