@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
+#include <media/v4l2-async.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
@@ -57,109 +58,133 @@ void mtk_cam_core_put(struct mtk_cam_core *cam)
 }
 EXPORT_SYMBOL_GPL(mtk_cam_core_put);
 
-/* The registered subdevice whose device node is @np, or NULL. */
 static struct v4l2_subdev *cam_subdev_by_node(struct mtk_cam_core *cam,
 					      struct device_node *np)
 {
-	struct v4l2_subdev *sd;
+	unsigned int i;
 
 	if (!np)
 		return NULL;
 
-	v4l2_device_for_each_subdev(sd, &cam->v4l2_dev) {
-		if (sd->dev && sd->dev->of_node == np)
-			return sd;
-	}
+	for (i = 0; i < cam->n_entities; i++)
+		if (cam->entities[i].np == np)
+			return cam->entities[i].sd;
 
 	return NULL;
 }
 
-/*
- * Create the pad link from the entity described by @from_np's endpoint @from_port to the entity
- * of @to_np, using @to_pad. Returns 0 when the link exists or was made, -ENODEV when one side is
- * not registered yet (the caller retries once its peer probes).
- */
-static int cam_link(struct mtk_cam_core *cam, struct device_node *from_np,
-		    unsigned int from_port, unsigned int from_pad,
-		    struct device_node *to_np, unsigned int to_pad)
+static struct device_node *cam_remote_of(struct device_node *np, unsigned int port)
 {
-	struct v4l2_subdev *from_sd, *to_sd;
-	struct media_entity *from, *to;
+	struct device_node *ports = of_get_child_by_name(np, "ports");
+	struct device_node *ep, *remote = NULL;
 
-	from_sd = cam_subdev_by_node(cam, from_np);
-	to_sd = cam_subdev_by_node(cam, to_np);
-	if (!from_sd || !to_sd)
-		return -ENODEV;
-
-	from = &from_sd->entity;
-	to = &to_sd->entity;
-
-	if (media_create_pad_link(from, from_pad, to, to_pad, 0)) {
-		dev_dbg(cam->dev, "link %s:%u -> %s:%u already exists\n",
-			from->name, from_pad, to->name, to_pad);
-		return 0;
+	if (!ports) {
+		/* A single-port node spells it "port". */
+		ports = of_get_child_by_name(np, "port");
+		if (ports) {
+			ep = of_get_child_by_name(ports, "endpoint");
+			if (ep) {
+				remote = of_graph_get_remote_endpoint(ep);
+				of_node_put(ep);
+			}
+			of_node_put(ports);
+		}
+		return remote;
 	}
 
-	dev_info(cam->dev, "%s:%u -> %s:%u\n", from->name, from_pad, to->name, to_pad);
+	for_each_endpoint_of_node(ports, ep) {
+		u32 reg = 0;
+
+		of_property_read_u32(of_graph_get_port_parent(ep), "reg", &reg);
+		if (reg != port)
+			continue;
+
+		remote = of_graph_get_remote_endpoint(ep);
+		break;
+	}
+
+	of_node_put(ports);
+
+	return remote;
+}
+
+/*
+ * One entity bound: remember it, and when every entity of the pipeline is present, wire the
+ * chain the device tree describes - sensor -> receiver -> engine - with pad links on the media
+ * device. The graph is the board's; this file only follows it.
+ */
+static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
+			      struct v4l2_subdev *sd,
+			      struct v4l2_async_connection *asc)
+{
+	struct mtk_cam_core *cam =
+		container_of(notifier, struct mtk_cam_core, notifier);
+	struct device_node *in_np, *remote;
+	struct v4l2_subdev *from;
+	unsigned int i;
+
+	if (cam->n_entities >= ARRAY_SIZE(cam->entities))
+		return -ENOSPC;
+
+	for (i = 0; i < cam->n_entities; i++)
+		if (cam->entities[i].sd == sd)
+			return 0;
+
+	cam->entities[cam->n_entities].sd = sd;
+	cam->entities[cam->n_entities].np = sd->dev ? sd->dev->of_node : NULL;
+	cam->n_entities++;
+
+	dev_info(cam->dev, "%s bound (%u entities)\n", sd->name, cam->n_entities);
+
+	/*
+	 * For every entity that has an input port, look at the endpoint that port names and link
+	 * the two entities through the media device.
+	 */
+	for (i = 0; i < cam->n_entities; i++) {
+		in_np = cam->entities[i].np;
+		if (!in_np)
+			continue;
+
+		/* A sensor has one output; receivers and engines have their input on port 0. */
+		remote = cam_remote_of(in_np, 0);
+		if (!remote)
+			continue;
+
+		from = cam_subdev_by_node(cam, remote);
+		if (from && media_create_pad_link(&from->entity, from->entity.num_pads - 1,
+						  &cam->entities[i].sd->entity, 0, 0) == 0)
+			dev_info(cam->dev, "link %s -> %s\n", from->name,
+				 cam->entities[i].sd->name);
+
+		of_node_put(remote);
+	}
 
 	return 0;
 }
 
-/*
- * Walk every subdevice whose node has an input port and link it to whatever its endpoint names.
- * Called from each driver after it registers, so a link appears as soon as both ends exist.
- */
+static const struct v4l2_async_notifier_operations mtk_cam_core_nf_ops = {
+	.bound = mtk_cam_core_bound,
+};
+
+static const struct of_device_id mtk_cam_core_async_matches[] = {
+	{ .compatible = "sony,imx355" },
+	{ .compatible = "ovti,ov13b10" },
+	{ .compatible = "mediatek,mt6785-seninf" },
+	{ .compatible = "mediatek,mt6785-camsv" },
+	{ /* sentinel */ }
+};
+
+/* The links are made by the notifier; nothing to walk here. */
 int mtk_cam_core_link(struct mtk_cam_core *cam)
 {
-	struct v4l2_subdev *sd;
-	int ret = 0;
-
-	if (!cam)
-		return -ENODEV;
-
-	v4l2_device_for_each_subdev(sd, &cam->v4l2_dev) {
-		struct device_node *np = sd->dev ? sd->dev->of_node : NULL;
-		struct device_node *ep, *remote;
-		unsigned int port;
-
-		if (!np)
-			continue;
-
-		/* The sensor has one output port; the receiver's ports are handled below. */
-		for (port = 0; port < 2; port++) {
-			struct device_node *ports = of_get_child_by_name(np, "ports");
-
-			if (!ports)
-				continue;
-
-			for_each_endpoint_of_node(ports, ep) {
-				u32 reg = 0;
-
-				of_property_read_u32(of_get_parent(ep), "reg", &reg);
-				if (reg != port)
-					continue;
-
-				remote = of_graph_get_remote_endpoint(ep);
-				if (!remote)
-					continue;
-
-				/* A link exists when the remote's parent entity is registered. */
-				ret = cam_link(cam, of_graph_get_port_parent(remote), port,
-					       port ? 0 : 0,
-					       np, port ? 0 : 0);
-				of_node_put(remote);
-			}
-			of_node_put(ports);
-		}
-	}
-
-	return ret;
+	return cam ? 0 : -ENODEV;
 }
 EXPORT_SYMBOL_GPL(mtk_cam_core_link);
 
 static int mtk_cam_core_probe(struct platform_device *pdev)
 {
 	struct mtk_cam_core *cam;
+	unsigned int i;
 	int ret;
 
 	cam = devm_kzalloc(&pdev->dev, sizeof(*cam), GFP_KERNEL);
@@ -185,10 +210,39 @@ static int mtk_cam_core_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, cam);
 
+	v4l2_async_nf_init(&cam->notifier, &cam->v4l2_dev);
+	cam->notifier.ops = &mtk_cam_core_nf_ops;
+
+	/* Watch every camera entity of the SoC: the sensors, the receiver and the engine. */
+	for (i = 0; i < ARRAY_SIZE(mtk_cam_core_async_matches) - 1; i++) {
+		struct device_node *np = NULL;
+
+		while ((np = of_find_compatible_node(np, NULL,
+						     mtk_cam_core_async_matches[i].compatible))) {
+			struct v4l2_async_connection *asc;
+
+			asc = v4l2_async_nf_add_fwnode(&cam->notifier,
+						       of_fwnode_handle(np),
+						       struct v4l2_async_connection);
+			of_node_put(np);
+			if (IS_ERR(asc)) {
+				ret = PTR_ERR(asc);
+				goto err_nf;
+			}
+		}
+	}
+
+	ret = v4l2_async_nf_register(&cam->notifier);
+	if (ret)
+		goto err_nf;
+
 	dev_info(&pdev->dev, "camera pipeline core registered\n");
 
 	return 0;
 
+err_nf:
+	v4l2_async_nf_cleanup(&cam->notifier);
+	media_device_unregister(&cam->mdev);
 err_v4l2:
 	v4l2_device_unregister(&cam->v4l2_dev);
 
@@ -199,6 +253,8 @@ static void mtk_cam_core_remove(struct platform_device *pdev)
 {
 	struct mtk_cam_core *cam = platform_get_drvdata(pdev);
 
+	v4l2_async_nf_unregister(&cam->notifier);
+	v4l2_async_nf_cleanup(&cam->notifier);
 	media_device_unregister(&cam->mdev);
 	v4l2_device_unregister(&cam->v4l2_dev);
 	media_device_cleanup(&cam->mdev);

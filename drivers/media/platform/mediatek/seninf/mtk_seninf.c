@@ -33,6 +33,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/seq_file.h>
+#include <media/v4l2-async.h>
 #include <media/v4l2-subdev.h>
 
 #include "../cam/mtk_cam_core.h"
@@ -295,10 +296,10 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 
 	seninf->cam = mtk_cam_core_get(dev);
 	if (seninf->cam) {
-		ret = v4l2_device_register_subdev(&seninf->cam->v4l2_dev, &seninf->sd);
+		/* The pipeline's async notifier collects the entities and makes the links. */
+		ret = v4l2_async_register_subdev(&seninf->sd);
 		if (ret)
 			goto err_entity;
-		mtk_cam_core_link(seninf->cam);
 	}
 
 	dev_info(dev, "receiver on, CSI2_EN 0x%08x, packet counter %u\n",

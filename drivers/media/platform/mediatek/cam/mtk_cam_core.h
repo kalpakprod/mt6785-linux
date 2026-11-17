@@ -4,6 +4,7 @@
 
 #include <linux/device.h>
 #include <media/media-device.h>
+#include <media/v4l2-async.h>
 #include <media/v4l2-device.h>
 
 /**
@@ -16,6 +17,10 @@ struct mtk_cam_core {
 	struct device *dev;
 	struct v4l2_device v4l2_dev;
 	struct media_device mdev;
+	/* Every pipeline entity is collected here, and the links are made once all have bound. */
+	struct v4l2_async_notifier notifier;
+	struct { struct v4l2_subdev *sd; struct device_node *np; } entities[8];
+	unsigned int n_entities;
 };
 
 #if IS_ENABLED(CONFIG_VIDEO_MTK_CAM)

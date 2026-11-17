@@ -931,23 +931,6 @@ err_unlock:
 }
 
 /* Verify chip ID */
-static int imx355_identify_module(struct imx355 *imx355)
-{
-	int ret;
-	u64 val;
-
-	ret = cci_read(imx355->regmap, IMX355_REG_CHIP_ID, &val, NULL);
-	if (ret)
-		return ret;
-
-	if (val != IMX355_CHIP_ID) {
-		dev_err(imx355->dev, "chip id mismatch: %x!=%llx",
-			IMX355_CHIP_ID, val);
-		return -EIO;
-	}
-	return 0;
-}
-
 static const struct v4l2_subdev_core_ops imx355_subdev_core_ops = {
 	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
 	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
@@ -978,6 +961,40 @@ static const struct media_entity_operations imx355_subdev_entity_ops = {
 static const struct v4l2_subdev_internal_ops imx355_internal_ops = {
 	.init_state = imx355_entity_init_state,
 };
+
+static int imx355_identify_module(struct imx355 *imx355)
+{
+	unsigned int attempt;
+	int ret = -EIO;
+	u64 val = 0;
+
+	/*
+	 * This board's two camera sensors share their AVDD/DVDD rails, and a failing neighbour's
+	 * probe releases them while this one is mid-identification - the phone shows exactly that
+	 * ("Error reading reg 0x0016: -6" right after the other sensor's -5). A few attempts with a
+	 * short gap are cheap and keep this sensor from failing for its neighbour's sake.
+	 */
+	for (attempt = 0; attempt < 3; attempt++) {
+		ret = cci_read(imx355->regmap, IMX355_REG_CHIP_ID, &val, NULL);
+		if (!ret)
+			break;
+
+		dev_dbg(imx355->dev, "chip id read failed (%d), attempt %u\n", ret,
+			attempt + 1);
+		usleep_range(3000, 5000);
+	}
+
+	if (ret)
+		return ret;
+
+	if (val != IMX355_CHIP_ID) {
+		dev_err(imx355->dev, "chip id mismatch: %x!=%llx\n",
+			IMX355_CHIP_ID, val);
+		return -EIO;
+	}
+
+	return 0;
+}
 
 static int imx355_power_off(struct device *dev)
 {

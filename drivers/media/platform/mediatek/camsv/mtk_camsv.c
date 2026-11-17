@@ -33,6 +33,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
+#include <media/v4l2-async.h>
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
 
@@ -480,6 +481,7 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	camsv->subdev.dev = dev;
 	v4l2_subdev_init(&camsv->subdev, &camsv_subdev_ops);
 	camsv->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+	camsv->subdev.entity.function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
 	strscpy(camsv->subdev.name, dev_name(dev), sizeof(camsv->subdev.name));
 	camsv->pads[0].flags = MEDIA_PAD_FL_SINK;
 	ret = media_entity_pads_init(&camsv->subdev.entity, 1, camsv->pads);
@@ -512,10 +514,10 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_subdev;
 
-	ret = v4l2_device_register_subdev(&camsv->cam->v4l2_dev, &camsv->subdev);
+	/* The pipeline's async notifier collects the entities and makes the links. */
+	ret = v4l2_async_register_subdev(&camsv->subdev);
 	if (ret)
 		goto err_video;
-	mtk_cam_core_link(camsv->cam);
 
 	ret = devm_request_irq(dev, camsv->irq, mtk_camsv_irq, 0, dev_name(dev), camsv);
 	if (ret)
@@ -544,7 +546,7 @@ static void mtk_camsv_remove(struct platform_device *pdev)
 	struct mtk_camsv *camsv = platform_get_drvdata(pdev);
 
 	video_unregister_device(&camsv->vdev);
-	v4l2_device_unregister_subdev(&camsv->subdev);
+	v4l2_async_unregister_subdev(&camsv->subdev);
 	media_entity_cleanup(&camsv->subdev.entity);
 }
 
