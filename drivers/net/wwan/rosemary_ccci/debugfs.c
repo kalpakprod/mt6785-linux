@@ -473,6 +473,74 @@ static const struct file_operations md_bus_dbg_fops = {
 	.release = single_release,
 };
 
+/*
+ * The modem's own debug view, from shared memory
+ *
+ * Everything else the AP can read has now been checked against stock: the SPM firmware is kicked
+ * (status 2), the SPM request router is configured (SPM_SRC_MASK 0x586f403d, MD1 bits 0x3d), the bus
+ * protect mask, offsets, order and reset match the vendor line for line and the reset lands and holds,
+ * the CCIF state at the clamp is the vendor's (no hif yet), and both supplies read the values the
+ * vendor's own PMIC code writes. What is left is inside the modem, and the only window the AP has into
+ * it is the memory the modem writes for us:
+ *
+ *  - NC_MDCCCI_DBG (2 KiB at the NC share-memory base): the modem's CCCI debug words;
+ *  - NC_MDSS_DBG (10 KiB at +0x800): the modem's own exception/log region, which is exactly what the
+ *    vendor's dumper reads as "the MD's own log" (fsm/mdee_dumper_v1.c:76-77:
+ *    ex_log_addr = mdss_dbg->base_ap_view_vir; ex_log_len = mdss_dbg->size). The power-off check flag
+ *    we have been reading sits at +0x1e34 inside it (mt6785/ccci_config.h:43).
+ *
+ * This is AP-side shared DRAM, not the modem's register or bus space, so it cannot hang anything: the
+ * trial-31 hazard was reading MD registers through a port that never answers, which this is not.
+ */
+static int md_shmem_show(struct seq_file *s, void *unused)
+{
+	struct ccci_md *md = s->private;
+
+	if (!md->nc) {
+		seq_puts(s, "share memory not mapped\n");
+		return 0;
+	}
+	for (size_t r = 0; r < 2; r++) {
+		const u32 base = r ? NC_MDSS_DBG : NC_MDCCCI_DBG;
+		const u32 size = r ? NC_MDSS_DBG_SIZE : 0x800;
+		const char *name = r ? "NC_MDSS_DBG" : "NC_MDCCCI_DBG";
+
+		seq_printf(s, "[%s] NC offset %#x, %#x bytes\n", name, base, size);
+		for (u32 off = 0; off < size; off += 16) {
+			char txt[17];
+
+			seq_printf(s, "  %04x:", off);
+			for (u32 k = 0; k < 16; k += 4) {
+				u32 w = readl(md->nc + base + off + k);
+				u8 b0 = w & 0xff, b1 = (w >> 8) & 0xff;
+				u8 b2 = (w >> 16) & 0xff, b3 = (w >> 24) & 0xff;
+
+				seq_printf(s, " %08x", w);
+				txt[k + 0] = (b0 >= 0x20 && b0 < 0x7f) ? b0 : '.';
+				txt[k + 1] = (b1 >= 0x20 && b1 < 0x7f) ? b1 : '.';
+				txt[k + 2] = (b2 >= 0x20 && b2 < 0x7f) ? b2 : '.';
+				txt[k + 3] = (b3 >= 0x20 && b3 < 0x7f) ? b3 : '.';
+				txt[k + 4] = '\0';
+			}
+			seq_printf(s, "  |%s|\n", txt);
+		}
+	}
+	return 0;
+}
+
+static int md_shmem_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, md_shmem_show, inode->i_private);
+}
+
+static const struct file_operations md_shmem_fops = {
+	.owner = THIS_MODULE,
+	.open = md_shmem_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int md_tags_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, md_tags_show, inode->i_private);
@@ -518,6 +586,7 @@ void rosemary_ccci_debugfs_add(struct ccci_md *md)
 	debugfs_create_file("md_regs", 0444, md->debugfs, md, &md_regs_fops);
 	debugfs_create_file("tags", 0444, md->debugfs, md, &md_tags_fops);
 	debugfs_create_file("bus_dbg", 0444, md->debugfs, md, &md_bus_dbg_fops);
+	debugfs_create_file("md_shmem", 0444, md->debugfs, md, &md_shmem_fops);
 }
 
 void rosemary_ccci_debugfs_remove(struct ccci_md *md)
