@@ -511,6 +511,7 @@ struct mt6785_scp_region_info {
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
+static int mt6785_scp_awake(struct mtk_scp *scp, bool lock);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -1270,6 +1271,15 @@ static int scp_start(struct rproc *rproc)
 			 readl(scp->cluster->reg_base + MT6785_SCP_GPR_CM4_A_REBOOT),
 			 MT6785_SCP_CM4_READY_TO_REBOOT);
 
+	/*
+	 * The AP asks the SCP (through the SPM) to stay awake before releasing the core, and holds
+	 * that request until the ready IPI has arrived or the wait has failed: the vendor does the
+	 * same around every access it makes to the SCP, and releases it afterwards
+	 * (scp_awake.c:79-100 for the lock, :162-178 for the unlock; the register is scpsys + 0xB14
+	 * with 0xA0 | bit, bit 0 = AP_AWAKE_LOCK, bit 1 = AP_AWAKE_UNLOCK, and the request is
+	 * acknowledged when that bit clears).
+	 */
+	mt6785_scp_awake(scp, true);
 	scp->data->scp_reset_deassert(scp);
 
 	/*
@@ -1292,6 +1302,7 @@ static int scp_start(struct rproc *rproc)
 
 	if (ret == 0) {
 		dev_err(dev, "wait SCP initialization timeout!\n");
+		mt6785_scp_awake(scp, false);
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
 		ret = -ETIME;
@@ -1302,6 +1313,7 @@ static int scp_start(struct rproc *rproc)
 		goto stop;
 	}
 
+	mt6785_scp_awake(scp, false);
 	clk_disable(scp->clk);
 	if (run->fw_ver[0])
 		dev_info(dev, "SCP is ready. FW version %s\n", run->fw_ver);
@@ -2224,6 +2236,41 @@ static int mt6785_scp_clk_get(struct mtk_scp *scp)
 	}
 
 	return 0;
+}
+
+/*
+ * The AP's awake request to the SCP, the vendor's own handshake (scp_awake.c:79-100, unlock at
+ * :162-178): write 0xA0 | the request bit to INFRA_IRQ_SET (scpsys + 0xB14, i.e. infracfg +
+ * 0xB14 in this tree) and wait for that bit to clear, which is the acknowledgment; the status is
+ * then cleared through INFRA_IRQ_CLEAR (+0xB18). Without a running SPM there is no partner for
+ * this handshake, which is why it can time out on this phone.
+ */
+static int mt6785_scp_awake(struct mtk_scp *scp, bool lock)
+{
+	struct regmap *infracfg = mt6785_infracfg(scp);
+	u32 val = 0, want = 0xA0 | (lock ? BIT(0) : BIT(1));
+	int ret;
+
+	if (IS_ERR(infracfg))
+		return PTR_ERR(infracfg);
+
+	regmap_write(infracfg, MT6785_INFRACFG_IRQ_SET, want);
+	dev_info(scp->dev, "%s: INFRA_IRQ_SET <- %#x, waiting for the ack\n",
+		 lock ? "awake lock" : "awake unlock", want);
+
+	ret = regmap_read_poll_timeout(infracfg, MT6785_INFRACFG_IRQ_SET, val,
+				       !(val & 0x0f & (lock ? BIT(0) : BIT(1))), 10,
+				       MT6785_SCP_SYS_RESET_TIMEOUT_US);
+	if (ret)
+		dev_err(scp->dev, "%s: no ack (%#x) - is the SPM running?\n",
+			lock ? "awake lock" : "awake unlock", val);
+	else
+		dev_info(scp->dev, "%s: acknowledged (%#x)\n",
+			 lock ? "awake lock" : "awake unlock", val);
+
+	regmap_write(infracfg, MT6785_INFRACFG_IRQ_CLEAR, want);
+
+	return ret;
 }
 
 /* the infracfg regmap, from the phandle the DT gives */
