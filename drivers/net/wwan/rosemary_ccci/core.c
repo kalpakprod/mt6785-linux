@@ -861,6 +861,34 @@ static void md_rails_state(struct ccci_md *md, const char *when)
  * start, and none of them is supposed to. So each one now reports the hardware immediately after it
  * returns, and the next trial names the call instead of the range.
  */
+/*
+ * md_md_clk_mode() - gate or release the modem's clocks at the clock controller
+ * @md: the modem
+ * @off: true to gate, false to release
+ *
+ * The vendor's MT6785 power-off ends by setting bits 8 and 9 of the topckgen MD clock-mode
+ * register ("gating md related clock", los-mt6785 mt6739/md_sys1_platform.c:966-970), and its
+ * power-on does the opposite first. The MT6878 mainline driver does the same around its own
+ * power change (plinius-kernel/mtk-ccci.c:101-102, :2528-2529 gating, :2539-2540 releasing),
+ * and our driver had no equivalent at all.
+ */
+static void md_md_clk_mode(struct ccci_md *md, bool off)
+{
+	u32 v;
+
+	if (!md->topckgen)
+		return;
+	v = readl(md->topckgen + TOPCKGEN_MD_CLK_MODE);
+	if (off)
+		v |= MD_CLK_MODE_OFF;
+	else
+		v &= ~MD_CLK_MODE_OFF;
+	writel(v, md->topckgen + TOPCKGEN_MD_CLK_MODE);
+	dev_info(md->dev, "topckgen md clock mode: %s (%#x)\n",
+		 off ? "gated" : "released",
+		 readl(md->topckgen + TOPCKGEN_MD_CLK_MODE));
+}
+
 static void md_power_probe(struct ccci_md *md, const char *when)
 {
 	unsigned int sta = 0, sta2 = 0;
@@ -1346,6 +1374,8 @@ static int md_power_cycle(struct ccci_md *md)
 	md_step(md, "cycle: gate off");
 	md_power_seq_release(md);
 	md_step(md, "cycle: supplies off");
+	/* the vendor's last step of its power-off: gate the modem's clocks at the topckgen */
+	md_md_clk_mode(md, true);
 
 	/*
 	 * Bring the rails back and take the driver's reference again, in that order:
@@ -1355,6 +1385,8 @@ static int md_power_cycle(struct ccci_md *md)
 	ret = md_power_seq_prepare(md);
 	if (ret)
 		goto restore;
+	/* and its first step of the power-on: release them again */
+	md_md_clk_mode(md, false);
 	md_pm_get(md);
 	md_clks(md, true);
 	md_step(md, "cycle: gate on");
@@ -1994,6 +2026,7 @@ static int md_map_regs(struct ccci_md *md)
 	md->spm = devm_ioremap(md->dev, SPM_PHYS, 0x1000);
 	md->sec_ao = devm_ioremap(md->dev, SEC_AO_PHYS, 0x1000);
 	md->toprgu = devm_ioremap(md->dev, TOPRGU_PHYS, 0x1000);
+	md->topckgen = devm_ioremap(md->dev, TOPCKGEN_PHYS, 0x1000);
 	md->pll = devm_ioremap(md->dev, MD_PLL_PHYS, 0x1000);
 	md->boot_vector = devm_ioremap(md->dev, MD_BOOT_VECTOR_PHYS, 4);
 	if (!md->infra || !md->spm || !md->sec_ao || !md->pll || !md->boot_vector)
