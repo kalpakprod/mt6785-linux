@@ -309,19 +309,49 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 * Not charging when the limiter has set inhibit-charge (supply present,
 		 * current at zero), Discharging when nothing feeds the phone.
 		 */
-		if (!power_supply_am_i_supplied(psy))
-			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &raw_cur) == 0 &&
-			 abs((int)(s16)raw_cur) * 610 / 1000 > 20)
-			val->intval = POWER_SUPPLY_STATUS_CHARGING;
-		else
-			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		/*
+		 * The current sign decides first, because the charger can be "Charging"
+		 * while the phone draws more than it gives: conn38 showed STATUS Charging
+		 * with CURRENT_NOW -621900. Negative current means charge is leaving the
+		 * battery, whatever the charger port says - the ABI is explicit
+		 * (Documentation/ABI/testing/sysfs-class-power, current_now: negative values
+		 * mean discharging). So: negative beyond the noise floor is Discharging,
+		 * positive is Charging, and a supply present with neither is Not charging -
+		 * the state the limiter's inhibit-charge creates.
+		 */
+		if (mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &raw_cur))
+			return -EIO;
+		{
+			long ua = (long)(s16)raw_cur * 610;
+
+			if (ua < -20000)
+				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+			else if (ua > 20000)
+				val->intval = POWER_SUPPLY_STATUS_CHARGING;
+			else if (power_supply_am_i_supplied(psy))
+				val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+			else
+				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		}
 		return 0;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		/*
+		 * The ABI's charge_counter is the charge left in the battery, in uAh
+		 * (Documentation/ABI/testing/sysfs-class-power), not a raw counter: at 46 %
+		 * of 5 Ah that is 2.3 Ah and it has to stay positive. The register's value
+		 * relative to the anchor is what the charge is now, so the anchor's charge is
+		 * added to it; the raw counter stays available by name in the log for anyone
+		 * who wants the counter itself.
+		 */
+		if (!g->anchored)
+			return -ENODATA;
 		ret = mt6359_gauge_read_car(g, &car);
 		if (ret)
 			return ret;
-		val->intval = mt6359_car_to_uah(car, MT6359_R_FG_NOMINAL);
+		val->intval = g->base_uah +
+			      mt6359_car_to_uah(car - g->base_car, MT6359_R_FG_NOMINAL);
+		if (val->intval < 0)
+			val->intval = 0;
 		return 0;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		/*
