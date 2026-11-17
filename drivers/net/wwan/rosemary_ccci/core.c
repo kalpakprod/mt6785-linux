@@ -228,6 +228,27 @@ static void md_pm_put(struct ccci_md *md)
 	pm_runtime_put_sync(md->dev);
 }
 
+/*
+ * The modem's watchdog interrupt, enabled exactly while a released modem may
+ * assert it. The vendor disables it before it stops a running modem
+ * (md_cd_pre_stop(), modem_sys1.c:496) so the handler cannot race the stop, and
+ * this flag keeps our enable/disable balanced against the interrupt's own
+ * IRQF_NO_AUTOEN depth.
+ */
+static void md_wdt_irq(struct ccci_md *md, bool on)
+{
+	if (on == md->wdt_irq_on)
+		return;
+	md->wdt_irq_on = on;
+	if (on) {
+		enable_irq(md->irq_wdt);
+		dev_info(md->dev, "wdt: the modem's watchdog interrupt is enabled\n");
+	} else {
+		disable_irq_nosync(md->irq_wdt);
+		dev_info(md->dev, "wdt: the modem's watchdog interrupt is disabled, as the vendor's pre-stop does (md_cd_pre_stop(), modem_sys1.c:496)\n");
+	}
+}
+
 static void md_clock_request(struct ccci_md *md, bool on)
 {
 	if (!on) {
@@ -676,40 +697,97 @@ static void md_dump_pm_state(struct ccci_md *md, const char *when)
  * Returns 0 when the modem has really been through the cycle, -EAGAIN when the gate
  * could not be moved, or another negative error.
  */
-/**
- * md_wait_sleep() - wait until the modem says it is asleep
+/*
+ * md_epof_check_flag() - what the modem says about the power-off check itself
  * @md: the modem
  *
- * The vendor does exactly this before it takes a running modem's power away:
- * debug_in_flight_mode() polls spm_is_md1_sleep() five times, a second apart, and
- * only then proceeds (modem_sys1.c:552-590). spm_is_md1_sleep() is the modem's own
- * 26 MHz request going away -- !(PCM_REG13_DATA & R13_MD_SRCCLKENA_0),
- * base/power/spm/mt6785/mtk_spm_utils.c:46-50, bit from pcm_def.h:148 -- so the
- * modem itself declares that it has parked.
+ * The vendor reads one word out of the MD's SS debug region before it decides how
+ * to treat a modem that will not park: `check_power_off_en()` returns non-zero,
+ * i.e. "the check is on", when the word is not zero (modem_sys1.c:430-455), and
+ * only then does it dump the MD's state and assert; otherwise it calls the weak
+ * md1_sleep_timeout_proc() (modem_sys1.c:469-472, :584). The offset is
+ * CCCI_EE_OFFSET_EPOF_MD1, "flag to enable MD power off checking or not, in MD SS
+ * debug region" (mt6785/ccci_config.h:43).
  *
- * That bit is also what the MTCMOS clamp needs: a modem that is issuing
- * transactions cannot acknowledge the bus protection, which is why the power-off
- * of a *running* modem timed out in the trials (PROTECTEN bit 7 set, PROTECT_STA
- * bit 7 clear, scpsys -ETIMEDOUT) while a halted one acknowledged at once.
+ * Reading it is what tells a later reader whether this modem's own configuration
+ * even expects the handshake we are waiting for.
+ */
+#define MDSS_DBG_EPOF_CHECK	(7 * 1024 + 0x234)
+
+static void md_epof_check_flag(struct ccci_md *md)
+{
+	const unsigned int off = NC_MDSS_DBG + MDSS_DBG_EPOF_CHECK;
+	unsigned int flag;
+
+	if (!md->nc || off + 4 > NC_MDSS_DBG + NC_MDSS_DBG_SIZE) {
+		dev_info(md->dev,
+			 "park: the MDSS debug region is too small for the modem's power-off check flag\n");
+		return;
+	}
+	flag = readl(md->nc + off);
+	dev_info(md->dev,
+		 "park: the modem's own power-off check flag (MDSS debug %#x) is %#x: the check is %s\n",
+		 MDSS_DBG_EPOF_CHECK, flag, flag ? "on" : "off");
+}
+
+/*
+ * md_park() - wait for the modem to let go of its 26 MHz clock, as stock does
+ * @md: the modem
  *
- * The vendor proceeds even when the modem never sleeps, because it can wait for the
- * acknowledgement forever. This driver cannot -- mainline gives the bus protect one
- * second -- so it must not enter the clamp at all in that state.
+ * This is the whole of what the vendor's kernel does before it powers a running
+ * modem off, and it is worth being exact about it because it is *not* a message:
+ *
+ *  - `md_cd_pre_stop()` (modem_sys1.c:474-535) takes a mutex and disables the MD
+ *    watchdog interrupt (:496) -- the only AP-side action;
+ *  - for flight mode it then calls `debug_in_flight_mode()` (modem_sys1.c:504-590),
+ *    which loops up to four times on `spm_is_md1_sleep()` -- `PCM_REG13_DATA`
+ *    bit `R13_MD1_SRCCLKENA` clear (base/power/spm/mt6765/mtk_spm_utils.c:36-39,
+ *    the same shape on mt6785) -- sleeping one second between tries, and dumps and
+ *    asserts on timeout;
+ *  - `md_cd_stop()` (modem_sys1.c:1052-1095) then disables the CCIF interrupt and
+ *    powers off.
+ *
+ * Nothing is written into the CCIF SRAM, no CLDMA or DPMAIF message is queued and
+ * no register tells the modem to stop: `md_cd_lock_cldma_clock_src()` is an empty
+ * function on this SoC (mt6785/md_sys1_platform.c:327-330), the AP to MD system
+ * channel's `MD_SLP_REQUEST` is marked deprecated (mt-plat/mtk_ccci_common.h:370),
+ * and the flight-mode ioctls only notify userspace through a virtual monitor
+ * message (fsm/ccci_fsm_ioctl.c:534-561). A modem parks because its own software
+ * decided to -- flight mode reaches it from the framework over a CCCI AT or system
+ * port, not from this driver -- and the kernel's part is to wait for that and then
+ * to clamp.
+ *
+ * The bit is the modem's own declaration that it has parked, and it is what the
+ * MTCMOS clamp needs: a modem that is issuing transactions cannot acknowledge the
+ * bus protection, which is why the clamp of a running modem timed out in the
+ * trials (PROTECTEN bit 7 set, PROTECT_STA bit 7 clear) while a halted one
+ * acknowledged at once. The vendor proceeds even when the modem never sleeps,
+ * because it can wait for the acknowledgement forever; mainline gives the bus
+ * protect one second (MTK_POLL_TIMEOUT, mtk-pm-domains.c:38), so this driver must
+ * know the answer before it clamps.
  *
  * Returns true when the modem declared sleep within the vendor's five seconds.
  */
-static bool md_wait_sleep(struct ccci_md *md)
+static bool md_park(struct ccci_md *md)
 {
 	unsigned int v;
 	int i;
 
+	md_epof_check_flag(md);
 	for (i = 0; i < 5; i++) {
 		v = readl(md->spm + SPM_PCM_REG13_DATA);
+		dev_info(md->dev,
+			 "park %d/5: PCM_REG13_DATA %#x, the modem %s its 26 MHz request\n",
+			 i + 1, v,
+			 (v & SPM_R13_MD_SRCCLKENA_0) ? "still holds" : "dropped");
 		if (!(v & SPM_R13_MD_SRCCLKENA_0))
 			return true;
 		msleep(1000);
 	}
 	v = readl(md->spm + SPM_PCM_REG13_DATA);
+	dev_info(md->dev,
+		 "park 6/6: PCM_REG13_DATA %#x after five seconds, the modem %s its 26 MHz request\n",
+		 v, (v & SPM_R13_MD_SRCCLKENA_0) ? "still holds" : "dropped");
 	return !(v & SPM_R13_MD_SRCCLKENA_0);
 }
 
@@ -731,10 +809,9 @@ static int md_power_cycle(struct ccci_md *md)
 	 * never came. So the reset is the last resort AFTER a clamp that timed out, not
 	 * a preparation for it.
 	 */
-	if (!md_wait_sleep(md))
+	if (!md_park(md))
 		dev_info(md->dev,
-			 "the modem did not park (PCM_REG13_DATA %#x still asks for its clock): trying the clamp first, as the vendor does\n",
-			 readl(md->spm + SPM_PCM_REG13_DATA));
+			 "the modem did not park: trying the clamp first, as the vendor does\n");
 	else
 		md_step(md, "cycle: modem asleep");
 
@@ -1121,7 +1198,7 @@ static int md_boot(struct ccci_md *md)
 		md->first_boot = false;
 		enable_irq(md->irq_ccif);
 		enable_irq(md->irq_ccif_exp);
-		enable_irq(md->irq_wdt);
+		md_wdt_irq(md, true);
 		ccci_send_runtime_data(md, &hs1_query);
 		ccci_set_state(md, MD_STATE_HS1);
 		dev_info(md->dev, "HS1 answered from the query the loader's modem left behind\n");
@@ -1196,7 +1273,7 @@ static int md_boot(struct ccci_md *md)
 	md->first_boot = false;
 	enable_irq(md->irq_ccif);
 	enable_irq(md->irq_ccif_exp);
-	enable_irq(md->irq_wdt);
+	md_wdt_irq(md, true);
 	ccci_set_state(md, MD_STATE_HS1);
 	dev_info(md->dev, "MD released, waiting for the first handshake\n");
 
@@ -1543,6 +1620,8 @@ void ccci_md_stop(struct ccci_md *md)
 	 * every boot ("MD1 MTCMOS power on done!" in our own LK log). Whether the gate
 	 * really moved is printed, because it is the one fact the next boot depends on.
 	 */
+	/* the vendor's pre-stop, first thing (md_cd_pre_stop(), modem_sys1.c:496) */
+	md_wdt_irq(md, false);
 	md_pm_put(md);
 	dev_info(md->dev, "stop 1/3 gate: the md domain is %s (PWR_STATUS %#x)\n",
 		 md_domain_is_on(md) ? "STILL ON" : "off",

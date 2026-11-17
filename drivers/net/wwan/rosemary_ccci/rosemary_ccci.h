@@ -389,6 +389,7 @@ struct ccci_md {
 	struct work_struct boot_work;
 	bool rails_on;		/* this driver enabled vmodem and vsram_md */
 	bool pm_held;		/* the runtime-PM reference this driver owns */
+	bool wdt_irq_on;	/* the modem's watchdog interrupt is enabled */
 	struct reset_control *md_reset;	/* the TOPRGU MD reset line, if the DT has one */
 	struct mutex lock;
 	enum ccci_state state;
