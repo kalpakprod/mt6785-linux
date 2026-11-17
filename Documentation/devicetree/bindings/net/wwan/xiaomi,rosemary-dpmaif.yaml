@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/wwan/xiaomi,rosemary-dpmaif.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6785 DPMAIF modem packet data interface (Poco M5s)
+
+maintainers:
+  - Poco M5s Linux port <noreply@example.invalid>
+
+description: |
+  DPMAIF is the hardware that moves the modem's packet data between the modem's
+  network links and the application processor's DRAM. It is not a network
+  device by itself: each of the modem's 22 interfaces becomes one, and the
+  driver exposes them through the WWAN framework.
+
+  The register block spans two power domains, so the node lists four windows:
+  the always-on group carries the uplink registers at +0 and the downlink ones
+  at +0x400; the power-domain group carries the uplink at +0, the downlink at
+  +0x100 and the AP-misc block at +0x400; then the modem's own view of the
+  interface, and its SRAM.
+
+properties:
+  compatible:
+    const: xiaomi,rosemary-dpmaif
+
+  reg:
+    items:
+      - description: always-on group, uplink and downlink
+      - description: power-domain group, uplink, downlink and AP misc
+      - description: the modem's own view
+      - description: SRAM
+
+  reg-names:
+    items:
+      - const: ao-ul
+      - const: pd-ul
+      - const: pd-md-misc
+      - const: sram
+
+  interrupts:
+    maxItems: 1
+
+  interrupt-names:
+    const: dpmaif
+
+  clocks:
+    items:
+      - description: the DPMAIF gate in infracfg_ao
+      - description: the DPMAIF clock from topckgen
+
+  clock-names:
+    items:
+      - const: infra-dpmaif
+      - const: top-dpmaif
+
+  mediatek,dpmaif-capability:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      The capability word the vendor driver reads. 6 on this part: the higher
+      bits select the MT6297-only BAT/PIT reorder workarounds, which this chip
+      does not have.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    dpmaif@10014000 {
+        compatible = "xiaomi,rosemary-dpmaif";
+        reg = <0 0x10014000 0 0x1000>,
+              <0 0x1022d000 0 0x1000>,
+              <0 0x1022c000 0 0x1000>,
+              <0 0x1022e000 0 0x1000>;
+        reg-names = "ao-ul", "pd-ul", "pd-md-misc", "sram";
+        interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "dpmaif";
+        clocks = <&infracfg 101>, <&topckgen 108>;
+        clock-names = "infra-dpmaif", "top-dpmaif";
+        mediatek,dpmaif-capability = <6>;
+    };

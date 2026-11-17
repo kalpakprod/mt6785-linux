@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Vendor MediaTek BTIF forward-port for begonia (MT6785).
+# Distinct config + module name from the reimpl flat drivers/misc/mtk-btif.c
+# (CONFIG_MTK_BTIF -> mtk-btif.ko). This builds mtk-vendor-btif.ko with a
+# disjoint exported-symbol set. The two share the DT compatible
+# "mediatek,btif" so only one should bind a device at runtime, but they do
+# not collide at build/modpost time.
+#
+
+config MTK_WMT_FWPORT_BTIF
+	tristate "MediaTek BTIF bus driver (vendor forward-port)"
+	default MTK_WMT_FWPORT
+	help
+	  Vendor MediaTek BTIF (Bluetooth Interface) bus driver, forward-ported
+	  from the 4.14 begonia vendor kernel. Carries WMT control traffic to
+	  the connsys MCU. Builds as mtk-vendor-btif.ko. Runtime-conflicts with
+	  the reimpl CONFIG_MTK_BTIF (same DT compatible); do not bind both.

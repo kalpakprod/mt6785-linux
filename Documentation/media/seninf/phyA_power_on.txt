@@ -1,0 +1,120 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000032a40 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb>:
+   32a40:      	stp	x29, x30, [sp, #-0x50]!
+   32a44:      	str	x25, [sp, #0x10]
+   32a48:      	mov	x29, sp
+   32a4c:      	stp	x24, x23, [sp, #0x20]
+   32a50:      	stp	x22, x21, [sp, #0x30]
+   32a54:      	stp	x20, x19, [sp, #0x40]
+   32a58:      	add	x8, x0, w1, uxtw #3
+   32a5c:      	mov	w0, #0xc8               // =200
+   32a60:      	mov	w19, w2
+   32a64:      	ldr	x23, [x8, #0xd8]
+   32a68:      	ldr	w8, [x23, #0x18]
+   32a6c:      	and	w8, w8, #0xfffffffe
+   32a70:      	str	w8, [x23, #0x18]
+   32a74:      	ldr	w8, [x23, #0x18]
+   32a78:      	and	w8, w8, #0xfffeffff
+   32a7c:      	str	w8, [x23, #0x18]
+   32a80:      	ldr	w8, [x23, #0x1c]
+   32a84:      	and	w8, w8, #0xfffffffe
+   32a88:      	str	w8, [x23, #0x1c]
+   32a8c:      	ldr	w8, [x23, #0x1c]
+   32a90:      	and	w8, w8, #0xfffeffff
+   32a94:      	str	w8, [x23, #0x1c]
+   32a98:      	ldr	w8, [x23, #0x20]
+   32a9c:      	and	w8, w8, #0xfffffffe
+   32aa0:      	str	w8, [x23, #0x20]
+   32aa4:      	ldr	w8, [x23, #0x20]
+   32aa8:      	and	w8, w8, #0xfffeffff
+   32aac:      	str	w8, [x23, #0x20]
+   32ab0:      	ldr	w8, [x23]
+   32ab4:      	and	w8, w8, #0xfffffffb
+   32ab8:      	str	w8, [x23]
+   32abc:      	ldr	w8, [x23]
+   32ac0:      	and	w8, w8, #0xfffffff7
+   32ac4:      	str	w8, [x23]
+   32ac8:      	bl	0xf1940 <usleep@plt>
+   32acc:      	tbz	w19, #0x0, 0x32bc8 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb+0x188>
+   32ad0:      	ldr	w8, [x23]
+   32ad4:      	mov	w0, #0x1e               // =30
+   32ad8:      	orr	w8, w8, #0x8
+   32adc:      	str	w8, [x23]
+   32ae0:      	bl	0xf1940 <usleep@plt>
+   32ae4:      	ldr	w8, [x23]
+   32ae8:      	mov	w0, #0x1                // =1
+   32aec:      	orr	w8, w8, #0x4
+   32af0:      	str	w8, [x23]
+   32af4:      	bl	0xf1940 <usleep@plt>
+   32af8:      	ldr	w8, [x23, #0x18]
+   32afc:      	mov	w0, #0x1                // =1
+   32b00:      	orr	w8, w8, #0x1
+   32b04:      	str	w8, [x23, #0x18]
+   32b08:      	ldr	w8, [x23, #0x18]
+   32b0c:      	orr	w8, w8, #0x10000
+   32b10:      	str	w8, [x23, #0x18]
+   32b14:      	ldr	w8, [x23, #0x1c]
+   32b18:      	orr	w8, w8, #0x1
+   32b1c:      	str	w8, [x23, #0x1c]
+   32b20:      	ldr	w8, [x23, #0x1c]
+   32b24:      	orr	w8, w8, #0x10000
+   32b28:      	str	w8, [x23, #0x1c]
+   32b2c:      	ldr	w8, [x23, #0x20]
+   32b30:      	orr	w8, w8, #0x1
+   32b34:      	str	w8, [x23, #0x20]
+   32b38:      	ldr	w8, [x23, #0x20]
+   32b3c:      	orr	w8, w8, #0x10000
+   32b40:      	str	w8, [x23, #0x20]
+   32b44:      	bl	0xf1940 <usleep@plt>
+   32b48:      	ldr	w8, [x23, #0x48]
+   32b4c:      	mov	w24, #0x29              // =41
+   32b50:      	bics	wzr, w24, w8
+   32b54:      	b.eq	0x32bc8 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb+0x188>
+   32b58:      	adrp	x20, 0x21000
+   32b5c:      	adrp	x21, 0x1d000
+   32b60:      	adrp	x22, 0x11000
+   32b64:      	mov	w25, #0x65              // =101
+   32b68:      	add	x20, x20, #0x4e5
+   32b6c:      	add	x21, x21, #0x5c4
+   32b70:      	add	x22, x22, #0xcb6
+   32b74:      	mov	w0, #0x3                // =3
+   32b78:      	mov	x1, x20
+   32b7c:      	mov	x2, x21
+   32b80:      	mov	x3, x22
+   32b84:      	bl	0xf17d0 <__android_log_print@plt>
+   32b88:      	subs	w25, w25, #0x1
+   32b8c:      	b.eq	0x32ba8 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb+0x168>
+   32b90:      	mov	w0, #0x1e               // =30
+   32b94:      	bl	0xf1940 <usleep@plt>
+   32b98:      	ldr	w8, [x23, #0x48]
+   32b9c:      	bics	wzr, w24, w8
+   32ba0:      	b.ne	0x32b74 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb+0x134>
+   32ba4:      	b	0x32bc8 <_ZN12SeninfDrvImp23hal_csirx_phyA_power_onEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTEb+0x188>
+   32ba8:      	adrp	x1, 0x21000
+   32bac:      	adrp	x2, 0x12000
+   32bb0:      	adrp	x3, 0x11000
+   32bb4:      	add	x1, x1, #0x4e5
+   32bb8:      	add	x2, x2, #0xd44
+   32bbc:      	add	x3, x3, #0xcb6
+   32bc0:      	mov	w0, #0x3                // =3
+   32bc4:      	bl	0xf17d0 <__android_log_print@plt>
+   32bc8:      	ldr	w5, [x23]
+   32bcc:      	and	w4, w19, #0x1
+   32bd0:      	ldr	w6, [x23, #0x48]
+   32bd4:      	adrp	x1, 0x21000
+   32bd8:      	ldp	x20, x19, [sp, #0x40]
+   32bdc:      	adrp	x2, 0x13000
+   32be0:      	adrp	x3, 0x11000
+   32be4:      	ldp	x22, x21, [sp, #0x30]
+   32be8:      	add	x1, x1, #0x4e5
+   32bec:      	add	x2, x2, #0x96b
+   32bf0:      	ldp	x24, x23, [sp, #0x20]
+   32bf4:      	add	x3, x3, #0xcb6
+   32bf8:      	mov	w0, #0x3                // =3
+   32bfc:      	ldr	x25, [sp, #0x10]
+   32c00:      	ldp	x29, x30, [sp], #0x50
+   32c04:      	b	0xf17d0 <__android_log_print@plt>

@@ -1,0 +1,13 @@
+[Unit]
+Description=MTK MT6785 GNSS engine (vendor mnld in a chroot) with NMEA forwarder
+# The kernel must have created the STP channel before the daemon can use it.
+ConditionPathExists=/dev/stpgps
+
+[Service]
+Type=forking
+ExecStart=@PREFIX@/start.sh
+ExecStop=@PREFIX@/stop.sh
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -56,6 +56,15 @@ properties:
   interrupts:
     maxItems: 1
 
+  mediatek,larb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      The SMI local arbiter (larb) that this block's DMA ports belong to. A
+      driver links itself to it so that the larb is kept runtime-resumed while
+      the block fetches, which matters where no IOMMU binds that larb, because
+      nothing else would resume it and its ports come back with translation
+      enabled after the display power domain was cycled.
+
   power-domains:
     description: A phandle and PM domain specifier as defined by bindings of
       the power controller specified by phandle. See
@@ -76,8 +85,10 @@ properties:
       mediatek,rdma-fifo-size of mt8173-rdma0 is 8K
       mediatek,rdma-fifo-size of mt8183-rdma0 is 5K
       mediatek,rdma-fifo-size of mt8183-rdma1 is 2K
+      mediatek,rdma-fifo-size of mt6785-rdma0 in video mode is 1536, the value the vendor
+      bootloader programmes into RDMA_FIFO_CON for that SoC
     $ref: /schemas/types.yaml#/definitions/uint32
-    enum: [8192, 5120, 2048]
+    enum: [8192, 5120, 2048, 1536]
 
   mediatek,gce-client-reg:
     description: The register of client driver can be configured by gce with

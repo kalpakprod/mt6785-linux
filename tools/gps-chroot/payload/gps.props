@@ -1,0 +1,25 @@
+# Properties mnld reads, with the values this phone reports.
+#
+# Taken from the phone's own getprop dump (poco-m5s/device-dump-2026-11-13), so
+# they describe the hardware the daemon is about to drive, not a guess. Read by
+# libprops-shim.so, which is preloaded into mnld because the environment has no
+# property service.
+#
+# No unique identifier belongs in this file: everything here is a model constant.
+persist.vendor.connsys.chipid=0x6785
+vendor.connsys.adie.chipid=0x0000
+vendor.connsys.driver.ready=yes
+vendor.gps.gps.version=0x6785
+vendor.gps.clock.type=21
+vendor.service.nvram_init=Ready
+ro.build.type=user
+ro.debuggable=0
+ro.logsystem.usertype=0
+ro.vendor.mtk_log_hide_gps=0
+ro.vendor.mtklog_internal=0
+debug.mnl=0
+debug.debug_nmea=0
+debug.log_hide=0
+debug.dbg2file=0
+vendor.debug.gps.mnld.ne=0
+vendor.gpsdbglog.enable=0

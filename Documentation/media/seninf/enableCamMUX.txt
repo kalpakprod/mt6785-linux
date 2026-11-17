@@ -1,0 +1,36 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+000000000002fd00 <_ZN12SeninfDrvImp12enableCamMUXE19SENINF_CAM_MUX_ENUM>:
+   2fd00:      	stp	x29, x30, [sp, #-0x10]!
+   2fd04:      	mov	x29, sp
+   2fd08:      	ldr	x8, [x0, #0x180]
+   2fd0c:      	mov	w10, #0x1               // =1
+   2fd10:      	lsl	w10, w10, w1
+   2fd14:      	mov	w11, #0x3               // =3
+   2fd18:      	mov	w5, w1
+   2fd1c:      	adrp	x2, 0x1a000
+   2fd20:      	adrp	x3, 0x1f000
+   2fd24:      	add	x2, x2, #0x9ec
+   2fd28:      	ldr	w9, [x8, #0x10]
+   2fd2c:      	add	x3, x3, #0xfcb
+   2fd30:      	mov	w0, #0x3                // =3
+   2fd34:      	orr	w9, w9, w10
+   2fd38:      	lsl	w10, w1, #1
+   2fd3c:      	adrp	x1, 0x21000
+   2fd40:      	lsl	w10, w11, w10
+   2fd44:      	add	x1, x1, #0x4e5
+   2fd48:      	str	w9, [x8, #0x10]
+   2fd4c:      	ldr	w9, [x8, #0xa0]
+   2fd50:      	orr	w9, w9, w10
+   2fd54:      	str	w9, [x8, #0xa0]
+   2fd58:      	str	w10, [x8, #0xa8]
+   2fd5c:      	ldr	w4, [x8, #0x10]
+   2fd60:      	ldr	w6, [x8, #0xa0]
+   2fd64:      	ldr	w7, [x8, #0xa8]
+   2fd68:      	bl	0xf17d0 <__android_log_print@plt>
+   2fd6c:      	mov	w0, wzr
+   2fd70:      	ldp	x29, x30, [sp], #0x10
+   2fd74:      	ret

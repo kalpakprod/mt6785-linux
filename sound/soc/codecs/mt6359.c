@@ -121,7 +121,17 @@ static void mt6359_set_decoder_clk(struct mt6359_priv *priv, bool enable)
 			   (enable ? 1 : 0) << RG_RSTB_DECODER_VA32_SFT);
 }
 
-static void mt6359_mtkaif_tx_enable(struct mt6359_priv *priv)
+static void mt6359_mtkaif_tx_enable_priv(struct mt6359_priv *priv);
+
+void mt6359_mtkaif_tx_enable(struct snd_soc_component *cmpnt)
+{
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+
+	mt6359_mtkaif_tx_enable_priv(priv);
+}
+EXPORT_SYMBOL_GPL(mt6359_mtkaif_tx_enable);
+
+static void mt6359_mtkaif_tx_enable_priv(struct mt6359_priv *priv)
 {
 	switch (priv->mtkaif_protocol) {
 	case MT6359_MTKAIF_PROTOCOL_2_CLK_P2:
@@ -183,7 +193,7 @@ void mt6359_mtkaif_calibration_enable(struct snd_soc_component *cmpnt)
 
 	mt6359_set_playback_gpio(priv);
 	mt6359_set_capture_gpio(priv);
-	mt6359_mtkaif_tx_enable(priv);
+	mt6359_mtkaif_tx_enable_priv(priv);
 
 	mt6359_set_dcxo(priv, true);
 	mt6359_set_aud_global_bias(priv, true);
@@ -1486,7 +1496,7 @@ static int mt_mtkaif_tx_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		mt6359_mtkaif_tx_enable(priv);
+		mt6359_mtkaif_tx_enable_priv(priv);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		mt6359_mtkaif_tx_disable(priv);
@@ -2240,6 +2250,25 @@ static const struct snd_soc_dapm_widget mt6359_dapm_widgets[] = {
 
 	SND_SOC_DAPM_INPUT("SGEN DL"),
 
+	/*
+	 * DIAGNOSTIC, NOT FOR UPSTREAM (see mt6359_sgen_ul_put() below): the
+	 * uplink generator needs a widget of its own to be a valid source of
+	 * "AIF Out Mux". The enum's "Sgen" value exists for both muxes - the
+	 * vendor's own route table wires it for "DAC In Mux" only and leaves
+	 * "AIF Out Mux" with "Normal Path" alone - so without this node selecting
+	 * Sgen powers nothing and a capture through it returns silence while the
+	 * codec's uplink source stays off (audio12 measured 0x238e = 0x0000).
+	 *
+	 * It has to be an INPUT and not a SUPPLY like the DL generator's "SGEN
+	 * DL": a supply widget cannot be the source of a conditional (muxed) path
+	 * (sound/soc/soc-dapm.c:635-637) and the card then refuses to initialise
+	 * with "Conditional paths are not supported for supply widgets". Being the
+	 * upstream input of a mux is exactly what "SGEN DL" does for "DAC In Mux"
+	 * ({ "DAC In Mux", "Sgen", "SGEN DL" }), so the uplink mirrors it. The
+	 * generator's registers are driven by the switch below, not here.
+	 */
+	SND_SOC_DAPM_INPUT("SGEN UL"),
+
 	/* Uplinks */
 	SND_SOC_DAPM_AIF_OUT("AIF1TX", "AIF1 Capture", 0,
 			     SND_SOC_NOPM, 0, 0),
@@ -2453,6 +2482,8 @@ static const struct snd_soc_dapm_route mt6359_dapm_routes[] = {
 
 	{"AIF Out Mux", "Normal Path", "MISO0_MUX"},
 	{"AIF Out Mux", "Normal Path", "MISO1_MUX"},
+	/* DIAGNOSTIC, NOT FOR UPSTREAM: the uplink generator's own branch */
+	{"AIF Out Mux", "Sgen", "SGEN UL"},
 	{"AIF2 Out Mux", "Normal Path", "MISO2_MUX"},
 
 	{"MISO0_MUX", "UL1_CH1", "UL_SRC_MUX"},
@@ -2687,6 +2718,19 @@ static void mt6359_codec_dai_shutdown(struct snd_pcm_substream *substream,
 		mt6359_reset_capture_gpio(priv);
 }
 
+/*
+ * No .trigger on this codec, deliberately. The MTKAIF transmitter's FIFOs belong to
+ * the MTKAIF_TX supply widget's DAPM events (mt_mtkaif_tx_event(): PRE_PMU enables
+ * them, POST_PMD writes the disabled value), which is the upstream arrangement for
+ * this family - mt6358.c does the same from its own enable sequences
+ * (mt6358_mtkaif_tx_enable() at mt6358.c:1674 and :1765), and the DAI trigger of
+ * every mt63xx codec here has no register access at all. It cannot have one: this
+ * codec hangs off pwrap, whose reads sleep (pwrap_read16() ends in
+ * usleep_range_state()), and the PCM trigger runs with interrupts disabled. A
+ * regmap write from there is what audio14 reported as "BUG: scheduling while
+ * atomic" and then a preempt count of 0xffffffff, with the transmitter left at
+ * 0x3000 for the whole capture.
+ */
 static const struct snd_soc_dai_ops mt6359_codec_dai_ops = {
 	.hw_params = mt6359_codec_dai_hw_params,
 	.startup = mt6359_codec_dai_startup,
@@ -2819,6 +2863,113 @@ static void mt6359_codec_remove(struct snd_soc_component *cmpnt)
 static const DECLARE_TLV_DB_SCALE(playback_tlv, -1000, 100, 0);
 static const DECLARE_TLV_DB_SCALE(capture_tlv, 0, 600, 0);
 
+/*
+ * DIAGNOSTIC, NOT FOR UPSTREAM: this whole pair is scaffolding for one
+ * measurement and must be dropped before this area is sent anywhere. It
+ * powers the codec's UL sine generator so a capture can be measured without a
+ * microphone, and switches it off again.
+ *
+ * This is the same register sequence mt_sgen_event() runs when the DL generator
+ * powers up (AFUNC_AUD_CON2/CON0 for the SDM and scrambler clocks,
+ * AFE_SGEN_CFG0/CFG1 for the generator itself); only the *source select* is
+ * left to the existing "AIF Out Mux" control, whose "Sgen" value routes this
+ * generator into AIF1TX - that value is only a valid source because of the
+ * "SGEN UL" node in the widget table; without it the branch is dead and the
+ * capture is silent no matter what the generator does. Nothing here touches the
+ * DL side: no DAC, no LINOUT,
+ * no HPOUT, no speaker amplifier, so no speaker, earpiece or headphone can be
+ * driven by this switch, whatever the muxes say.
+ *
+ * It exists only while the capture silence is being located.
+ */
+static int mt6359_sgen_ul_get(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	unsigned int val = 0;
+
+	regmap_read(priv->regmap, MT6359_AFE_SGEN_CFG1, &val);
+	ucontrol->value.integer.value[0] = val & 0x1;
+	return 0;
+}
+
+static int mt6359_sgen_ul_put(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	bool on = ucontrol->value.integer.value[0];
+
+	if (on) {
+		/* sdm audio fifo clock power on */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x0006);
+		/* scrambler clock on enable */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON0, 0xcba1);
+		/* sdm power on */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x0003);
+		/* sdm fifo enable */
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x000b);
+
+		regmap_update_bits(priv->regmap, MT6359_AFE_SGEN_CFG0,
+				   0xff3f, 0x0000);
+		regmap_update_bits(priv->regmap, MT6359_AFE_SGEN_CFG1,
+				   0xffff, 0x0001);
+	} else {
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON2, 0x0000);
+		regmap_write(priv->regmap, MT6359_AFUNC_AUD_CON0, 0xcba0);
+		regmap_update_bits(priv->regmap, MT6359_AFE_SGEN_CFG1,
+				   0xffff, 0x0000);
+	}
+
+	dev_info(priv->dev, "%s(), UL sine generator %s\n", __func__,
+		 on ? "on" : "off");
+	return 0;
+}
+
+/*
+ * DIAGNOSTIC, NOT FOR UPSTREAM: see mt6359_sgen_ul_put(). The codec's MTKAIF receiver monitors
+ * loopback: AUDIO_DIG_CFG bit 7 (DAT_MISO_LOOPBACK) and bit 15 (DAT_MISO2_LOOPBACK) are the bits
+ * the MTKAIF calibration itself switches on to hear its own transmitter (mt6359.c:203-212), and
+ * they are cleared again when the calibration ends (:216-230). Switching them on by hand while a
+ * capture runs is the one measurement that separates "the codec transmits digital silence" from
+ * "the AFE drops what it receives": with the loopback on, the codec's uplink carries its own
+ * transmitted audio back into itself, so a capture that is nonzero proves codec, MTKAIF link and
+ * AFE receiver all work. Nothing here drives a speaker: the loopback is inside the codec's
+ * digital block, and no output stage is powered.
+ */
+static int mt6359_mtkaif_loopback_get(struct snd_kcontrol *kcontrol,
+				      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	unsigned int val = 0;
+
+	regmap_read(priv->regmap, MT6359_AUDIO_DIG_CFG, &val);
+	ucontrol->value.integer.value[0] =
+		!!(val & (1 << RG_AUD_PAD_TOP_DAT_MISO_LOOPBACK_SFT));
+	return 0;
+}
+
+static int mt6359_mtkaif_loopback_put(struct snd_kcontrol *kcontrol,
+				      struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct mt6359_priv *priv = snd_soc_component_get_drvdata(cmpnt);
+	bool on = ucontrol->value.integer.value[0];
+
+	regmap_update_bits(priv->regmap, MT6359_AUDIO_DIG_CFG,
+			   RG_AUD_PAD_TOP_DAT_MISO_LOOPBACK_MASK_SFT,
+			   on << RG_AUD_PAD_TOP_DAT_MISO_LOOPBACK_SFT);
+	regmap_update_bits(priv->regmap, MT6359_AUDIO_DIG_CFG,
+			   RG_AUD_PAD_TOP_DAT_MISO2_LOOPBACK_MASK_SFT,
+			   on << RG_AUD_PAD_TOP_DAT_MISO2_LOOPBACK_SFT);
+
+	dev_info(priv->dev, "%s(), MTKAIF loopback %s\n", __func__,
+		 on ? "on" : "off");
+	return 0;
+}
+
 static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 	/* dl pga gain */
 	SOC_DOUBLE_EXT_TLV("Headset Volume",
@@ -2841,6 +2992,22 @@ static const struct snd_kcontrol_new mt6359_snd_controls[] = {
 	SOC_SINGLE_EXT_TLV("PGA2 Volume",
 			   MT6359_AUDENC_ANA_CON1, RG_AUDPREAMPRGAIN_SFT, 4, 0,
 			   snd_soc_get_volsw, mt6359_put_volsw, capture_tlv),
+	/*
+	 * DIAGNOSTIC, NOT FOR UPSTREAM: see mt6359_sgen_ul_put(). Set
+	 * "AIF Out Mux" to "Sgen" as well to route the generator into AIF1TX.
+	 * Remove this control together with the two functions.
+	 */
+	SOC_SINGLE_EXT("Sgen UL Diagnostic Switch", SND_SOC_NOPM, 0, 1, 0,
+		       mt6359_sgen_ul_get, mt6359_sgen_ul_put),
+
+	/*
+	 * DIAGNOSTIC, NOT FOR UPSTREAM: the codec's MTKAIF loopback, so one capture can
+	 * tell whether the uplink carries anything at all. Goes away with the Sgen
+	 * switch above.
+	 */
+	SOC_SINGLE_EXT("MTKAIF Loopback Diagnostic Switch", SND_SOC_NOPM, 0, 1, 0,
+		       mt6359_mtkaif_loopback_get, mt6359_mtkaif_loopback_put),
+
 	SOC_SINGLE_EXT_TLV("PGA3 Volume",
 			   MT6359_AUDENC_ANA_CON2, RG_AUDPREAMP3GAIN_SFT, 4, 0,
 			   snd_soc_get_volsw, mt6359_put_volsw, capture_tlv),

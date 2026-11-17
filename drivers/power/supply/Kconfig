@@ -1214,3 +1214,14 @@ config MACSMC_POWER
 	  Say Y or M here if you have an Apple Silicon based Mac.
 
 endif # POWER_SUPPLY
+
+config MT6359_GAUGE
+	tristate "MediaTek MT6359 fuel gauge"
+	depends on MFD_MT6397
+	select IIO
+	help
+	  The MT6359 PMIC's coulomb-counting fuel gauge. Reports charge_now,
+	  charge_full, capacity, current_now and, through the PMIC's ADC, battery
+	  voltage and temperature.
+
+	  Say M here to build it as a module.

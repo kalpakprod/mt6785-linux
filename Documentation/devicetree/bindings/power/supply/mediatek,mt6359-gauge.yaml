@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/mediatek,mt6359-gauge.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6359 PMIC fuel gauge
+
+maintainers:
+  - The poco-m5s port <worker@poco.local>
+
+description: |
+  The MT6359 PMIC's coulomb-counting fuel gauge. It reports the coulomb counter,
+  current, battery voltage, battery temperature through the NTC on the PMIC's
+  AUXADC BAT_TEMP channel, and a capacity anchored once per boot on the
+  open-circuit voltage the bootloader measured.
+
+properties:
+  compatible:
+    const: mediatek,mt6359-gauge
+
+  monitored-battery:
+    description: |
+      The battery, described by the generic simple-battery binding
+      (Documentation/devicetree/bindings/power/supply/battery.yaml): its
+      ocv-capacity-table turns the anchored open-circuit voltage into a
+      percentage, and charge-full-design-microamp-hours is the denominator for
+      the coulomb counter afterwards. No private table properties are defined
+      here - the generic ones carry everything this gauge needs.
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  io-channels:
+    description: |
+      The battery voltage channel ("vbat", in mV, as the generic adc-battery reads
+      it on this board) and, optionally, the battery NTC ("ntc", the MT6359
+      AUXADC's BAT_TEMP channel, a 12-bit code against a 4500 mV full scale).
+    minItems: 1
+    maxItems: 2
+
+  io-channel-names:
+    minItems: 1
+    maxItems: 2
+
+  mediatek,r-fg-value:
+    description: |
+      The sense resistor as the vendor battery profile carries it. The driver
+      divides DEFAULT_R_FG (50) by it, so the vendor's 5 means the currents and
+      charges are multiplied by ten.
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  mediatek,car-tune-value:
+    description: |
+      The vendor's current calibration factor, 100 for a correctly calibrated
+      gauge (CAR_TUNE_VALUE in the vendor battery profile).
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  vdd-supply:
+    description: The NTC divider's pull-up; the battery temperature is read through
+      the PMIC's AUXADC BAT_TEMP channel and divided down against this rail.
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    pmic {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        gauge {
+            compatible = "mediatek,mt6359-gauge";
+            monitored-battery = <&battery>;
+            io-channels = <&adc 4>, <&pmic_adc 1>;
+            io-channel-names = "vbat", "ntc";
+            mediatek,r-fg-value = <5>;
+            mediatek,car-tune-value = <100>;
+        };
+    };

@@ -1,5 +1,212 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the camera area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
  */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h>
+
+/*
+ * The camera LDO controller: address 0x28 on the bus this node's label resolves to (the phone
+ * reports it as 0-0028), enable GPIO 195, four outputs feeding the
+ * AVDD/DVDD pairs of the phone's camera modules (vendor wl2866d.dtsi:2-44 and the supply
+ * wiring in §1.4 of poco-m5s/research/native/5-cameras.md). Voltage windows are the
+ * controller's own: outputs 1-2 in 6 mV steps from 600 mV, outputs 3-4 in 12.5 mV steps from
+ * 1200 mV. There are no consumers yet - the sensor nodes come with the camera bring-up - so
+ * nothing enables the rails until then.
+ */
+&i2c6 {
+	status = "okay";
+
+	wl2866d: regulator@28 {
+		compatible = "xiaomi,wl2866d";
+		reg = <0x28>;
+		en-gpios = <&pio 195 GPIO_ACTIVE_LOW>;
+
+		regulators {
+			wl2866d_dvdd1: dvdd1 {
+				regulator-name = "wl2866d_dvdd1";
+				regulator-min-microvolt = <600000>;
+				regulator-max-microvolt = <2130000>;
+			};
+
+			wl2866d_dvdd2: dvdd2 {
+				regulator-name = "wl2866d_dvdd2";
+				regulator-min-microvolt = <600000>;
+				regulator-max-microvolt = <2130000>;
+			};
+
+			wl2866d_avdd1: avdd1 {
+				regulator-name = "wl2866d_avdd1";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <4387500>;
+			};
+
+			wl2866d_avdd2: avdd2 {
+				regulator-name = "wl2866d_avdd2";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <4387500>;
+			};
+		};
+	};
+};
+
+/*
+ * The two D-PHY sensors the plan starts with (5-cameras.md §5 steps 1 and 3): the back ultra
+ * IMX355 and the front OV13B10, both on the "sub" camera bus, both with upstream drivers.
+ *
+ * Rails are the ones the board's own camera node names, resolved in the live device tree
+ * (device-dump-2026-11-12/device-tree.dtb, kd_camera_hw1): cam1 (front) and cam2 (ultra) take
+ * vcama/vcamd = wl2866d_avdd1/wl2866d_dvdd1, and every module's I/O is the PMIC's vcamio at
+ * 1.8 V. Voltages come from the vendor power tables (5-cameras.md §1.2): 2.7/1.2/1.8 V for the
+ * IMX355, 2.8/1.2/1.8 V for the OV13B10.
+ *
+ * The 24 MHz memory clock is one of the top clock's CAMTG muxes, whose parent list starts with
+ * univpll_192m_d8 (clk-mt6785-top.c:222-230); which mux feeds which position is a guess until
+ * the phone confirms it - the vendor's own mclk driver picks it at runtime, and for an
+ * identification read any of them serves.
+ *
+ * The endpoints carry the lane count and the link frequency the drivers expect (IMX355 4-lane
+ * at 24 MHz: 24 MHz * 60 / (2 * 2) = 360 MHz, imx355.c:131-152; OV13B10:
+ * OV13B10_LINK_FREQ_560MHZ, ov13b10.c:573), but nothing consumes them yet: there is no SENINF
+ * receiver driver in this tree, and upstream boards do describe the sensor endpoint in that
+ * state - the sensor binds and its controls work, only the stream has no sink. When SENINF
+ * lands, its port connects to these endpoints unchanged.
+ */
+&i2c4 {
+	status = "okay";
+
+	imx355: camera@1a {
+		compatible = "sony,imx355";
+		reg = <0x1a>;
+
+		/*
+		 * CAMTG4, not CAMTG1: the stock HAL's own sensor table puts the rear 8 MP sensor
+		 * at index MAIN2, whose MCLK enum 3 resolves to CMMCLK3 on GPIO121 and TOP_MUX_CAMTG4
+		 * (scratch/native/5-cameras/vendor-img/libcameracustom.so, getCustomConfig 0x61960,
+		 * table 0x1f50c0; decoded in poco-m5s/research/native/5-cameras/
+		 * stock-hal-port-map-2026-11-17.md). CAMTG1 is still enabled, because the vendor's
+		 * kdSetSensorMclk enables it for every sensor (seninf_clk.c:165-185).
+		 */
+		clocks = <&topckgen CLK_TOP_CAMTG4>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG4>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&wl2866d_avdd1>;
+		dvdd-supply = <&wl2866d_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		reset-gpios = <&pio 125 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk3_4ma>;
+
+		port {
+			imx355_out: endpoint {
+				link-frequencies = /bits/ 64 <360000000>;
+				data-lanes = <1 2 3 4>;
+				remote-endpoint = <&seninf1_in_a>;
+			};
+		};
+	};
+
+	/*
+	 * The front sensor answers at 0x10 on this board, not at the first address its driver table
+	 * lists: the probe's own reads showed "id at 0x36: no answer" and "id at 0x10: answer 560d42",
+	 * and 0x10 is the 7-bit form of the 0x20 the vendor module table carries as the alternate
+	 * (ov13b10sunny_mipiraw_Sensor.c:160, `.i2c_addr_table = {0x6C, 0x20, 0xff}` - the vendor
+	 * driver tries its list in order at runtime, which a device-tree node cannot do).
+	 */
+	ov13b10: camera@10 {
+		compatible = "ovti,ov13b10";
+		reg = <0x10>;
+
+		/*
+		 * CAMTG3: the front sensor is index SUB, MCLK enum 2 -> CMMCLK2 on GPIO120 and
+		 * TOP_MUX_CAMTG3 in the stock table (same source as above); the tree had CAMTG2.
+		 */
+		clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG3>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&wl2866d_avdd1>;
+		dvdd-supply = <&wl2866d_dvdd1>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		reset-gpios = <&pio 124 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk2_4ma>;
+
+		port {
+			ov13b10_out: endpoint {
+				link-frequencies = /bits/ 64 <560000000>;
+				data-lanes = <1 2 3 4>;
+				remote-endpoint = <&seninf1_in_b>;
+			};
+		};
+	};
+};
+
+/*
+ * The CSI-2 receiver for the sensors above. It is brought up so that its counters can be read
+ * while the capture engine (CAMSV) does not exist yet: the packet counter moving is the proof
+ * that a sensor is really streaming on its lanes.
+ */
+/*
+ * Both sensors reach this receiver through the board's MIPI switch, whose select line is GPIO21
+ * (stock DT: camera1_mipisel_off/on at gpio21, the pinctrl states the vendor's kd_camera_hw1
+ * names cam_mipi_switch_sel_0/1). The vendor drives it per sensor index - SUB (the front OV13B10)
+ * high, MAIN2 (the IMX355) low (imgsensor_cfg_table.c:101-145) - so each sensor node says which
+ * position it wants and the receiver sets it before starting that sensor.
+ */
+&seninf1 {
+	status = "okay";
+	mipi-sel-gpios = <&pio 21 GPIO_ACTIVE_HIGH>;
+};
+
+&imx355 {
+	mipi-sel-level = <0>;
+};
+
+&ov13b10 {
+	mipi-sel-level = <1>;
+};
+
+/* The capture engine for the same stream, one engine to start with. */
+&camsv1 {
+	status = "okay";
+};
+
+/* The pipeline owner, the receiver and the engine, all on for the trial. */
+&cam {
+	status = "okay";
+};
+
+/* The receiver's analog block: enabled for the trial so the D-PHY is powered for the IMX355. */
+&csi_rx_phy {
+	status = "okay";
+};
+
+/*
+ * The camera MCLK pads. The vendor board file drives them the same way, one group per drive
+ * strength, four groups each (cust_rosemary_camera.dtsi:133-186: PINMUX_GPIO121__FUNC_CMMCLK3 for
+ * the rear 8 MP sensor, PINMUX_GPIO120__FUNC_CMMCLK2 for the front one), and its clock driver picks
+ * the 4 mA group as the enabled state (mclk.c:16-23: "off", "2mA", "4mA", "6mA", "8mA";
+ * MCLK_STATE_ENABLE = MCLK_STATE_ENABLE_4MA). This tree set neither, so the pads stayed in whatever
+ * state the bootloader left them.
+ */
+&pio {
+	cam_mclk3_4ma: cam-mclk3-4ma {
+		pins-cmd-dat {
+			pinmux = <PINMUX_GPIO121__FUNC_CMMCLK3>;
+			drive-strength = <4>;
+		};
+	};
+
+	cam_mclk2_4ma: cam-mclk2-4ma {
+		pins-cmd-dat {
+			pinmux = <PINMUX_GPIO120__FUNC_CMMCLK2>;
+			drive-strength = <4>;
+		};
+	};
+};
