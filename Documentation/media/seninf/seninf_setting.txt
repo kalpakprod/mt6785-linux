@@ -1,0 +1,18 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000032870 <_ZN12SeninfDrvImp24hal_csirx_seninf_settingEP15SENINF_CSI_MIPI>:
+   32870:      	ldr	x8, [x1, #0x8]
+   32874:      	ldr	w8, [x8, #0x4]
+   32878:      	add	x8, x0, x8, lsl #3
+   3287c:      	ldr	x8, [x8, #0x48]
+   32880:      	ldr	w9, [x8, #0x10]
+   32884:      	orr	w9, w9, #0x1
+   32888:      	str	w9, [x8, #0x10]
+   3288c:      	ldr	w9, [x8]
+   32890:      	orr	w9, w9, #0x1
+   32894:      	str	w9, [x8]
+   32898:      	ret
+   3289c:      	udf	#0x0
