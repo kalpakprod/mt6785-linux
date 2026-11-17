@@ -261,6 +261,24 @@ else
 	fail "reading the command line before mounting /proc leaves nothing, as it must"
 fi
 
+# --- 16. the panic's pstore copy is saved from inside the capture kernel: the copy
+#        cannot survive the PSCI reboot, so this is the only chance to read it
+root=$work/pstore
+mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev" \
+	 "$root/sys/fs/pstore"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'kernel: boot\n' > "$root/dev/kmsg"
+printf 'Panic#1 Part1\nkernel: the crashed log line\n' > "$root/sys/fs/pstore/dmesg-ramoops-0"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/cmdline-template"
+: > "$root/mount-ok.ext4.rw"
+CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
+if ls "$root"/var/lib/poco/crash/pstore-dmesg-ramoops-0-* >/dev/null 2>&1 &&
+   grep -q "the crashed log line" "$root"/var/lib/poco/crash/pstore-dmesg-ramoops-0-*; then
+	pass "the panic's pstore record is saved before the reboot"
+else
+	fail "the panic's pstore record is saved before the reboot"
+fi
+
 echo
 echo "$fails case(s) failed"
 exit "$fails"

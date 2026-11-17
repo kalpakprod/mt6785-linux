@@ -415,6 +415,60 @@ static void simulate_mount(const char *fs)
 }
 #endif
 
+/*
+ * Save what pstore holds, from inside the capture kernel.
+ *
+ * The panic path writes its own copy into ramoops before kexec when
+ * crash_kexec_post_notifiers is on, but that copy lives in DRAM: the capture kernel
+ * ends its work with a PSCI reboot, and a PSCI reboot does not keep DRAM on this
+ * phone (measured, lead note 29). So the copy never reaches the next boot - which is
+ * exactly what the trial showed: a good vmcore-dmesg file and dmesg-ramoops still
+ * from 16.11. The only place the copy can still be read is here, while this kernel
+ * runs, so it is written to the phone's filesystem next to the dump.
+ */
+static void save_pstore(const char *outdir, const char *stamp)
+{
+	char psdir[512], dst[900];
+	struct dirent *de;
+	DIR *d;
+	int saved = 0;
+
+	snprintf(psdir, sizeof(psdir), "%s/sys/fs/pstore", MOUNT_DIR);
+	d = opendir(psdir);
+	if (!d) {
+		kmsg_line("crash-init: no /sys/fs/pstore to read (%s)\n",
+			  strerror(errno));
+		return;
+	}
+	while ((de = readdir(d))) {
+		char src[800], buf[4096];
+		FILE *in, *out;
+		size_t n;
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(src, sizeof(src), "%s/%s", psdir, de->d_name);
+		snprintf(dst, sizeof(dst), "%s/pstore-%s-%s", outdir, de->d_name,
+			 stamp);
+		in = fopen(src, "r");
+		if (!in)
+			continue;
+		out = fopen(dst, "w");
+		if (!out) {
+			fclose(in);
+			continue;
+		}
+		while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+			fwrite(buf, 1, n, out);
+		fclose(in);
+		fclose(out);
+		saved++;
+		kmsg_line("crash-init: saved pstore entry %s\n", de->d_name);
+	}
+	closedir(d);
+	kmsg_line("crash-init: %d pstore entries saved\n", saved);
+}
+
 static int mkdir_p(const char *path)
 {
 	char tmp[512];
@@ -716,6 +770,10 @@ int main(int argc, char **argv)
 		if (selftest)
 			logmsg("crash-init: self-test, log in %s", kmsgfile);
 	}
+
+	/* Before anything else that could fail: the panic's own pstore copy, which
+	 * only exists while this kernel runs. */
+	save_pstore(outdir, stamp);
 
 	/* A self-test boot has no crashed kernel to read: the log above is the
 	 * whole point, so go straight to the reboot. */
