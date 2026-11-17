@@ -78,6 +78,21 @@ int main(int argc, char **argv)
 	expect("a smaller code is colder", mt6359_ntc_raw_to_temp(1000) > 250, 1);
 	expect("a larger code is warmer", mt6359_ntc_raw_to_temp(2000) < 250, 1);
 
+	/*
+	 * capacity follows the counter: one full charge is 5000000 uAh, and a counter
+	 * movement of 850 counts is 1000 uAh (0.085 per count), i.e. 0.02 % of full -
+	 * so a movement of 42500 counts is 3612 uAh = 0.07 % ... at 100000 counts the
+	 * charge has moved 8500 uAh, which is 0.17 %. The test uses round numbers that
+	 * the ABI can show: 500000 counts = 42500 uAh = 0.85 %, and 10x that is 8.5 %.
+	 */
+	expect("counter +100000 -> uAh", mt6359_car_to_uah(100000, 50), 8500);
+	expect("capacity at 0 uAh", mt6359_uah_to_capacity(0, 5000000), 0);
+	expect("capacity at anchor 45 %", mt6359_uah_to_capacity(2250000, 5000000), 45);
+	expect("capacity after +8500 uAh", mt6359_uah_to_capacity(2258500, 5000000), 45);
+	expect("capacity after +425000 uAh", mt6359_uah_to_capacity(2675000, 5000000), 53);
+	expect("capacity never above 100", mt6359_uah_to_capacity(9000000, 5000000), 100);
+	expect("capacity never below 0", mt6359_uah_to_capacity(-900000, 5000000), 0);
+
 	if (planted) {
 		/* With a planted constant one of the values above must have failed. */
 		printf("%s planted-constant build %s\n",

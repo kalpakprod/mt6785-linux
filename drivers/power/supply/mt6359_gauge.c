@@ -295,10 +295,28 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 				     union power_supply_propval *val)
 {
 	struct mt6359_gauge *g = power_supply_get_drvdata(psy);
-	long long car;
+	long long car, raw_cur = 0;
 	int ret;
 
 	switch (psp) {
+	case POWER_SUPPLY_PROP_STATUS:
+		/*
+		 * From the charger, not guessed: the MT6360 charger is this supply's
+		 * supplier in the DT (the gauge node is not, so the core's
+		 * power_supply_am_i_supplied() answers "is anything feeding me"), and the
+		 * gauge's own current says which way the charge is moving. That gives the
+		 * three states the charge limiter needs: Charging while power flows in,
+		 * Not charging when the limiter has set inhibit-charge (supply present,
+		 * current at zero), Discharging when nothing feeds the phone.
+		 */
+		if (!power_supply_am_i_supplied(psy))
+			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		else if (mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &raw_cur) == 0 &&
+			 abs((int)(s16)raw_cur) * 610 / 1000 > 20)
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		else
+			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		return 0;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		ret = mt6359_gauge_read_car(g, &car);
 		if (ret)
@@ -398,6 +416,7 @@ static enum power_supply_property mt6359_gauge_props[] = {
 	 * that took capacity out, because the counter starts wherever the loader left
 	 * it. It returns with OCV anchoring.
 	 */
+	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CAPACITY,
