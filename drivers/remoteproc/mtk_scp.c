@@ -552,6 +552,7 @@ static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
 static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_sspm(struct mtk_scp *scp);
 static void mt6785_scp_log_rails(struct mtk_scp *scp);
+static void mt6785_scp_spm_request(struct mtk_scp *scp, bool on);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -1308,6 +1309,7 @@ static int scp_start(struct rproc *rproc)
 	 * out in the tree we hold, so no bit is invented here: the register is reported with the
 	 * rest of the SPM block and the request stays open until that mapping is established.
 	 */
+	mt6785_scp_spm_request(scp, true);
 	scp->data->scp_reset_deassert(scp);
 
 	/*
@@ -1400,6 +1402,7 @@ static int scp_start(struct rproc *rproc)
 
 	if (ret == 0) {
 		dev_err(dev, "wait SCP initialization timeout!\n");
+		mt6785_scp_spm_request(scp, false);
 		mt6785_scp_awake(scp, false);
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
@@ -1411,6 +1414,7 @@ static int scp_start(struct rproc *rproc)
 		goto stop;
 	}
 
+	mt6785_scp_spm_request(scp, false);
 	mt6785_scp_awake(scp, false);
 	clk_disable(scp->clk);
 	if (run->fw_ver[0])
@@ -2602,6 +2606,41 @@ static void mt6785_scp_log_rails(struct mtk_scp *scp)
 			 en > 0 ? "enabled" : en == 0 ? "disabled" : "unknown");
 		regulator_put(r);
 	}
+}
+
+/*
+ * The SCP's resource request to the SPM, the one stock step this driver did not have
+ * (vendor scp/mt6785/scp_dvfs.c:289-292: spm_resource_req(SCP, MAINPLL | CK_26M | AXI_BUS)).
+ *
+ * The translation from those resources to SPM_SRC_REQ fields is spelled out in the vendor's own
+ * deliver function, spm_resource_req_console_deliver() (mt6785/mtk_spm_resource_req_console.c):
+ * MTK_SPM_RES_EX_MAINPLL -> PW_REG_SPM_VRF18_REQ (:54-57), MTK_SPM_RES_EX_AXI_BUS ->
+ * PW_REG_SPM_INFRA_REQ (:59-62), MTK_SPM_RES_EX_26M -> PW_REG_SPM_F26M_REQ (:64-67), and those
+ * three names are the SPM_SRC_REQ fields REG_SPM_VRF18_REQ (bit 4), REG_SPM_INFRA_REQ (bit 3) and
+ * REG_SPM_F26M_REQ (bit 1) in mtk_spm_reg.h:825-827 (the register is SPM 0xb8, :66). So the SCP's
+ * request is bits 4 | 3 | 1.
+ *
+ * Written directly and read back: if the field does not take the value, it says the register is
+ * not writable from the AP on this SoC - which is itself the answer, and it is logged.
+ */
+static void mt6785_scp_spm_request(struct mtk_scp *scp, bool on)
+{
+	struct regmap *spm = scp->spm_regmap;
+	u32 before, after, want;
+
+	if (IS_ERR_OR_NULL(spm))
+		return;
+	if (regmap_read(spm, MT6785_SPM_SRC_REQ, &before))
+		return;
+
+	want = on ? before | MT6785_SPM_SCP_SRC_REQ : before & ~MT6785_SPM_SCP_SRC_REQ;
+	regmap_write(spm, MT6785_SPM_SRC_REQ, want);
+	if (regmap_read(spm, MT6785_SPM_SRC_REQ, &after))
+		return;
+
+	dev_info(scp->dev, "SPM src_req %s: %#x -> %#x (want %#x)%s\n",
+		 on ? "request" : "release", before, after, want,
+		 after == want ? "" : " - the write did not take");
 }
 
 /* is this run of characters already in the loaded image? */
