@@ -2076,6 +2076,18 @@
 			status = "disabled";
 		};
 
+		/*
+		 * The CSI-2 RX PHY: the analog block the receiver programs through, bound by the
+		 * upstream driver for this block family (phy-mtk-mipi-csi-0-5). num-lanes is the
+		 * sensor's, four on the IMX355.
+		 */
+		csi_rx_phy: phy@11c80000 {
+			compatible = "mediatek,mt8365-csi-rx";
+			reg = <0 0x11c80000 0 0x1000>;
+			num-lanes = <4>;
+			#phy-cells = <0>;
+		};
+
 		seninf1: csi@1a040000 {
 			compatible = "mediatek,mt6785-seninf";
 			/*
@@ -2086,6 +2098,8 @@
 			reg = <0 0x1a040000 0 0x5000>,
 			      <0 0x11c80000 0 0x1000>;
 			mediatek,cam = <&cam>;
+			phys = <&csi_rx_phy>;
+			phy-names = "csi-rx";
 			clocks = <&camsys CLK_CAM_SENINF>, <&topckgen CLK_TOP_SENINF0>;
 			clock-names = "seninf", "mux";
 			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;

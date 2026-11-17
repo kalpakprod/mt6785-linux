@@ -33,6 +33,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/gpio/consumer.h>
+#include <linux/phy/phy.h>
 #include <linux/seq_file.h>
 #include <media/v4l2-async.h>
 #include <media/v4l2-subdev.h>
@@ -75,6 +76,10 @@ struct mtk_seninf {
 	struct delayed_work late_counters;
 	/* The board's MIPI switch select line, when the sensors share one receiver port. */
 	struct gpio_desc *mipi_sel;
+	/* The CSI-2 RX PHY: nobody else turns the D-PHY receiver on, and without it a port never
+	 * sees an LP->HS transition - which is what every port measuring zero packets and zero
+	 * errors means. The upstream driver for this block family is phy-mtk-mipi-csi-0-5. */
+	struct phy *phy;
 	/* The analog MIPI RX block lives outside this node's window but is part of the receiver. */
 	void __iomem *ana;
 	struct dentry *debugfs;
@@ -234,11 +239,13 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 	if (!IS_ERR_OR_NULL(seninf->ana)) {
 		unsigned int i;
 
-		dev_info(seninf->dev, "analog MIPI RX, per-lane status:\n");
+		dev_info(seninf->dev, "analog MIPI RX, sixteen registers:\n");
 		for (i = 0; i < 16; i += 4)
 			dev_info(seninf->dev, "  ana 0x%02x: 0x%08x 0x%08x 0x%08x 0x%08x\n",
-				 i, readl(seninf->ana + i), readl(seninf->ana + i + 4),
-				 readl(seninf->ana + i + 8), readl(seninf->ana + i + 12));
+				 i * 4, readl(seninf->ana + i * 4),
+				 readl(seninf->ana + (i + 1) * 4),
+				 readl(seninf->ana + (i + 2) * 4),
+				 readl(seninf->ana + (i + 3) * 4));
 	}
 }
 
@@ -264,6 +271,8 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 		cancel_delayed_work_sync(&seninf->late_counters);
 		writel(0, seninf->base + SENINF_CSI2_EN);
+		if (seninf->phy)
+			phy_power_off(seninf->phy);
 		pm_runtime_put_autosuspend(seninf->dev);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
 			 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
@@ -280,6 +289,14 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	ret = pm_runtime_resume_and_get(seninf->dev);
 	if (ret)
 		return ret;
+
+	/* The receiver's D-PHY first: without it no port can see anything on the wire. */
+	if (seninf->phy) {
+		ret = phy_set_mode_ext(seninf->phy, PHY_MODE_MIPI_DPHY, 4);
+		if (!ret)
+			ret = phy_power_on(seninf->phy);
+		dev_info(seninf->dev, "csi rx phy on: %d\n", ret);
+	}
 
 	/*
 	 * Lane count from the sensor's bus configuration, data type 0x2b (RAW10) for the Bayer
@@ -444,6 +461,11 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	 * camera1_mipisel_off/on at gpio21). Optional, so a board without one still works.
 	 */
 	seninf->mipi_sel = devm_gpiod_get_optional(dev, "mipi-sel", GPIOD_OUT_LOW);
+
+	seninf->phy = devm_phy_optional_get(dev, "csi-rx");
+	if (IS_ERR(seninf->phy))
+		return dev_err_probe(dev, PTR_ERR(seninf->phy),
+				     "failed to get the CSI-2 RX phy\n");
 
 	platform_set_drvdata(pdev, seninf);
 	INIT_DELAYED_WORK(&seninf->late_counters, mtk_seninf_late_counters);

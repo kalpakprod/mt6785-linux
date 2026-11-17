@@ -164,3 +164,8 @@
 &cam {
 	status = "okay";
 };
+
+/* The receiver's analog block: enabled for the trial so the D-PHY is powered for the IMX355. */
+&csi_rx_phy {
+	status = "okay";
+};
