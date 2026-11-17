@@ -43,8 +43,31 @@
 
 #include "mt6359_gauge_calc.h"
 
-#define MT6359_FGADC_NCAR_CON0	0xd24
-#define MT6359_FGADC_NCAR_CON1	0xd26
+/*
+ * Two counters live in the gauge, and they are not the same register pair:
+ *
+ *   MT6359_FGADC_CAR_CON0/CON1   0xd16/0xd18   the coulomb counter, mapped as
+ *                                              PMIC_FG_CAR_15_00/31_16
+ *                                              (upmu_hw.h:8623-8628)
+ *   MT6359_FGADC_NCAR_CON0/CON1  0xd24/0xd26   the *negative* counter, mapped as
+ *                                              PMIC_FG_NCAR_15_00/31_16
+ *                                              (upmu_hw.h:8647-8653), which only
+ *                                              moves in the discharge direction
+ *
+ * The first version of this driver read the NCAR pair, which is why a phone on the
+ * charger reported a counter of 0 and a current of 0 for as long as it was plugged in.
+ */
+#define MT6359_FGADC_CAR_CON0	0xd16
+#define MT6359_FGADC_CAR_CON1	0xd18
+
+/* The gauge itself must be switched on before either counter moves. */
+#define MT6359_FGADC_CON0	0xd08
+#define MT6359_FG_ON		BIT(0)	/* upmu_hw.h:8419-8422, PMIC_FG_ON */
+
+/* The counter is latched for a consistent read; CON1 carries both bits. */
+#define MT6359_FGADC_CON1	0xd0a
+#define MT6359_FGADC_CON1_LATCH	BIT(15)	/* trigger a snapshot */
+#define MT6359_FGADC_CON1_ST	BIT(0)	/* PMIC_FG_LATCHDATA_ST, upmu_hw.h:8499-8501 */
 
 /* How often the counter is sampled for current_now; the display is not faster. */
 #define MT6359_FG_SAMPLE_MS	1000
@@ -70,10 +93,10 @@ static int mt6359_gauge_read_car(struct mt6359_gauge *g, long long *car)
 	unsigned int lo, hi;
 	int ret;
 
-	ret = regmap_read(g->regmap, MT6359_FGADC_NCAR_CON0, &lo);
+	ret = regmap_read(g->regmap, MT6359_FGADC_CAR_CON0, &lo);
 	if (ret)
 		return ret;
-	ret = regmap_read(g->regmap, MT6359_FGADC_NCAR_CON1, &hi);
+	ret = regmap_read(g->regmap, MT6359_FGADC_CAR_CON1, &hi);
 	if (ret)
 		return ret;
 
@@ -208,9 +231,15 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	 * against the nominal. Passing the vendor's number straight through keeps the
 	 * arithmetic identical to the vendor's.
 	 */
-	g->r_fg_mohm = MT6359_R_FG_NOMINAL / 10;	/* 5 mOhm: R_FG_VALUE in the board data */
-	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,r-fg-value", &val))
-		g->r_fg_mohm = MT6359_R_FG_NOMINAL / (val ? val : 1);
+	/*
+	 * 10 mOhm is the vendor value for this board: the board data's R_FG_VALUE is 5
+	 * and DEFAULT_R_FG is 50 (mt6359_gauge.c:44), so the vendor's scaling factor is
+	 * DEFAULT_R_FG / R_FG_VALUE = 10 - the number the vendor's own probe prints for
+	 * rosemary, and the one the trial saw reported.
+	 */
+	g->r_fg_mohm = MT6359_R_FG_NOMINAL / 5;	/* 10 mOhm, vendor value for rosemary */
+	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,r-fg-value", &val) && val)
+		g->r_fg_mohm = MT6359_R_FG_NOMINAL / val;
 
 	g->charge_full_uah = 5000000;	/* 5 Ah, as the vendor profile reports */
 	if (!of_property_read_u32(pdev->dev.of_node,
@@ -236,6 +265,20 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 					     "cannot get the ntc channel\n");
 		g->ntc = NULL;
 	}
+
+	/*
+	 * Switch the gauge on first: with FG_ON clear the counters stay at zero and the
+	 * supply reports a flat battery on the charger, which is exactly what the first
+	 * trial showed. Read-modify-write, because bits 1:2 of the same register are the
+	 * calibration field (PMIC_FG_CAL, upmu_hw.h:8424-8426).
+	 */
+	ret = regmap_update_bits(g->regmap, MT6359_FGADC_CON0, MT6359_FG_ON,
+				 MT6359_FG_ON);
+	if (ret) {
+		dev_err(&pdev->dev, "cannot switch the gauge on: %d\n", ret);
+		return ret;
+	}
+	msleep(100);
 
 	ret = mt6359_gauge_read_car(g, &g->last_car);
 	if (ret) {
