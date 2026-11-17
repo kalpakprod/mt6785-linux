@@ -33,6 +33,9 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/seq_file.h>
+#include <media/v4l2-subdev.h>
+
+#include "../cam/mtk_cam_core.h"
 
 #define SENINF_CTRL			0x0200
 #define SENINF_CSI2_CTRL		0x0210
@@ -41,6 +44,17 @@
 #define SENINF_CSI2_ERR_CNT		0x0ADC
 #define SENINF_MUX_IRQ_STATUS		0x0D18
 #define SENINF_MUX_SIZE			0x0D30
+
+/*
+ * CSI2_CTRL packing, from the vendor's dump (seninf.c:212) and the receiver documentation of
+ * the same generation (§2.2 of the camera research): the lane count sits in bits 3:0 encoded as
+ * 0x10 | ((1 << lanes) - 1), and the data type in bits 21:16. The exact bit positions are from
+ * the ChromeOS isp_50 driver for this register generation; they are the part of this driver
+ * that still wants the stock-phone replay tables.
+ */
+#define SENINF_CSI2_CTRL_LANES(lanes)	(0x10 | ((1 << (lanes)) - 1))
+#define SENINF_CSI2_CTRL_DT(dt)		((dt) << 16)
+#define SENINF_CSI2_EN_ON		BIT(0)
 
 /**
  * struct mtk_seninf - one receiver instance
@@ -53,6 +67,10 @@ struct mtk_seninf {
 	void __iomem *base;
 	struct clk_bulk_data clks[2];
 	struct dentry *debugfs;
+
+	struct v4l2_subdev sd;
+	struct media_pad pads[3];
+	struct mtk_cam_core *cam;
 };
 
 static int mtk_seninf_runtime_resume(struct device *dev)
@@ -162,6 +180,58 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 			    &mtk_seninf_clear_fops);
 }
 
+static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct mtk_seninf *seninf = container_of(sd, struct mtk_seninf, sd);
+
+	if (!enable) {
+		pm_runtime_get_sync(seninf->dev);
+		writel(0, seninf->base + SENINF_CSI2_EN);
+		pm_runtime_put_autosuspend(seninf->dev);
+		return 0;
+	}
+
+	pm_runtime_get_sync(seninf->dev);
+
+	/*
+	 * Lane count from the sensor's bus configuration, data type 0x2b (RAW10) for the Bayer
+	 * sensors this port carries. The values are written once per stream start; the receiver's
+	 * own mux programming (which engine reads which port) follows with the replay tables.
+	 */
+	writel(SENINF_CSI2_CTRL_LANES(4) | SENINF_CSI2_CTRL_DT(0x2b),
+	       seninf->base + SENINF_CSI2_CTRL);
+	writel(SENINF_CSI2_EN_ON, seninf->base + SENINF_CSI2_EN);
+
+	pm_runtime_put_autosuspend(seninf->dev);
+
+	return 0;
+}
+
+static int mtk_seninf_get_fmt(struct v4l2_subdev *sd,
+			      struct v4l2_subdev_state *state,
+			      struct v4l2_subdev_format *fmt)
+{
+	fmt->format.code = MEDIA_BUS_FMT_SBGGR10_1X10;
+	fmt->format.width = 1920;
+	fmt->format.height = 1080;
+	fmt->format.field = V4L2_FIELD_NONE;
+
+	return 0;
+}
+
+static const struct v4l2_subdev_video_ops mtk_seninf_video_ops = {
+	.s_stream = mtk_seninf_s_stream,
+};
+
+static const struct v4l2_subdev_pad_ops mtk_seninf_pad_ops = {
+	.get_fmt = mtk_seninf_get_fmt,
+};
+
+static const struct v4l2_subdev_ops mtk_seninf_subdev_ops = {
+	.video = &mtk_seninf_video_ops,
+	.pad = &mtk_seninf_pad_ops,
+};
+
 static int mtk_seninf_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -198,6 +268,26 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 
 	mtk_seninf_debugfs_init(seninf);
 
+	/* The receiver is a subdevice in the pipeline: sink pad from the sensor, source to CAMSV. */
+	v4l2_subdev_init(&seninf->sd, &mtk_seninf_subdev_ops);
+	seninf->sd.dev = dev;
+	seninf->sd.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
+	strscpy(seninf->sd.name, dev_name(dev), sizeof(seninf->sd.name));
+	seninf->pads[0].flags = MEDIA_PAD_FL_SINK;
+	seninf->pads[1].flags = MEDIA_PAD_FL_SINK;
+	seninf->pads[2].flags = MEDIA_PAD_FL_SOURCE;
+	ret = media_entity_pads_init(&seninf->sd.entity, 3, seninf->pads);
+	if (ret)
+		goto err_debugfs;
+
+	seninf->cam = mtk_cam_core_get(dev);
+	if (seninf->cam) {
+		ret = v4l2_device_register_subdev(&seninf->cam->v4l2_dev, &seninf->sd);
+		if (ret)
+			goto err_entity;
+		mtk_cam_core_link(seninf->cam);
+	}
+
 	dev_info(dev, "receiver on, CSI2_EN 0x%08x, packet counter %u\n",
 		 readl(seninf->base + SENINF_CSI2_EN),
 		 readl(seninf->base + SENINF_CSI2_PACKET_CNT));
@@ -205,6 +295,14 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	pm_runtime_put_autosuspend(dev);
 
 	return 0;
+
+err_entity:
+	media_entity_cleanup(&seninf->sd.entity);
+err_debugfs:
+	debugfs_remove_recursive(seninf->debugfs);
+	pm_runtime_put_autosuspend(dev);
+
+	return ret;
 }
 
 static const struct of_device_id mtk_seninf_of_ids[] = {

@@ -6,3 +6,4 @@ obj-y += vpu/
 obj-y += mdp3/
 obj-y += seninf/
 obj-y += camsv/
+obj-y += cam/

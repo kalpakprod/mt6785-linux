@@ -93,6 +93,7 @@
 			imx355_out: endpoint {
 				link-frequencies = /bits/ 64 <360000000>;
 				data-lanes = <1 2 3 4>;
+				remote-endpoint = <&seninf1_in_a>;
 			};
 		};
 	};
@@ -115,6 +116,7 @@
 			ov13b10_out: endpoint {
 				link-frequencies = /bits/ 64 <560000000>;
 				data-lanes = <1 2 3 4>;
+				remote-endpoint = <&seninf1_in_b>;
 			};
 		};
 	};
@@ -131,5 +133,10 @@
 
 /* The capture engine for the same stream, one engine to start with. */
 &camsv1 {
+	status = "okay";
+};
+
+/* The pipeline owner, the receiver and the engine, all on for the trial. */
+&cam {
 	status = "okay";
 };

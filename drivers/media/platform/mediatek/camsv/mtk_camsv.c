@@ -36,6 +36,8 @@
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
 
+#include "../cam/mtk_cam_core.h"
+
 /* CAMSV registers, cezanne map (§3.2). */
 #define CAMSV_MODULE_EN			0x0010
 #define CAMSV_FMT_SEL			0x0014
@@ -94,12 +96,13 @@ struct mtk_camsv {
 	struct video_device vdev;
 	struct v4l2_subdev subdev;
 	struct media_pad pads[1];
-	struct media_device mdev;
+	struct mtk_cam_core *cam;
 	struct mutex vdev_lock;
 
 	struct vb2_queue queue;
 	struct v4l2_format cur_fmt;
 	struct v4l2_mbus_framefmt mbus_fmt;
+	struct vb2_v4l2_buffer *cur_buf;
 	u32 sequence;
 };
 
@@ -192,14 +195,20 @@ static void camsv_buf_queue(struct vb2_buffer *vb)
 {
 	struct mtk_camsv *camsv = vb2_get_drv_priv(vb->vb2_queue);
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
-	dma_addr_t addr = vb2_dma_contig_plane_dma_addr(vb, 0);
-	u32 w = camsv->cur_fmt.fmt.pix.width;
-	u32 h = camsv->cur_fmt.fmt.pix.height;
 
-	/* The first buffer owns the engine: program it and let the frame arrive. */
-	if (vb->index == 0 || vb2_is_streaming(vb->vb2_queue)) {
-		camsv_hw_start(camsv, addr, w, h);
-		vbuf->field = V4L2_FIELD_NONE;
+	vbuf->field = V4L2_FIELD_NONE;
+
+	/* One buffer per frame: the engine owns one, the queue holds the rest. */
+	if (camsv->cur_buf)
+		return;
+
+	camsv->cur_buf = vbuf;
+
+	if (vb2_is_streaming(vb->vb2_queue)) {
+		dma_addr_t addr = vb2_dma_contig_plane_dma_addr(vb, 0);
+
+		camsv_hw_start(camsv, addr, camsv->cur_fmt.fmt.pix.width,
+			       camsv->cur_fmt.fmt.pix.height);
 	}
 }
 
@@ -213,7 +222,16 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 		return ret;
 
 	camsv->sequence = 0;
+	camsv->cur_buf = NULL;
 	camsv_hw_reset(camsv);
+
+	/* A buffer queued before streamon starts the engine, the rest follow one per frame. */
+	if (camsv->cur_buf) {
+		dma_addr_t addr = vb2_dma_contig_plane_dma_addr(&camsv->cur_buf->vb2_buf, 0);
+
+		camsv_hw_start(camsv, addr, camsv->cur_fmt.fmt.pix.width,
+			       camsv->cur_fmt.fmt.pix.height);
+	}
 
 	dev_dbg(camsv->dev, "streaming on, %u buffers\n", count);
 
@@ -224,7 +242,19 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 {
 	struct mtk_camsv *camsv = vb2_get_drv_priv(q);
 
+	struct vb2_v4l2_buffer *buf;
+
 	camsv_hw_stop(camsv);
+
+	/* Hand every buffer still owned by the queue or the engine back to userspace. */
+	buf = camsv->cur_buf;
+	camsv->cur_buf = NULL;
+	if (buf)
+		vb2_buffer_done(&buf->vb2_buf, VB2_BUF_STATE_ERROR);
+
+	while ((buf = to_vb2_v4l2_buffer(vb2_get_buffer(&camsv->queue, 0))))
+		vb2_buffer_done(&buf->vb2_buf, VB2_BUF_STATE_ERROR);
+
 	pm_runtime_put_autosuspend(camsv->dev);
 }
 
@@ -343,6 +373,27 @@ static irqreturn_t mtk_camsv_irq(int irq, void *data)
 
 	writel(status, camsv->base + CAMSV_INT_STATUS);
 
+	/* Complete the buffer the engine was writing and hand the next one to it. */
+	if (camsv->cur_buf) {
+		struct vb2_v4l2_buffer *done = camsv->cur_buf;
+		struct vb2_v4l2_buffer *next;
+
+		camsv->cur_buf = NULL;
+		done->vb2_buf.timestamp = ktime_get_ns();
+		done->sequence = camsv->sequence++;
+		vb2_buffer_done(&done->vb2_buf, VB2_BUF_STATE_DONE);
+
+		next = list_first_entry_or_null(&camsv->queue.queued_list,
+						struct vb2_v4l2_buffer, vb2_buf.queued_entry);
+		if (next && next->vb2_buf.state == VB2_BUF_STATE_QUEUED) {
+			dma_addr_t addr = vb2_dma_contig_plane_dma_addr(&next->vb2_buf, 0);
+
+			camsv->cur_buf = next;
+			camsv_hw_start(camsv, addr, camsv->cur_fmt.fmt.pix.width,
+				       camsv->cur_fmt.fmt.pix.height);
+		}
+	}
+
 	dev_dbg(camsv->dev, "frame done, INT_STATUS 0x%08x\n", status);
 
 	return IRQ_HANDLED;
@@ -427,9 +478,7 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	camsv->mdev.dev = dev;
-	strscpy(camsv->mdev.model, "mtk-camsv", sizeof(camsv->mdev.model));
-	media_device_init(&camsv->mdev);
+	camsv->cam = mtk_cam_core_get(dev);
 
 	strscpy(camsv->vdev.name, "mtk-camsv", sizeof(camsv->vdev.name));
 	camsv->vdev.v4l2_dev = NULL;
@@ -442,34 +491,37 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	camsv->vdev.queue = &camsv->queue;
 	video_set_drvdata(&camsv->vdev, camsv);
 
+	camsv->vdev.v4l2_dev = camsv->cam ? &camsv->cam->v4l2_dev : NULL;
+
 	ret = video_register_device(&camsv->vdev, VFL_TYPE_VIDEO, -1);
 	if (ret)
-		goto err_media;
+		goto err_subdev;
 
-	ret = media_device_register(&camsv->mdev);
-	if (ret)
-		goto err_video;
+	if (camsv->cam) {
+		ret = v4l2_device_register_subdev(&camsv->cam->v4l2_dev, &camsv->subdev);
+		if (ret)
+			goto err_video;
+		mtk_cam_core_link(camsv->cam);
+	}
 
 	ret = devm_request_irq(dev, camsv->irq, mtk_camsv_irq, 0, dev_name(dev), camsv);
 	if (ret)
-		goto err_mdev;
+		goto err_video;
 
 	pm_runtime_set_autosuspend_delay(dev, 100);
 	pm_runtime_use_autosuspend(dev);
 	ret = devm_pm_runtime_enable(dev);
 	if (ret)
-		goto err_mdev;
+		goto err_video;
 
 	dev_info(dev, "raw capture on /dev/video%d\n", camsv->vdev.num);
 
 	return 0;
 
-err_mdev:
-	media_device_unregister(&camsv->mdev);
 err_video:
 	video_unregister_device(&camsv->vdev);
-err_media:
-	media_device_cleanup(&camsv->mdev);
+err_subdev:
+	media_entity_cleanup(&camsv->subdev.entity);
 
 	return ret;
 }
@@ -478,10 +530,10 @@ static void mtk_camsv_remove(struct platform_device *pdev)
 {
 	struct mtk_camsv *camsv = platform_get_drvdata(pdev);
 
-	media_device_unregister(&camsv->mdev);
 	video_unregister_device(&camsv->vdev);
-	media_device_cleanup(&camsv->mdev);
-	v4l2_device_unregister_subdev(&camsv->subdev);
+	if (camsv->cam)
+		v4l2_device_unregister_subdev(&camsv->subdev);
+	media_entity_cleanup(&camsv->subdev.entity);
 }
 
 static const struct of_device_id mtk_camsv_of_ids[] = {
