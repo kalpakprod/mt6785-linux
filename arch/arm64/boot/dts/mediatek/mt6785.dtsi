@@ -2076,6 +2076,23 @@
 			status = "disabled";
 		};
 
+		/*
+		 * Raw capture engine: window and interrupt from the vendor device tree
+		 * (camsv1..6 at 0x1a050000 + 0x1000*n, IRQs from 0x117), the camsys gate
+		 * CLK_CAM_SV0 for the first engine, the camera larb's IOMMU port
+		 * M4U_PORT_CAM_IMGO (larb 6 port 0), and the CAM domain.
+		 */
+		camsv1: capture@1a050000 {
+			compatible = "mediatek,mt6785-camsv";
+			reg = <0 0x1a050000 0 0x1000>;
+			interrupts = <GIC_SPI 279 IRQ_TYPE_LEVEL_LOW>;
+			clocks = <&camsys CLK_CAM_SV0>;
+			clock-names = "sv";
+			iommus = <&iommu M4U_PORT_CAM_IMGO>;
+			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
+			status = "disabled";
+		};
+
 		camsys: clock-controller@1a000000 {
 			compatible = "mediatek,mt6785-camsys", "syscon";
 			reg = <0 0x1a000000 0 0x1000>;

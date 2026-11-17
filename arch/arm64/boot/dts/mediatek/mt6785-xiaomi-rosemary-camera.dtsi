@@ -128,3 +128,8 @@
 &seninf1 {
 	status = "okay";
 };
+
+/* The capture engine for the same stream, one engine to start with. */
+&camsv1 {
+	status = "okay";
+};

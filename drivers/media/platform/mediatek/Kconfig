@@ -9,3 +9,5 @@ source "drivers/media/platform/mediatek/vpu/Kconfig"
 source "drivers/media/platform/mediatek/mdp3/Kconfig"
 
 source "drivers/media/platform/mediatek/seninf/Kconfig"
+
+source "drivers/media/platform/mediatek/camsv/Kconfig"
