@@ -95,6 +95,18 @@
 /* a free cfg scratch word (GENERAL_REG0, cfg + 0x50, scp_reg.h:39-42) and the value put in it */
 #define MT6785_SCP_PROBE_REG		0x50
 #define MT6785_SCP_PROBE_VALUE		0x5a5a1234
+/* the two candidates for a core that loses its bus, and the probe's timing (scp_reg.h) */
+#define MT6785_SCP_WDT_REG		0x84
+#define MT6785_SCP_WDT_SP		0xb8
+#define MT6785_SCP_WDT_LR		0xbc
+#define MT6785_SCP_WDT_PSP		0xc0
+#define MT6785_SCP_WDT_PC		0xc4
+#define MT6785_SCP_CPU_SLEEP_STATUS	0x114
+#define MT6785_SCP_SLEEP_DEBUG_REG	0x28	/* in the clock control window */
+#define MT6785_SCP_CLK_BLOCK		0x4000
+#define MT6785_SCP_PROBE_STEP_US	1000
+#define MT6785_SCP_PROBE_POLLS		2000
+#define MT6785_SCP_PROBE_REPORT		250
 /* the AP's awake handshake with the SCP, through the SPM (scp_reg.h:114-120) */
 #define MT6785_INFRACFG_IRQ_SET			0xB14
 #define MT6785_INFRACFG_IRQ_CLEAR		0xB18

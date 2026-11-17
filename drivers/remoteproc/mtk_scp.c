@@ -512,6 +512,7 @@ static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
 static int mt6785_scp_awake(struct mtk_scp *scp, bool lock);
+static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -591,6 +592,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	dev_info(scp->dev, "probe word written before the release: %#x reads %#x\n",
 		 MT6785_SCP_PROBE_VALUE,
 		 readl(cluster->reg_base + MT6785_SCP_PROBE_REG));
+	mt6785_scp_log_wdt_sleep(scp, "before the release");
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -1262,6 +1264,36 @@ static int scp_start(struct rproc *rproc)
 	 * vendor takes it around every access it makes to a *running* SCP (scp_awake.c:79-100, the
 	 * unlock at :162-178), and holds it until the ready IPI has arrived or the wait failed.
 	 */
+	/*
+	 * When exactly the block stops answering: the probe word, once a millisecond, until
+	 * it stops reading back (cheap while the bus answers), together with the TCM's first
+	 * word - the loader's vector table, then the firmware's - to show how far the core
+	 * got. The first read that differs is the darkness: such a read costs the bus
+	 * timeout, so the loop stops there.
+	 */
+	{
+		unsigned int i;
+		u32 val = MT6785_SCP_PROBE_VALUE, tcm;
+		s64 start = ktime_get();
+
+		for (i = 0; i < MT6785_SCP_PROBE_POLLS; i++) {
+			val = readl(scp->cluster->reg_base + MT6785_SCP_PROBE_REG);
+			tcm = readl(scp->sram_base);
+			if (val != MT6785_SCP_PROBE_VALUE) {
+				dev_err(scp->dev, "bus dark after %lld us, probe word %#x TCM[0] %#x\n",
+					ktime_us_delta(ktime_get(), start), val, tcm);
+				break;
+			}
+			if (!(i % MT6785_SCP_PROBE_REPORT))
+				dev_info(scp->dev, "%u us: probe %#x TCM[0] %#x\n", i * 1000,
+					 val, tcm);
+			udelay(MT6785_SCP_PROBE_STEP_US);
+		}
+		if (i == MT6785_SCP_PROBE_POLLS)
+			dev_info(scp->dev, "bus answered for the whole %u ms, probe %#x TCM[0] %#x\n",
+				 MT6785_SCP_PROBE_POLLS, val, tcm);
+	}
+
 	mt6785_scp_awake(scp, true);
 
 	/*
@@ -2253,6 +2285,35 @@ static int mt6785_scp_awake(struct mtk_scp *scp, bool lock)
 	regmap_write(infracfg, MT6785_INFRACFG_IRQ_CLEAR, want);
 
 	return ret;
+}
+
+/*
+ * The two candidates for a core that runs and then loses its bus, read from the registers that
+ * tell them apart (scp_reg.h:31, :55-58, :69, :86 and scp_dvfs.h:33-37):
+ *
+ *  - the watchdog: cfg + 0x84 is SCP_A_WDT_REG. The firmware writes 0xfffff into it (its own
+ *    literal at image offset 0x29a28, stored at 0x29a20), and the vendor kernel writes 0x8000000f
+ *    there only to force a reset (scp_helper.c:801); it never kicks it and has no handler for the
+ *    WDT interrupt, so a WDT reset reaches the AP as silence. cfg + 0xb8..0xc4 hold the core's
+ *    SP/LR/PSP/PC as the watchdog captured them (scp_excep.c:230-233).
+ *  - sleep: cfg + 0x114 is SCP_CPU_SLEEP_STATUS, and clkctrl + 0x28 is SCP_A_SLEEP_DEBUG_REG,
+ *    whose values the vendor decodes as 1 idle, 2 entering sleep, 4 in sleep, 8 entering active,
+ *    16 active (scp_dvfs.h:33-37, decoded in scp_dvfs.c:682-694).
+ */
+static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when)
+{
+	void __iomem *cfg = scp->cluster->reg_base;
+	u32 state;
+
+	dev_info(scp->dev, "%s: WDT %#x, captured core SP %#x LR %#x PSP %#x PC %#x\n",
+		 when, readl(cfg + MT6785_SCP_WDT_REG), readl(cfg + MT6785_SCP_WDT_SP),
+		 readl(cfg + MT6785_SCP_WDT_LR), readl(cfg + MT6785_SCP_WDT_PSP),
+		 readl(cfg + MT6785_SCP_WDT_PC));
+	state = readl(cfg + MT6785_SCP_CLK_BLOCK + MT6785_SCP_SLEEP_DEBUG_REG);
+	dev_info(scp->dev, "%s: sleep debug %#x (%s), cpu sleep status %#x\n", when, state,
+		 state == 1 ? "idle" : state == 2 ? "entering sleep" : state == 4 ? "in sleep" :
+		 state == 8 ? "entering active" : state == 16 ? "active" : "no known state",
+		 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS));
 }
 
 /* the infracfg regmap, from the phandle the DT gives */
