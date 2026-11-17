@@ -18,11 +18,27 @@
 #ifndef __MT6359_GAUGE_CALC_H__
 #define __MT6359_GAUGE_CALC_H__
 
-/* Charge of one coulomb-counter LSB, in uAh: 0.085. */
-#ifndef MT6359_CHARGE_LSB_NUM
-#define MT6359_CHARGE_LSB_NUM	85
+/*
+ * Charge of one counter unit, in uAh * 1000.
+ *
+ * The vendor's tables give the ADC's charge LSB as 0.085 uAh (UNIT_CHARGE 85,
+ * mt6359_gauge.c:33), which is what the first version of this driver scaled by - and
+ * conn38's 30-minute log proved that wrong by a factor of twenty: 72035 counter units
+ * against 127800 uAh integrated from current_now, which was itself verified against the
+ * MT6360's independent current (1.774 uAh per unit). The vendor's own counter path
+ * carries further factors - gauge_get_coulomb() converts with
+ * "car = car * 100000 / UNIT_CHARGE" (mt6359_gauge.c:1464) and the CAR register is
+ * 32-bit (PMIC_FG_CAR_15_00/31_16, upmu_hw.h:8623-8628) - and the numbers in this
+ * repository do not let me derive 1.774 from them with the board's R_FG 5 / car_tune
+ * 100 without assuming which of those factors applies to which register.
+ *
+ * So the scale is the measured one, stated as such, and the host test pins the measured
+ * point (72035 units = 127.8 mAh). A calibration that comes from the phone's own log and
+ * an independently verified current is worth more than a constant chain I cannot check.
+ */
+#ifndef MT6359_CAR_UAH_X1000
+#define MT6359_CAR_UAH_X1000	1774
 #endif
-#define MT6359_CHARGE_LSB_DIV	1000
 
 /* Nominal sense resistor, in mOhm (vendor DEFAULT_R_FG). */
 #ifndef MT6359_R_FG_NOMINAL
@@ -56,8 +72,9 @@ static inline long long mt6359_car_to_uah(long long car, unsigned int r_fg_mohm)
 
 	if (r_fg_mohm == 0)
 		r_fg_mohm = MT6359_R_FG_NOMINAL;
-	uah = car * MT6359_CHARGE_LSB_NUM;
-	uah = (uah * MT6359_R_FG_NOMINAL) / (MT6359_CHARGE_LSB_DIV * r_fg_mohm);
+	/* Measured scale; the resistor argument is kept for the signature's sake. */
+	(void)r_fg_mohm;
+	uah = (car * MT6359_CAR_UAH_X1000) / 1000;
 	return uah;
 }
 

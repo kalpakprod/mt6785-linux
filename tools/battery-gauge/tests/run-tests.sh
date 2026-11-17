@@ -29,7 +29,7 @@ fi
 
 echo
 echo "== planted fault: one wrong constant must fail"
-for bad in "-DMT6359_CHARGE_LSB_NUM=86" "-DMT6359_R_FG_NOMINAL=51" \
+for bad in "-DMT6359_CAR_UAH_X1000=850" "-DMT6359_CAR_UAH_X1000=1775" \
 	   "-DMT6359_UNIT_FGCURRENT=305176"; do
 	if $cc $bad -I "$inc" -o "$out/tb" "$here/test-calc.c" &&
 	   ! "$out/tb" >/dev/null 2>&1; then
