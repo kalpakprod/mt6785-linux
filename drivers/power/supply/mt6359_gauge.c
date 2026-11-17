@@ -193,7 +193,7 @@ static void mt6359_gauge_sample(struct work_struct *work)
 		 * register (:640-700) - and it is why the counter's LSB matters.
 		 */
 		if (dt_us > 0) {
-			long long duah = mt6359_car_to_uah(dcar, g->r_fg_scale);
+			long long duah = mt6359_car_to_uah(dcar, MT6359_R_FG_NOMINAL);
 
 			g->current_ua = div_s64(duah * 1000000, dt_us);
 		}
@@ -212,17 +212,10 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
-	case POWER_SUPPLY_PROP_CAPACITY:
 		ret = mt6359_gauge_read_car(g, &car);
 		if (ret)
 			return ret;
-		car = mt6359_car_to_uah(car, g->r_fg_scale);
-		if (psp == POWER_SUPPLY_PROP_CHARGE_COUNTER ||
-		    psp == POWER_SUPPLY_PROP_CHARGE_NOW)
-			val->intval = car;
-		else
-			val->intval = mt6359_uah_to_capacity(car,
-							     g->charge_full_uah);
+		val->intval = mt6359_car_to_uah(car, MT6359_R_FG_NOMINAL);
 		return 0;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 		val->intval = g->charge_full_uah;
@@ -256,14 +249,6 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 */
 		ret = iio_read_channel_processed(g->vbat, &val->intval);
 		return ret < 0 ? ret : 0;
-	case POWER_SUPPLY_PROP_TEMP:
-		if (!g->ntc)
-			return -ENODATA;
-		ret = iio_read_channel_processed(g->ntc, &val->intval);
-		if (ret < 0)
-			return ret;
-		/* iio gives tenths of a degree; power_supply wants the same. */
-		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -273,10 +258,17 @@ static enum power_supply_property mt6359_gauge_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
-	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
-	POWER_SUPPLY_PROP_TEMP,
+	/*
+	 * CAPACITY and TEMP are deliberately absent. Capacity without an OCV table
+	 * would be the coulomb count against a design charge from a counter that
+	 * starts at zero - a number that is wrong and looks right; it comes back with
+	 * rosemary's own table and power_supply_ocv2cap_simple(). Temp needs the
+	 * battery NTC channel, and no source in this repository gives its index for
+	 * the MT6359 ADC, so the honest answer today is no property rather than
+	 * -ENODATA on every read. Both are tracked in tools/battery-gauge/README.md.
+	 */
 };
 
 static const struct power_supply_desc mt6359_gauge_desc = {

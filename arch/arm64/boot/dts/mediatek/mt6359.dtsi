@@ -38,12 +38,11 @@
 		gauge {
 			compatible = "mediatek,mt6359-gauge";
 			mediatek,r-fg-value = <5>;
-			/* The battery voltage channel is the one the generic adc-battery
-			 * already reads (power dtsi: io-channels <&adc 4> "voltage").
-			 * No NTC channel is claimed: its index is not in any source we have,
-			 * so temp reports -ENODATA rather than a guessed sensor. */
-			io-channels = <&pmic_adc 4>;
-			io-channel-names = "vbat";
+			/* The battery voltage channel is set by the board: it is the MT6360
+			 * ADC channel the generic adc-battery already reads (channel 4 in
+			 * mt6785-xiaomi-rosemary-power.dtsi), not the MT6359's own converter -
+			 * reading channel 4 of that one produced a constant 9.153 V in
+			 * conn22, i.e. a different converter with different channels. */
 			mediatek,charge-full-microamp-hours = <5000000>;
 		};
 

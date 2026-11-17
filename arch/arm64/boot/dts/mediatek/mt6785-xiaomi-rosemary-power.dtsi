@@ -69,6 +69,17 @@
 	};
 };
 
+/*
+ * The gauge takes the battery voltage from the same converter the generic
+ * adc-battery reads: the MT6360's ADC, channel 4 ("voltage" there). The MT6359's own
+ * ADC has the same channel numbering but different channels, and reading channel 4
+ * of it gave a constant 9.153 V.
+ */
+&{/soc/pwrap@1000d000/pmic/gauge} {
+	io-channels = <&{/soc/i2c@11016000/pmic@34/adc} 4>;
+	io-channel-names = "vbat";
+};
+
 &{/soc/i2c@11016000/pmic@34} {
 	tcpc {
 		compatible = "mediatek,mt6360-tcpc";
