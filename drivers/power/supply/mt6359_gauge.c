@@ -183,20 +183,50 @@ static int mt6359_gauge_read_reg(struct mt6359_gauge *g, unsigned int reg,
  * parser, so the units above come from the values themselves (3851.7 mV reads as a
  * rested 3.8 V cell, 38517 does not) and not from a file:line I can quote.
  */
+/*
+ * Read one /chosen atag into an integer. The strings LK leaves there are NOT
+ * NUL-terminated - the property's length is the whole string ("38571", length 5) - so
+ * of_property_read_string() refuses them with -EINVAL (-22) and this driver reported
+ * "no usable value from /chosen (-61)" (that -61 is the fallback's own error). The
+ * bytes are taken with their length, bounded and terminated here, then parsed.
+ */
+static int mt6359_chosen_int(struct device_node *chosen, const char *name, long *out)
+{
+	const char *prop;
+	char buf[16];
+	int len;
+	long v;
+	int ret;
+
+	prop = of_get_property(chosen, name, &len);
+	if (!prop || len <= 0)
+		return -ENODATA;
+	if (len > (int)sizeof(buf) - 1)
+		return -EINVAL;
+	memcpy(buf, prop, len);
+	buf[len] = '\0';
+	ret = kstrtol(buf, 10, &v);
+	if (ret)
+		return ret;
+	*out = v;
+	return 0;
+}
+
 static int mt6359_gauge_chosen_ocv_uV(struct device *dev, long long *ocv_uv)
 {
 	struct device_node *chosen;
-	const char *str;
 	long mv01 = 0, mv = 0;
 
 	chosen = of_find_node_by_path("/chosen");
 	if (!chosen)
 		return -ENODEV;
 
-	if (!of_property_read_string(chosen, "atag,fg_swocv_v", &str))
-		mv01 = simple_strtol(str, NULL, 10);
-	if (!of_property_read_string(chosen, "atag,boot_voltage", &str))
-		mv = simple_strtol(str, NULL, 10);
+	if (mt6359_chosen_int(chosen, "atag,fg_swocv_v", &mv01))
+		mv01 = 0;
+	if (mt6359_chosen_int(chosen, "atag,boot_voltage", &mv))
+		mv = 0;
+	dev_info(dev, "OCV: atag,fg_swocv_v %ld (0.1 mV), atag,boot_voltage %ld mV\n",
+		 mv01, mv);
 	of_node_put(chosen);
 
 	if (mv01 > 30000) {		/* 3000.0 mV: a plausible rested cell */
