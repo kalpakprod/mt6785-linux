@@ -64,6 +64,9 @@
 #define MT6359_FGADC_CON0	0xd08
 #define MT6359_FG_ON		BIT(0)	/* upmu_hw.h:8419-8422, PMIC_FG_ON */
 
+/* Hardware current, in the vendor's own register (MTK: PMIC_FG_CURRENT_OUT). */
+#define MT6359_FGADC_CUR_CON0	0xd8a
+
 /* The counter is latched for a consistent read; CON1 carries both bits. */
 #define MT6359_FGADC_CON1	0xd0a
 #define MT6359_FGADC_CON1_LATCH	BIT(15)	/* trigger a snapshot */
@@ -78,7 +81,7 @@ struct mt6359_gauge {
 	struct power_supply *psy;
 	struct iio_channel *vbat;
 	struct iio_channel *ntc;
-	unsigned int r_fg_mohm;
+	unsigned int r_fg_scale;
 	long long charge_full_uah;
 
 	/* Previous counter sample, for current_now. */
@@ -125,7 +128,7 @@ static void mt6359_gauge_sample(struct work_struct *work)
 		 * register (:640-700) - and it is why the counter's LSB matters.
 		 */
 		if (dt_us > 0) {
-			long long duah = mt6359_car_to_uah(dcar, g->r_fg_mohm);
+			long long duah = mt6359_car_to_uah(dcar, g->r_fg_scale);
 
 			g->current_ua = div_s64(duah * 1000000, dt_us);
 		}
@@ -148,7 +151,7 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		ret = mt6359_gauge_read_car(g, &car);
 		if (ret)
 			return ret;
-		car = mt6359_car_to_uah(car, g->r_fg_mohm);
+		car = mt6359_car_to_uah(car, g->r_fg_scale);
 		if (psp == POWER_SUPPLY_PROP_CHARGE_COUNTER ||
 		    psp == POWER_SUPPLY_PROP_CHARGE_NOW)
 			val->intval = car;
@@ -160,7 +163,18 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		val->intval = g->charge_full_uah;
 		return 0;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		val->intval = g->current_ua;
+		/*
+		 * From the gauge's own current register rather than from the counter's
+		 * difference: MTK exposes the result (PMIC_FG_CURRENT_OUT ->
+		 * MT6359_FGADC_CUR_CON0, upmu_hw.h:8807-8810, register 0xd8a) and the
+		 * vendor reads it there (:236-250, read_fg_hw_info_current_1). The counter
+		 * difference stays as a cross-check in the log.
+		 */
+		ret = regmap_read(g->regmap, MT6359_FGADC_CUR_CON0, &val->intval);
+		if (ret)
+			return ret;
+		val->intval = (long long)(s16)val->intval *
+			      mt6359_iavg_to_ua(1, g->r_fg_scale);
 		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		if (!g->vbat)
@@ -237,9 +251,16 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	 * DEFAULT_R_FG / R_FG_VALUE = 10 - the number the vendor's own probe prints for
 	 * rosemary, and the one the trial saw reported.
 	 */
-	g->r_fg_mohm = MT6359_R_FG_NOMINAL / 5;	/* 10 mOhm, vendor value for rosemary */
+	/*
+	 * The vendor's number is a *scale*, not a resistance. The board data gives
+	 * R_FG_VALUE = 5 (bat_setting/mt6785_battery_prop.dtsi:17) and the driver
+	 * divides DEFAULT_R_FG (50, mt6359_gauge.c:44) by it, so every current and
+	 * charge is multiplied by 10 (mt6359_gauge.c:258-260, :303-305). Printing that
+	 * factor as "10 mOhm" was wrong in the first trial; it is a factor.
+	 */
+	g->r_fg_scale = MT6359_R_FG_NOMINAL / 10;	/* R_FG_VALUE 5 -> x10 */
 	if (!of_property_read_u32(pdev->dev.of_node, "mediatek,r-fg-value", &val) && val)
-		g->r_fg_mohm = MT6359_R_FG_NOMINAL / val;
+		g->r_fg_scale = MT6359_R_FG_NOMINAL / val;
 
 	g->charge_full_uah = 5000000;	/* 5 Ah, as the vendor profile reports */
 	if (!of_property_read_u32(pdev->dev.of_node,
@@ -297,8 +318,8 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&g->sample, mt6359_gauge_sample);
 	schedule_delayed_work(&g->sample, msecs_to_jiffies(MT6359_FG_SAMPLE_MS));
 
-	dev_info(&pdev->dev, "MT6359 gauge: %lld uAh full, %u mOhm sense, counter %lld\n",
-		 g->charge_full_uah, g->r_fg_mohm, g->last_car);
+	dev_info(&pdev->dev, "MT6359 gauge: %lld uAh full, R_FG scale x%u, counter %lld\n",
+		 g->charge_full_uah, g->r_fg_scale, g->last_car);
 	return 0;
 }
 

@@ -165,10 +165,19 @@ static unsigned long mt6359_clkbuf_recalc_rate(struct clk_hw *hw,
 	return c->rate;
 }
 
+/*
+ * prepare/unprepare, not enable/disable: the PMIC regmap goes through the pwrap and
+ * sleeps, while clk_enable() runs under clk_core_enable_lock() in atomic context -
+ * which produced "scheduling while atomic" in clk_core_enable_lock() ->
+ * mt6359_clkbuf_enable() -> regmap_write() -> regmap_lock_mutex() on conn19.
+ * The CCF guarantees that prepare-family callbacks may sleep, and every PMIC clock
+ * driver with a sleeping regmap does it this way: drivers/clk/clk-bd718x7.c:74-78
+ * (.prepare/.unprepare/.is_prepared over regmap_update_bits).
+ */
 static const struct clk_ops mt6359_clkbuf_ops = {
-	.enable = mt6359_clkbuf_enable,
-	.disable = mt6359_clkbuf_disable,
-	.is_enabled = mt6359_clkbuf_is_enabled,
+	.prepare = mt6359_clkbuf_enable,
+	.unprepare = mt6359_clkbuf_disable,
+	.is_prepared = mt6359_clkbuf_is_enabled,
 	.recalc_rate = mt6359_clkbuf_recalc_rate,
 };
 

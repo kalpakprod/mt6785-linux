@@ -38,6 +38,12 @@
 		gauge {
 			compatible = "mediatek,mt6359-gauge";
 			mediatek,r-fg-value = <5>;
+			/* The battery voltage channel is the one the generic adc-battery
+			 * already reads (power dtsi: io-channels <&adc 4> "voltage").
+			 * No NTC channel is claimed: its index is not in any source we have,
+			 * so temp reports -ENODATA rather than a guessed sensor. */
+			io-channels = <&pmic_adc 4>;
+			io-channel-names = "vbat";
 			mediatek,charge-full-microamp-hours = <5000000>;
 		};
 
