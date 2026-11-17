@@ -16,7 +16,13 @@
 #define TEEI_FUNC_H
 
 #include <teei_ioc.h>
-#define MICROTRUST_FP_SIZE	0x200000
+/*
+ * Upper bound of the buffer a fingerprint command may carry: the phone's own
+ * vendor driver uses 1 MiB (los-mt6785 drivers/tee/teei/400/teei_fp/fp_func.h:13);
+ * the cezanne port raised it to 2 MiB for its optical sensor, whose frames are
+ * larger than this side sensor's. Back to the value this TEE was built with.
+ */
+#define MICROTRUST_FP_SIZE	0x100000
 #define FP_MAJOR		254
 #define DEV_NAME		"teei_fp"
 
