@@ -444,6 +444,12 @@ static int mt8183_scp_clk_get(struct mtk_scp *scp)
 		}
 	}
 
+	scp->apmixed_regmap = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,apmixedsys");
+	if (IS_ERR(scp->apmixed_regmap)) {
+		dev_info(dev, "no apmixedsys phandle: the oscillator registers stay unreported\n");
+		scp->apmixed_regmap = NULL;
+	}
+
 	scp->spm_regmap = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,spm");
 	if (IS_ERR(scp->spm_regmap)) {
 		dev_info(dev, "no SPM phandle: the oscillator state will not be reported\n");
@@ -539,7 +545,7 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
 static int mt6785_scp_awake(struct mtk_scp *scp, bool lock);
 static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
-static void mt6785_scp_prepare_dvfs(struct mtk_scp *scp);
+static void mt6785_scp_log_apmixed_ulposc(struct mtk_scp *scp, const char *when);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
  * clock block holds SCP_CLK_SW_SEL's programmed value (0x201 on this phone, measured on a kernel
@@ -621,7 +627,7 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 		 readl(cluster->reg_base + MT6785_SCP_PROBE_REG));
 	mt6785_scp_log_wdt_sleep(scp, "before the release");
 	mt6785_scp_log_ulposc(scp, "before the release");
-	mt6785_scp_prepare_dvfs(scp);
+	mt6785_scp_log_apmixed_ulposc(scp, "before the release");
 
 	/* without these the whole SCP window reads back as zeros (audio16) */
 	ret = mt6785_scp_clocks_on(scp);
@@ -1324,9 +1330,7 @@ static int scp_start(struct rproc *rproc)
 					 ms, clk_sw, clk_en,
 					 readl(clk + MT6785_SCP_CLK_CTRL_24));
 				mt6785_scp_log_ulposc(scp, "timeline");
-				dev_info(scp->dev, "%u ms: freq expected %u current %u MHz\n",
-					 ms, readl(cfg + MT6785_SCP_EXPECTED_FREQ),
-					 readl(cfg + MT6785_SCP_CURRENT_FREQ));
+				mt6785_scp_log_apmixed_ulposc(scp, "timeline");
 				dev_info(scp->dev, "%u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
 					 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
 					 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
@@ -2395,28 +2399,30 @@ static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when)
 }
 
 /*
- * The SCP's own DVFS words, the way the MT6885 port drives them (scp_cezanne.c: the port that
- * brings this SCP family up on mainline):
- *
- *  - cfg + 0x20 is SCP_SCP2SPM_VOL_LV, the voltage level the SCP asks the SPM for; the cezanne
- *    port writes 0x0008 there before requesting its fixed OPP, with the note that 0.575 V is
- *    enough and VCORE is higher (scp_cezanne.c:51, :614);
- *  - cfg + 0x4c is EXPECTED_FREQ_REG and cfg + 0x50 CURRENT_FREQ_REG, in MHz
- *    (scp_cezanne.c:61-62), which the same port writes and polls (:608-625).
- *
- * The voltage level is written here, before the core is released, because it is a request the
- * SCP's firmware uses when it raises its clock; the two frequency words are read only, so the
- * timeline shows what the firmware itself asks for when it switches at 1 s.
+ * The oscillator's control registers as the firmware itself addresses them: its calibration
+ * routine loads 0xA0000220, 0xA000010C, 0xA0000110 and 0xA0000224 from its literal pool (image
+ * 0x2794c-0x2795c) and starts a frequency meter by setting bit 0x1000 then bit 0x10 there, waits
+ * for the meter to finish, reads its 16-bit count and prints "ULPOSC%d is calibrated (%ld MHz)"
+ * or "ULPOSC%d is not calibrated" (strings at image 0x4b1ed and 0x4b20f). The SCP sees those
+ * addresses in its own window; the AP-side block with the same offsets is apmixedsys, so this
+ * reports apmixedsys + 0x10c, +0x110, +0x220 and +0x224 - read only.
  */
-static void mt6785_scp_prepare_dvfs(struct mtk_scp *scp)
+static void mt6785_scp_log_apmixed_ulposc(struct mtk_scp *scp, const char *when)
 {
-	void __iomem *cfg = scp->cluster->reg_base;
+	static const u16 ofs[] = { 0x10c, 0x110, 0x220, 0x224 };
+	struct regmap *apmixed = scp->apmixed_regmap;
+	u32 v[ARRAY_SIZE(ofs)];
+	unsigned int i;
 
-	writel(MT6785_SCP_VOL_LV_VALUE, cfg + MT6785_SCP_VOL_LV);
-	dev_info(scp->dev, "SCP voltage level request %#x reads back %#x\n",
-		 MT6785_SCP_VOL_LV_VALUE, readl(cfg + MT6785_SCP_VOL_LV));
-	dev_info(scp->dev, "SCP frequency words: expected %u MHz, current %u MHz\n",
-		 readl(cfg + MT6785_SCP_EXPECTED_FREQ), readl(cfg + MT6785_SCP_CURRENT_FREQ));
+	if (IS_ERR_OR_NULL(apmixed))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(ofs); i++)
+		if (regmap_read(apmixed, ofs[i], &v[i]))
+			return;
+
+	dev_info(scp->dev, "%s: apmixed ulposc 0x10c %#x 0x110 %#x 0x220 %#x 0x224 %#x\n",
+		 when, v[0], v[1], v[2], v[3]);
 }
 
 /* the infracfg regmap, from the phandle the DT gives */

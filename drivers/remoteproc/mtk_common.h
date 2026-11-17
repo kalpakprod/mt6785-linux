@@ -97,11 +97,6 @@
 #define MT6785_SCP_PROBE_VALUE		0x5a5a1234
 /* the two candidates for a core that loses its bus, and the probe's timing (scp_reg.h) */
 #define MT6785_SPM_ULPOSC_CON		0x440
-/* the SCP's DVFS words (scp_cezanne.c:51, :61-62) */
-#define MT6785_SCP_VOL_LV		0x20
-#define MT6785_SCP_VOL_LV_VALUE		0x8
-#define MT6785_SCP_EXPECTED_FREQ	0x4c
-#define MT6785_SCP_CURRENT_FREQ		0x50
 #define MT6785_SCP_WDT_REG		0x84
 #define MT6785_SCP_WDT_CTRL		0x88
 #define MT6785_SCP_WDT_SP		0xb8
@@ -236,6 +231,8 @@ struct mtk_scp {
 	struct clk *clk;
 	/* the SPM block, for the oscillator state the PCM firmware owns */
 	struct regmap *spm_regmap;
+	/* apmixedsys, for the oscillator control registers the firmware's calibration uses */
+	struct regmap *apmixed_regmap;
 	void __iomem *sram_base;
 	size_t sram_size;
 	phys_addr_t sram_phys;
