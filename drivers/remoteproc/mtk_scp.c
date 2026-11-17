@@ -2622,6 +2622,17 @@ static void mt6785_scp_log_rails(struct mtk_scp *scp)
  *
  * Written directly and read back: if the field does not take the value, it says the register is
  * not writable from the AP on this SoC - which is itself the answer, and it is logged.
+ *
+ * The vendor's own delivery path for these three fields is a secure call, not a write: every one of
+ * them goes through SMC_CALL(PWR_CTRL_ARGS, id, PW_REG_..., value)
+ * (mt6785/mtk_spm_resource_req_console.c:44-67), which expands to
+ * arm_smccc_smc(MTK_SIP_KERNEL_SPM_PWR_CTRL_ARGS, id, arg1, arg2, 0, ...)
+ * (spm_v4/mtk_spm_internal.h:24-32) with the function id 0x82000224 | MTK_SIP_SMC_AARCH_BIT
+ * (mt-plat/mtk_secure_api.h:72-73). The SPM kick this tree already carries uses the same wrapper
+ * shape with the neighbouring id, MTK_SIP_KERNEL_SPM_ARGS (0x8200022a, :93-94). So if the direct
+ * write above is refused, the answer is to deliver these three through that call, with id being the
+ * power-control id of the idle model (SPM_PWR_CTRL_IDLE_BUS26M and friends) and the register index
+ * PW_REG_SPM_F26M_REQ / INFRA_REQ / VRF18_REQ.
  */
 static void mt6785_scp_spm_request(struct mtk_scp *scp, bool on)
 {
