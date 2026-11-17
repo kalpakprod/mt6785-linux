@@ -526,6 +526,7 @@ static void mt6785_scp_log_pages(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_hexdump(struct mtk_scp *scp, u32 ofs, size_t len,
 			       const char *label);
 static void mt6785_scp_scan_text(struct mtk_scp *scp);
+static void mt6785_scp_log_tcm(struct mtk_scp *scp, const char *when);
 
 /*
  * "The SCP is already running" takes more than a readable clock block: audio22 adopted a core
@@ -777,6 +778,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE,
 			   "backup at the timeout");
 	mt6785_scp_scan_text(scp);
+	mt6785_scp_log_tcm(scp, "at the timeout");
 	dev_err(scp->dev, "SCP_A_TO_HOST interrupts seen: %u\n", scp->to_host_irqs);
 	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
 		readl(cfg + MT8183_SCP_SLEEP_STATUS),
@@ -1227,6 +1229,7 @@ static int scp_start(struct rproc *rproc)
 	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs) {
 		mt6785_scp_log_dram_state(scp, "before the release");
 		mt6785_scp_log_pages(scp, "before");
+		mt6785_scp_log_tcm(scp, "before the release");
 		mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE,
 				   "dram part before the release");
 	}
@@ -2364,6 +2367,53 @@ static void mt6785_scp_log_dram_state(struct mtk_scp *scp, const char *when)
 		 MT6785_LK_DRAM_SIZE,
 		 mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE),
 		 mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE));
+}
+
+/* a checksum of the TCM range the firmware was staged into, and its non-zero pages */
+static void mt6785_scp_log_tcm(struct mtk_scp *scp, const char *when)
+{
+	u8 *buf;
+	u32 crc = ~0, page, first = 0, total = MT6785_SCP_FIRMWARE_TCM_MAX / SZ_4K;
+	bool in_range = false;
+	size_t done;
+
+	if (!scp->sram_base)
+		return;
+
+	buf = kmalloc(SZ_4K, GFP_KERNEL);
+	if (!buf)
+		return;
+
+	for (done = 0; done < MT6785_SCP_FIRMWARE_TCM_MAX; done += SZ_4K) {
+		size_t n = min((size_t)SZ_4K, MT6785_SCP_FIRMWARE_TCM_MAX - done);
+		bool nz = false;
+		size_t i;
+
+		memcpy_fromio(buf, scp->sram_base + done, n);
+		crc = crc32_le(crc, buf, n);
+		for (i = 0; i < n; i++)
+			if (buf[i]) {
+				nz = true;
+				break;
+			}
+		page = done / SZ_4K;
+		if (nz && !in_range) {
+			first = page;
+			in_range = true;
+		} else if (!nz && in_range) {
+			dev_info(scp->dev, "  %s TCM pages %#x..%#x hold data\n", when,
+				 first * SZ_4K, page * SZ_4K - 1);
+			in_range = false;
+		}
+	}
+	if (in_range)
+		dev_info(scp->dev, "  %s TCM pages %#x..%#x hold data\n", when,
+			 first * SZ_4K, total * SZ_4K - 1);
+
+	dev_info(scp->dev, "  %s TCM[0x0..%#x] crc %#010x, first words %#x/%#x\n",
+		 when, MT6785_SCP_FIRMWARE_TCM_MAX, ~crc,
+		 readl(scp->sram_base), readl(scp->sram_base + 4));
+	kfree(buf);
 }
 
 /* one zone's first and last 256 bytes, hex, 32 bytes a line */
