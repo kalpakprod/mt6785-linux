@@ -474,6 +474,22 @@ static const struct power_supply_desc mt6359_gauge_desc = {
 	.get_property = mt6359_gauge_get_property,
 };
 
+static int mt6359_gauge_car_show(struct seq_file *s, void *unused)
+{
+	struct mt6359_gauge *g = s->private;
+	long long car;
+
+	if (!g->anchored) {
+		seq_puts(s, "unanchored\n");
+		return 0;
+	}
+	if (mt6359_gauge_read_car(g, &car))
+		return -EIO;
+	seq_printf(s, "%lld %lld\n", car, car - g->base_car);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mt6359_gauge_car);
+
 static int mt6359_gauge_probe(struct platform_device *pdev)
 {
 	struct mt6397_chip *chip = dev_get_drvdata(pdev->dev.parent);
@@ -747,6 +763,12 @@ ntc_log:
 	INIT_DELAYED_WORK(&g->sample, mt6359_gauge_sample);
 	schedule_delayed_work(&g->sample, msecs_to_jiffies(MT6359_FG_SAMPLE_MS));
 
+	/*
+	 * The raw counter on demand: two logs of it (one charging, one discharging) are what
+	 * decides uAh per raw unit, so it must be readable without a new build.
+	 */
+	debugfs_create_file("car_raw", 0444, NULL, g, &mt6359_gauge_car_fops);
+
 	dev_info(&pdev->dev, "MT6359 gauge: %lld uAh full, R_FG %u/%u x%d, car_tune %u, counter %lld\n",
 		 g->charge_full_uah, MT6359_R_FG_NOMINAL, g->r_fg_value,
 		 MT6359_R_FG_NOMINAL / g->r_fg_value, g->car_tune_value, g->last_car);
@@ -790,18 +812,3 @@ MODULE_IMPORT_NS("IIO_CONSUMER");
 MODULE_DESCRIPTION("MediaTek MT6359 fuel gauge");
 MODULE_LICENSE("GPL");
 
-static int mt6359_gauge_car_show(struct seq_file *s, void *unused)
-{
-	struct mt6359_gauge *g = s->private;
-	long long car;
-
-	if (!g->anchored) {
-		seq_puts(s, "unanchored\n");
-		return 0;
-	}
-	if (mt6359_gauge_read_car(g, &car))
-		return -EIO;
-	seq_printf(s, "%lld %lld\n", car, car - g->base_car);
-	return 0;
-}
-DEFINE_SHOW_ATTRIBUTE(mt6359_gauge_car);
