@@ -436,7 +436,6 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_SCP_REGION_INFO_OFFSET	0x400
 #define MT6785_SCP_LOADER_SLOT		0x2000
 #define MT6785_SCP_DRAM_OFS		0x200000
-#define MT6785_SCP_DRAM_ROUND		1024
 #define MT6785_SCP_IPI_BUF_OFS		0x5c0
 #define MT6785_SCP_IPI_BUF_DATA_OFS	16
 #define MT6785_SCP_IPI_BUF_SIZE		272
@@ -518,6 +517,38 @@ static u32 mt6785_elf_segment_size(const struct firmware *fw, u32 paddr)
 	return 0;
 }
 
+/* the bytes the repacker staged above `base`: the record's tail and its DRAM part */
+static u32 mt6785_elf_dram_size(const struct firmware *fw, phys_addr_t base)
+{
+	const u8 *buf = fw->data;
+	u16 phnum, phentsize;
+	u32 phoff, total = 0;
+	int i;
+
+	if (fw->size < 52 || memcmp(buf, "\177ELF", 4) || buf[4] != 1)
+		return 0;
+
+	phoff = get_unaligned_le32(buf + 28);
+	phnum = get_unaligned_le16(buf + 44);
+	phentsize = get_unaligned_le16(buf + 42);
+	if (phoff > fw->size || phentsize != 32)
+		return 0;
+
+	for (i = 0; i < phnum; i++) {
+		const u8 *ph = buf + phoff + i * phentsize;
+
+		if (ph + 32 > buf + fw->size)
+			return 0;
+		if (get_unaligned_le32(ph) != 1)	/* PT_LOAD */
+			continue;
+		if (get_unaligned_le32(ph + 12) < base)	/* p_paddr */
+			continue;
+		total += get_unaligned_le32(ph + 16);	/* p_filesz */
+	}
+
+	return total;
+}
+
 /*
  * A boot that never answers leaves nothing behind: the image loaded, the registers
  * were writable, and then two seconds of silence. The core keeps its own state in
@@ -554,21 +585,24 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 				 const struct firmware *fw)
 {
 	struct mt6785_scp_region_info ri = { 0 };
-	u32 fw_size, dram_size, dram_round;
+	u32 fw_size, dram_size;
 
 	/*
-	 * The loader copies ap_firmware_size bytes from ap_firmware_start to
-	 * TCM + ap_loader_size on every reset, so both sizes are properties of
-	 * the image the repacker produced: the firmware body sits at
-	 * dma_addr + LOADER_SLOT and the DRAM part at dma_addr + DRAM_OFS.
+	 * The loader copies ap_firmware_size bytes from ap_firmware_start to a fixed
+	 * *core address*, 0x800, and then takes the stack pointer and the reset vector
+	 * from the first two words it copied (read out of the loader itself, at TCM +
+	 * 0x1e0: `ldr r0, =0x800` after fetching ap_firmware_start/size from the region
+	 * info). So what the repacker stages at dma_addr + LOADER_SLOT has to begin with
+	 * the firmware's own vector table, and its size is whatever TCM can hold from
+	 * 0x800 - the rest of a longer record, and the record's DRAM part, are staged
+	 * above dma_addr + DRAM_OFS and announced in ap_dram_start/size.
 	 */
 	fw_size = mt6785_elf_segment_size(fw, scp->dma_addr + MT6785_SCP_LOADER_SLOT);
-	dram_size = mt6785_elf_segment_size(fw, scp->dma_addr + MT6785_SCP_DRAM_OFS);
+	dram_size = mt6785_elf_dram_size(fw, scp->dma_addr + MT6785_SCP_DRAM_OFS);
 	if (!fw_size || !dram_size) {
 		dev_err(scp->dev, "firmware lacks the staged segments\n");
 		return -EINVAL;
 	}
-	dram_round = round_up(dram_size, MT6785_SCP_DRAM_ROUND);
 
 	ri.ap_loader_start = scp->dma_addr;
 	ri.ap_loader_size = MT6785_SCP_LOADER_SLOT;
@@ -576,7 +610,6 @@ static int mt6785_scp_after_load(struct mtk_scp *scp,
 	ri.ap_firmware_size = fw_size;
 	ri.ap_dram_start = scp->dma_addr + MT6785_SCP_DRAM_OFS;
 	ri.ap_dram_size = dram_size;
-	ri.ap_dram_backup_start = ri.ap_dram_start + dram_round * 2;
 	ri.struct_size = sizeof(ri);
 
 	memcpy_toio(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET, &ri,
