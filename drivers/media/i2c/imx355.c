@@ -971,17 +971,18 @@ static int imx355_identify_module(struct imx355 *imx355)
 	/*
 	 * This board's two camera sensors share their AVDD/DVDD rails, and a failing neighbour's
 	 * probe releases them while this one is mid-identification - the phone shows exactly that
-	 * ("Error reading reg 0x0016: -6" right after the other sensor's -5). A few attempts with a
-	 * short gap are cheap and keep this sensor from failing for its neighbour's sake.
+	 * ("Error reading reg 0x0016: -6" right after the other sensor's -5). Three attempts 3-5 ms
+	 * apart were measured to sit entirely inside the neighbour's failure window, so the window
+	 * is spanned instead: five attempts, 20 ms apart, about 100 ms in total.
 	 */
-	for (attempt = 0; attempt < 3; attempt++) {
+	for (attempt = 0; attempt < 5; attempt++) {
 		ret = cci_read(imx355->regmap, IMX355_REG_CHIP_ID, &val, NULL);
 		if (!ret)
 			break;
 
 		dev_dbg(imx355->dev, "chip id read failed (%d), attempt %u\n", ret,
 			attempt + 1);
-		usleep_range(3000, 5000);
+		usleep_range(20000, 22000);
 	}
 
 	if (ret)

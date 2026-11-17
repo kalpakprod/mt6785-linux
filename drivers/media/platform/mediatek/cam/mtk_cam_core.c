@@ -184,7 +184,7 @@ EXPORT_SYMBOL_GPL(mtk_cam_core_link);
 static int mtk_cam_core_probe(struct platform_device *pdev)
 {
 	struct mtk_cam_core *cam;
-	unsigned int i;
+	unsigned int i, n_matches = 0;
 	int ret;
 
 	cam = devm_kzalloc(&pdev->dev, sizeof(*cam), GFP_KERNEL);
@@ -215,12 +215,16 @@ static int mtk_cam_core_probe(struct platform_device *pdev)
 
 	/* Watch every camera entity of the SoC: the sensors, the receiver and the engine. */
 	for (i = 0; i < ARRAY_SIZE(mtk_cam_core_async_matches) - 1; i++) {
-		struct device_node *np = NULL;
+		struct device_node *np, *next;
 
-		while ((np = of_find_compatible_node(np, NULL,
-						     mtk_cam_core_async_matches[i].compatible))) {
+		/* Keep the reference until the next search starts: it uses this node as its base. */
+		for (np = of_find_compatible_node(NULL, NULL,
+						  mtk_cam_core_async_matches[i].compatible);
+		     np; np = next) {
 			struct v4l2_async_connection *asc;
 
+			next = of_find_compatible_node(np, NULL,
+						       mtk_cam_core_async_matches[i].compatible);
 			asc = v4l2_async_nf_add_fwnode(&cam->notifier,
 						       of_fwnode_handle(np),
 						       struct v4l2_async_connection);
@@ -229,8 +233,11 @@ static int mtk_cam_core_probe(struct platform_device *pdev)
 				ret = PTR_ERR(asc);
 				goto err_nf;
 			}
+			n_matches++;
 		}
 	}
+
+	dev_info(cam->dev, "notifier watching %u camera entities\n", n_matches);
 
 	ret = v4l2_async_nf_register(&cam->notifier);
 	if (ret)
