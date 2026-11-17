@@ -80,8 +80,9 @@
  * parameter lets one boot try every port: 0 = instance 1 (base + 0x0), 1 and 2 the next ones.
  */
 static int csi_port;
-module_param(csi_port, int, 0444);
-MODULE_PARM_DESC(csi_port, "receiver instance to program and read, 0-based");
+module_param(csi_port, int, 0644);
+MODULE_PARM_DESC(csi_port,
+		 "analog port and receiver instance to program and read, 0-based; read at every stream on, so it can be changed while the modules stay loaded");
 #define SENINF_TOP_PHY_CSI0_4D1C	0x80001100
 #define SENINF_TOP_PHY_CSI0_MASK	0x7fffc8fe
 
@@ -269,6 +270,7 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct mtk_seninf *seninf = container_of(sd, struct mtk_seninf, sd);
+	int port = clamp(csi_port, 0, 2);
 	int ret;
 
 	if (!enable) {
@@ -288,8 +290,8 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 		cancel_delayed_work_sync(&seninf->late_counters);
 		writel(0, seninf->base + SENINF_CSI2_EN);
-			if (seninf->phy[csi_port])
-			phy_power_off(seninf->phy[csi_port]);
+			if (seninf->phy[port])
+			phy_power_off(seninf->phy[port]);
 		pm_runtime_put_autosuspend(seninf->dev);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
 			 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
@@ -342,7 +344,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	 * 0xb10, 0x1c) are dropped: they are another receiver's field map.
 	 */
 	{
-		void __iomem *in = seninf->base + 0x1000 * csi_port;
+		void __iomem *in = seninf->base + 0x1000 * port;
 		struct { u32 off; u32 val; const char *what; } seq[] = {
 			{ 0x0a00, 0x0000000f, "CSI2 lane enables (sticky)" },
 			{ 0x0a08, 0x00000500, "CSI2 settle (sticky part 0x500)" },
@@ -359,13 +361,13 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		unsigned int i;
 
 		dev_info(seninf->dev, "programming receiver instance %d at 0x%08llx\n",
-			 csi_port + 1, (unsigned long long)seninf->base_pa + 0x1000 * csi_port);
+			 port + 1, (unsigned long long)seninf->base_pa + 0x1000 * port);
 
 		for (i = 0; i < ARRAY_SIZE(seq); i++) {
 			writel(seq[i].val, in + seq[i].off);
 			dev_info(seninf->dev, "prog %s: 0x%08llx = 0x%08x -> 0x%08x\n",
 				 seq[i].what,
-				 (unsigned long long)seninf->base_pa + 0x1000 * csi_port +
+				 (unsigned long long)seninf->base_pa + 0x1000 * port +
 				 seq[i].off,
 				 seq[i].val, readl(in + seq[i].off));
 		}
@@ -373,14 +375,14 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 
 	/* The receiver's D-PHY first: without it no port can see anything on the wire. */
-	dev_info(seninf->dev, "analog port %d (%s), instance %d\n", csi_port,
-		 seninf->phy[csi_port] ? "present" : "absent", csi_port + 1);
-	if (seninf->phy[csi_port]) {
-		ret = phy_set_mode_ext(seninf->phy[csi_port], PHY_MODE_MIPI_DPHY, 4);
+	dev_info(seninf->dev, "analog port %d (%s), instance %d\n", port,
+		 seninf->phy[port] ? "present" : "absent", port + 1);
+	if (seninf->phy[port]) {
+		ret = phy_set_mode_ext(seninf->phy[port], PHY_MODE_MIPI_DPHY, 4);
 		dev_info(seninf->dev, "phy set mode: %d\n", ret);
 		{
-			ret = phy_power_on(seninf->phy[csi_port]);
-			dev_info(seninf->dev, "csi rx phy %d on: %d\n", csi_port, ret);
+			ret = phy_power_on(seninf->phy[port]);
+			dev_info(seninf->dev, "csi rx phy %d on: %d\n", port, ret);
 		}
 	}
 
