@@ -1293,6 +1293,21 @@ static int scp_start(struct rproc *rproc)
 			 readl(scp->cluster->reg_base + MT6785_SCP_GPR_CM4_A_REBOOT),
 			 MT6785_SCP_CM4_READY_TO_REBOOT);
 
+	/*
+	 * What the stock bring-up does around the release, and where this driver stands:
+	 *
+	 *  hold the SCP mux's 26 MHz PLL across the reset   scp_helper.c:588       yes (clk)
+	 *  release the reset bit                            scp_helper.c:619       yes
+	 *  wait for the ready IPI                           scp_helper.c:621-640   yes
+	 *  release that PLL once the IPI has arrived        scp_helper.c:350       yes
+	 *  request MAINPLL|CK_26M|AXI_BUS from the SPM      scp_dvfs.c:289-292     NO
+	 *
+	 * The last line is the one thing stock does for the SCP that this driver never does, and
+	 * the SPM's SPM_SRC_REQ would carry it (mtk_spm_reg.h:66, bits at :823-837). Its
+	 * per-user accounting lives in software and the per-resource bit mapping is not spelled
+	 * out in the tree we hold, so no bit is invented here: the register is reported with the
+	 * rest of the SPM block and the request stays open until that mapping is established.
+	 */
 	scp->data->scp_reset_deassert(scp);
 
 	/*
