@@ -156,13 +156,20 @@ static void mtk_cam_core_make_links(struct mtk_cam_core *cam)
 			if (src_pad < 0)
 				src_pad = 0;
 
-			ret = media_create_pad_link(&src->entity, src_pad, &sd->entity, p,
-						    MEDIA_LNK_FL_ENABLED);
-			if (ret == -EEXIST) {
+			/*
+			 * media_create_pad_link() adds a link even when one already exists, so the
+			 * existing ones have to be looked up first - otherwise every bind round adds
+			 * another copy (disp42 had three for one pair).
+			 */
+			if (media_entity_find_link(&src->entity.pads[src_pad],
+						   &sd->entity.pads[p])) {
 				dev_info(cam->dev, "link %s:%d -> %s:%u already there\n",
 					 src->name, src_pad, sd->name, p);
 				continue;
 			}
+
+			ret = media_create_pad_link(&src->entity, src_pad, &sd->entity, p,
+						    MEDIA_LNK_FL_ENABLED);
 			dev_info(cam->dev, "link try %s:%d -> %s:%u: %d\n", src->name,
 				 src_pad, sd->name, p, ret);
 		}

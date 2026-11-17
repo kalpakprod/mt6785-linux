@@ -92,6 +92,7 @@ struct mtk_camsv {
 	struct device *dev;
 	void __iomem *base;
 	struct clk_bulk_data clks[1];
+	struct clk *main_clk;
 	int irq;
 
 	struct video_device vdev;
@@ -122,17 +123,26 @@ static void camsv_hw_reset(struct mtk_camsv *camsv)
 	u32 val;
 	int i;
 
-	/* SW_CTL: bit0 reset trigger, bit1 reset status (1 = idle), bit2 hw reset. */
+	/*
+	 * The vendor's reset (cezanne map, 5-cameras.md §3.2): SW_CTL bit0 is the reset trigger,
+	 * bit2 the hardware reset, and bit1 reads back 1 when the engine is idle again - the state
+	 * the sequence polls for. Ten milliseconds are given to it; if it stays busy, say so with the
+	 * register and keep going, because a busy engine is information, not a reason to abort.
+	 */
 	writel(BIT(2) | BIT(0), camsv->base + CAMSV_SW_CTL);
 
 	for (i = 0; i < 100; i++) {
 		val = readl(camsv->base + CAMSV_SW_CTL);
-		if (val & BIT(1))
+		if (val & BIT(1)) {
+			dev_dbg(camsv->dev, "reset settled: SW_CTL 0x%08x\n", val);
 			return;
+		}
 		usleep_range(100, 200);
 	}
 
-	dev_warn(camsv->dev, "reset did not settle: SW_CTL 0x%08x\n", val);
+	dev_warn(camsv->dev,
+		 "reset did not settle: SW_CTL 0x%08x (bit0 trigger, bit1 idle, bit2 hw reset)\n",
+		 val);
 }
 
 static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 h)
@@ -224,14 +234,39 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	int ret;
 
 	ret = media_pipeline_start(&camsv->subdev.entity.pads[0], &camsv->pipeline);
-	if (ret) {
-		dev_err(camsv->dev, "pipeline start failed: %d\n", ret);
+	dev_info(camsv->dev, "media_pipeline_start: %d\n", ret);
+	if (ret)
 		return ret;
-	}
 
 	ret = pm_runtime_resume_and_get(camsv->dev);
 	if (ret)
 		goto err_pipeline;
+
+	if (camsv->main_clk) {
+		ret = clk_prepare_enable(camsv->main_clk);
+		dev_info(camsv->dev, "cam main clock: %d, %lu Hz\n", ret,
+			 clk_get_rate(camsv->main_clk));
+	}
+
+	/*
+	 * Start the chain from the source end: the receiver's s_stream() programs the CSI-2 side and
+	 * calls its own upstream, which is the sensor. Without this the engine is armed on an idle
+	 * bus - the rate that disp42 measured (0 frames, 0 interrupts).
+	 */
+	{
+		struct media_pad *remote =
+			media_pad_remote_pad_unique(&camsv->subdev.entity.pads[0]);
+
+		if (IS_ERR(remote)) {
+			dev_err(camsv->dev, "no remote pad: %ld\n", PTR_ERR(remote));
+		} else {
+			struct v4l2_subdev *sd =
+				media_entity_to_v4l2_subdev(remote->entity);
+
+			ret = v4l2_subdev_call(sd, video, s_stream, 1);
+			dev_info(camsv->dev, "s_stream upstream %s: %d\n", sd->name, ret);
+		}
+	}
 
 	camsv->sequence = 0;
 	camsv->irq_count = 0;
@@ -246,6 +281,9 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (camsv->cur_buf) {
 		dma_addr_t addr = vb2_dma_contig_plane_dma_addr(&camsv->cur_buf->vb2_buf, 0);
 
+		dev_info(camsv->dev, "arm buffer %u at %pad, size %zu\n",
+			 camsv->cur_buf->vb2_buf.index, &addr,
+			 vb2_plane_size(&camsv->cur_buf->vb2_buf, 0));
 		camsv_hw_start(camsv, addr, camsv->cur_fmt.fmt.pix.width,
 			       camsv->cur_fmt.fmt.pix.height);
 	}
@@ -264,7 +302,18 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 
 	struct vb2_v4l2_buffer *buf, *tmp;
 
+	{
+		struct media_pad *remote =
+			media_pad_remote_pad_unique(&camsv->subdev.entity.pads[0]);
+
+		if (!IS_ERR(remote))
+			v4l2_subdev_call(media_entity_to_v4l2_subdev(remote->entity),
+					 video, s_stream, 0);
+	}
+
 	camsv_hw_stop(camsv);
+	if (camsv->main_clk)
+		clk_disable_unprepare(camsv->main_clk);
 	media_pipeline_stop(&camsv->subdev.entity.pads[0]);
 
 	/*
@@ -477,6 +526,9 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(camsv->clks), camsv->clks);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get the engine clock\n");
+
+	/* The camera subsystem's own gate, if the board describes it: the engine needs it to run. */
+	camsv->main_clk = devm_clk_get_optional(dev, "main");
 
 	mutex_init(&camsv->vdev_lock);
 	platform_set_drvdata(pdev, camsv);
