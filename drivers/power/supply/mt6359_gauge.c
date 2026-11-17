@@ -384,24 +384,26 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		return 0;
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
 		/*
-		 * The vendor keeps an averaged current beside the instantaneous one: its IAVG
-		 * accumulator is 28 bits over two registers (PMIC_FG_IAVG_27_16 / _15_00, the
-		 * vendor's read_fg_hw_info_Iavg, mt6359_gauge.c:316-360, reading
-		 * MT6359_FGADC_IAVG_CON0/CON1, upmu_hw.h:562-563), and it is the number that
-		 * does not move with a single sample's noise. current_now here is the
-		 * instantaneous ADC sample (PMIC_FG_CURRENT_OUT, read_fg_hw_info_current_1,
-		 * mt6359_gauge.c:228-250), which is why the logger's own wake-ups biased it.
+		 * Exactly the vendor's decode (mt6359_gauge_calc.h, mt6359_gauge.c:316-378):
+		 * CON1 holds the high 12 bits and the valid flag in bit 15, CON0 the low 16,
+		 * the sign is bit 27, and the unit is 305.176 uA per count - half the
+		 * instantaneous current's LSB, which is why the previous version printed
+		 * numbers near -1e9. When the accumulator has no valid sample the vendor
+		 * falls back to the instantaneous current, and so does this.
 		 */
 		{
-			long long hi = 0, lo = 0;
+			long long con0 = 0, con1 = 0;
 
-			if (mt6359_gauge_read_reg(g, MT6359_FGADC_IAVG_CON0, &hi) ||
-			    mt6359_gauge_read_reg(g, MT6359_FGADC_IAVG_CON1, &lo))
+			if (mt6359_gauge_read_reg(g, MT6359_FGADC_IAVG_CON0, &con0) ||
+			    mt6359_gauge_read_reg(g, MT6359_FGADC_IAVG_CON1, &con1))
 				return -EIO;
-			hi = (hi << 16) | (lo & 0xffff);
-			if (hi & 0x8000000)
-				hi -= 0x10000000;
-			val->intval = (long)(hi * 610352 / 1000);
+			if (!mt6359_iavg_valid(con1)) {
+				if (mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &con1))
+					return -EIO;
+				val->intval = (long)(s16)con1 * 610;
+			} else {
+				val->intval = mt6359_iavg_to_ua(con0, con1, 100, 5);
+			}
 		}
 		return 0;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:

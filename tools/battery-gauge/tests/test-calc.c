@@ -69,6 +69,17 @@ int main(int argc, char **argv)
 	 */
 	expect("car 0 counts -> 0 uAh", mt6359_car_to_uah(0, 5), 0);
 	expect("conn43: 27934 counts -> uAh", mt6359_car_to_uah(27934, 5), 2374);
+	/*
+	 * The averaged current, decoded the vendor's way. conn44's CAR ran at -470 counts/s,
+	 * i.e. -144 mA; the IAVG accumulators for that are 472 counts of magnitude with the
+	 * sign bit set: value 0x10000000 - 472 = 0x0ffffe28, so CON1 = 0x8000 (valid) | 0x0ffe
+	 * and CON0 = 0xfe28.
+	 */
+	expect("iavg: -472 counts -> uA", mt6359_iavg_to_ua(0xfe28, 0x8fff, 100, 5), -144000);
+	expect("iavg: +472 counts -> uA", mt6359_iavg_to_ua(0x01d8, 0x8000, 100, 5), 144000);
+	expect("iavg: 0 -> 0", mt6359_iavg_to_ua(0, 0x8000, 100, 5), 0);
+	expect("iavg: valid flag", mt6359_iavg_valid(0x8000) ? 1 : 0, 1);
+	expect("iavg: not valid without bit 15", mt6359_iavg_valid(0x0fff) ? 1 : 0, 0);
 	expect("conn43: -465 counts/s as a current (uA)",
 	       (long long)(465 * 85 * 3600 / 1000), 142290);
 	/*

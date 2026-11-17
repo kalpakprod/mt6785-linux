@@ -200,3 +200,48 @@ static inline int mt6359_uah_to_capacity(long long uah, long long full_uah)
 }
 
 #endif /* __MT6359_GAUGE_CALC_H__ */
+
+/*
+ * The vendor's averaged-current accumulator, decoded exactly as
+ * read_fg_hw_info_Iavg() does it (mt6359_gauge.c:316-378):
+ *
+ *   valid  = bit 15 of IAVG_CON1 (PMIC_FG_IAVG_VLD, upmu_hw.h:8671-8674)
+ *   value  = (IAVG_CON1 & 0xfff) << 16 | (IAVG_CON0 & 0xffff)
+ *            PMIC_FG_IAVG_27_16 / _15_00, upmu_hw.h:8663-8670 - CON1 is the HIGH half
+ *   sign   = bit 11 of the CON1 field, i.e. bit 27 of the 28-bit value
+ *   mag    = sign ? 0xfffffff - value + 1 : value            (two's complement)
+ *   mA0.1  = mag * UNIT_FG_IAVG(305176, mt6359_gauge.c:42) * car_tune / 1000000
+ *            * DEFAULT_R_FG / r_fg / 100
+ *
+ * With car_tune 100 and R_FG 5 that is 3.05176 in 0.1 mA per count, i.e. 305.176 uA -
+ * half the instantaneous current's 610.352 uA LSB, and emphatically not the same unit.
+ */
+#define MT6359_UNIT_FG_IAVG	305176
+#define MT6359_IAVG_VLD		(1u << 15)
+#define MT6359_IAVG_HI_MASK	0x0fff
+#define MT6359_IAVG_HI_SIGN	(1u << 11)
+
+static inline bool mt6359_iavg_valid(unsigned int con1)
+{
+	return !!(con1 & MT6359_IAVG_VLD);
+}
+
+static inline long mt6359_iavg_to_ua(unsigned int con0, unsigned int con1,
+				     unsigned int car_tune, unsigned int r_fg)
+{
+	long long value, mag;
+	int sign;
+
+	value = (long long)(con1 & MT6359_IAVG_HI_MASK) << 16;
+	value |= con0 & 0xffff;
+	sign = !!(con1 & MT6359_IAVG_HI_SIGN);
+	mag = sign ? (0xfffffff - value + 1) : value;
+
+	mag = (mag * MT6359_UNIT_FG_IAVG * car_tune) / 1000000;
+	if (r_fg)
+		mag = mag * 50 / r_fg;
+	mag = mag / 100;	/* 0.1 mA, as the vendor leaves it */
+	mag = mag * 100;	/* uA for the ABI */
+
+	return sign ? -mag : mag;
+}
