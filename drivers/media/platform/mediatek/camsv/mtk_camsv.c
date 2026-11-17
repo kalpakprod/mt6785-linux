@@ -97,6 +97,7 @@ struct mtk_camsv {
 	struct video_device vdev;
 	struct v4l2_subdev subdev;
 	struct media_pad pads[1];
+	struct media_pad vdev_pad;
 	struct mtk_cam_core *cam;
 	struct mutex vdev_lock;
 
@@ -509,6 +510,16 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	video_set_drvdata(&camsv->vdev, camsv);
 
 	camsv->vdev.v4l2_dev = &camsv->cam->v4l2_dev;
+
+	/*
+	 * The video node is an entity of the graph: it needs a sink pad of its own before it is
+	 * registered, or the link from the engine's subdevice is rejected (mc-entity.c:1143-1146
+	 * warns on a pad index past num_pads).
+	 */
+	camsv->vdev_pad.flags = MEDIA_PAD_FL_SINK;
+	ret = media_entity_pads_init(&camsv->vdev.entity, 1, &camsv->vdev_pad);
+	if (ret)
+		goto err_subdev;
 
 	ret = video_register_device(&camsv->vdev, VFL_TYPE_VIDEO, -1);
 	if (ret)

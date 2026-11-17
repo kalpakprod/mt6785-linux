@@ -115,6 +115,49 @@ static struct device_node *cam_pad_remote_of(struct device_node *np, unsigned in
 	return remote;
 }
 
+/*
+ * Make every link whose two ends are registered by now, skipping the ones already there. Called
+ * from each .bound(), so the last arrival completes the graph whatever the bind order is.
+ */
+static void mtk_cam_core_make_links(struct mtk_cam_core *cam)
+{
+	unsigned int i;
+
+	for (i = 0; i < cam->n_entities; i++) {
+		struct v4l2_subdev *sd = cam->entities[i].sd;
+		unsigned int p;
+
+		for (p = 0; p < sd->entity.num_pads; p++) {
+			struct media_pad *pad = &sd->entity.pads[p];
+			struct device_node *remote_np;
+			struct v4l2_subdev *src;
+			int ret;
+
+			if (!(pad->flags & MEDIA_PAD_FL_SINK))
+				continue;
+
+			remote_np = cam_pad_remote_of(sd->dev->of_node, p);
+			if (!remote_np)
+				continue;
+
+			src = cam_subdev_by_node(cam, remote_np);
+			of_node_put(remote_np);
+			if (!src)
+				continue;
+
+			ret = v4l2_create_fwnode_links_to_pad(src, pad, 0);
+			if (ret == -EEXIST)
+				continue;
+			if (!ret)
+				dev_info(cam->dev, "link %s -> %s:%u\n", src->name,
+					 sd->name, p);
+			else
+				dev_dbg(cam->dev, "%s -> %s:%u not yet: %d\n", src->name,
+					sd->name, p, ret);
+		}
+	}
+}
+
 static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 			      struct v4l2_subdev *sd,
 			      struct v4l2_async_connection *asc)
@@ -132,32 +175,7 @@ static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 
 	dev_info(cam->dev, "%s bound (%u entities)\n", sd->name, cam->n_entities);
 
-	/*
-	 * Every sink pad of this entity is fed by the entity its firmware endpoint names; make that
-	 * link with the feeding entity as the source, never with this entity as its own source.
-	 */
-	for (i = 0; i < sd->entity.num_pads; i++) {
-		struct media_pad *pad = &sd->entity.pads[i];
-		struct device_node *remote_np;
-		struct v4l2_subdev *src;
-		int ret;
-
-		if (!(pad->flags & MEDIA_PAD_FL_SINK))
-			continue;
-
-		remote_np = cam_pad_remote_of(sd->dev->of_node, i);
-		if (!remote_np)
-			continue;
-
-		src = cam_subdev_by_node(cam, remote_np);
-		of_node_put(remote_np);
-		if (!src)
-			continue;
-
-		ret = v4l2_create_fwnode_links_to_pad(src, pad, 0);
-		if (!ret)
-			dev_info(cam->dev, "link %s -> %s:%u\n", src->name, sd->name, i);
-	}
+	mtk_cam_core_make_links(cam);
 
 	for (i = 0; i < cam->n_entities; i++) {
 		if (!strncmp(cam->entities[i].sd->name, "1a040000", 8))
@@ -166,9 +184,16 @@ static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 			camsv = cam->entities[i].sd;
 	}
 
-	if (seninf && camsv && !cam->nodes_registered) {
-		if (!v4l2_device_register_subdev_nodes(&cam->v4l2_dev))
-			cam->nodes_registered = true;
+	/*
+	 * Nodes for whoever has bound so far. The helper skips subdevices that already have one
+	 * (drivers/media/v4l2-core/v4l2-device.c:201-206), so calling it on every bind is what gives
+	 * a late arrival - imx355 was last in disp38 - its node too.
+	 */
+	if (seninf && camsv) {
+		int ret = v4l2_device_register_subdev_nodes(&cam->v4l2_dev);
+
+		if (ret && ret != -EEXIST)
+			dev_dbg(cam->dev, "subdev nodes: %d\n", ret);
 	}
 
 	return 0;
