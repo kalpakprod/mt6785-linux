@@ -64,6 +64,15 @@ int main(int argc, char **argv)
 	expect("conn42: drift as a current",
 	       (long long)(374 * 85 * 3600 / 1000000), 114);
 	/*
+	 * The trim, as the lead asked: 481 counts in the current ADC's LSB, which this driver
+	 * takes as UNIT_FGCURRENT/1000 = 610 uA per count. That is 293 mA - not the 114 mA the
+	 * counter drifts by, a factor of 2.6 apart - so the trim cannot be subtracted from the
+	 * CAR without overcorrecting it three times over. Both numbers are pinned here so a
+	 * future change to either is visible.
+	 */
+	expect("trim 481 counts at the current LSB (uA)", (long long)(481 * 610352 / 1000), 293579);
+	expect("trim as a current vs the measured drift (uA)", 293579 - 114000, 179579);
+	/*
 	 * The vendor's current arithmetic (mt6359_gauge.c:250-266) with this board's
 	 * numbers: raw * 610352 / 100000, * 50 / 5, * 100 / 1000, in 0.1 mA.
 	 *   raw 1000 -> 6103 -> 61030 -> 6103 -> 610300 uA

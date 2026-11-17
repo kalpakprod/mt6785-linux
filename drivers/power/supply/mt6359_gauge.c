@@ -530,8 +530,27 @@ static void mt6359_gauge_maybe_reanchor(struct mt6359_gauge *g)
 		g->rest_since_ms = ktime_to_ms(ktime_get_boottime());
 		return;
 	}
-	if (mt6359_gauge_chosen_ocv_uV(g->dev, &ocv_uv))
+	/*
+	 * The second anchor source, for the boot when the chosen-node value is absent: the
+	 * PMIC's own hardware-latched power-on OCV (MT6359_AUXADC_ADC19, 0x10aa, low 15
+	 * bits plus a ready flag in bit 15 - the register the vendor takes in
+	 * read_hw_ocv_6359_power_on(), mt6359_gauge.c:1199-1224). Its millivolt conversion
+	 * needs the vendor's REG_to_MV_value() reference and divider, which are in no source
+	 * in this repository, so it is used only when the chosen value is missing and its
+	 * raw value is logged with the anchor.
+	 */
+	if (mt6359_gauge_chosen_ocv_uV(g->dev, &ocv_uv)) {
+		unsigned int hw_ocv = 0;
+
+		if (regmap_read(g->regmap, 0x10aa, &hw_ocv) || !((hw_ocv >> 15) & 1)) {
+			dev_info(g->dev, "re-anchor skipped: no OCV source\n");
+			return;
+		}
+		dev_info(g->dev,
+			 "re-anchor: chosen OCV absent, hardware-latched raw %u not converted (no REG_to_MV_value constants)\n",
+			 hw_ocv & 0x7fff);
 		return;
+	}
 	cap = power_supply_batinfo_ocv2cap(g->batt, ocv_uv, 25);
 	if (cap < 0)
 		return;
