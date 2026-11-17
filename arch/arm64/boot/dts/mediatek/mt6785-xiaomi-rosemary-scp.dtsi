@@ -96,8 +96,22 @@
 		 * (scp_dvfs.c:597-655) - and without them the TCM is loaded and the
 		 * core never executes.
 		 */
-		clocks = <&topckgen CLK_TOP_SCP>, <&infracfg CLK_INFRA_SCP>;
-		clock-names = "main", "infra";
+		/*
+		 * The crystal and the PLL taps the SCP's own DVFS may select as its clock: the
+		 * vendor lists exactly these as the SCP mux's parents and enables them from the
+		 * AP side (mt6785.dts:655-669). The firmware switched to one of them 1.1 s after
+		 * the release and froze while it was off (trial 42), so the driver holds them.
+		 */
+		clocks = <&topckgen CLK_TOP_SCP>, <&infracfg CLK_INFRA_SCP>,
+			 <&topckgen CLK_TOP_MAINPLL_D2_D2>,
+			 <&topckgen CLK_TOP_MAINPLL_D2_D4>,
+			 <&topckgen CLK_TOP_MAINPLL_D3>,
+			 <&topckgen CLK_TOP_UNIVPLL_D3>,
+			 <&topckgen CLK_TOP_MAINPLL_D5>,
+			 <&topckgen CLK_TOP_MAINPLL_D3_D2>;
+		clock-names = "main", "infra",
+			      "scp_pll_1", "scp_pll_2", "scp_pll_3",
+			      "scp_pll_4", "scp_pll_5", "scp_pll_6";
 		assigned-clocks = <&topckgen CLK_TOP_SCP>;
 		assigned-clock-parents = <&clk26m>;
 

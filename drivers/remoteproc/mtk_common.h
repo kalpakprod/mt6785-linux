@@ -201,10 +201,20 @@ struct mtk_scp_of_data {
 	const struct mtk_scp_sizes_data *scp_sizes;
 };
 
+#define MTK_SCP_MAX_PLL			6
+
 struct mtk_scp_of_cluster {
 	void __iomem *reg_base;
 	/* the size of the window reg_base maps, for the bring-up's bounds checks */
 	resource_size_t cfg_size;
+	/*
+	 * The clock sources the SCP's firmware may switch to once it runs its own DVFS: the
+	 * vendor lists the crystal and six PLL taps as the SCP mux's parents and enables them
+	 * from the AP side (vendor mt6785.dts:655-669, scp_dvfs.c:627-643), so they are held
+	 * before the release and dropped after the ready IPI.
+	 */
+	struct clk *pll[MTK_SCP_MAX_PLL];
+	unsigned int pll_num;
 	void __iomem *l1tcm_base;
 	size_t l1tcm_size;
 	phys_addr_t l1tcm_phys;

@@ -425,6 +425,25 @@ static int mt8183_scp_clk_get(struct mtk_scp *scp)
 	struct device *dev = scp->dev;
 	int ret = 0;
 
+	/* the SCP clock's other possible parents, if the DT names them */
+	{
+		static const char *const names[MTK_SCP_MAX_PLL] = {
+			"scp_pll_1", "scp_pll_2", "scp_pll_3",
+			"scp_pll_4", "scp_pll_5", "scp_pll_6",
+		};
+		unsigned int i;
+
+		for (i = 0; i < MTK_SCP_MAX_PLL; i++) {
+			scp->cluster->pll[i] = devm_clk_get_optional(dev, names[i]);
+			if (IS_ERR(scp->cluster->pll[i])) {
+				scp->cluster->pll[i] = NULL;
+				continue;
+			}
+			if (scp->cluster->pll[i])
+				scp->cluster->pll_num = i + 1;
+		}
+	}
+
 	scp->clk = devm_clk_get(dev, "main");
 	if (IS_ERR(scp->clk)) {
 		dev_err(dev, "Failed to get clock\n");
@@ -2887,7 +2906,22 @@ static int mt6785_scp_check_windows(struct mtk_scp *scp)
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
 {
 	struct regmap *topckgen;
+	unsigned int i;
 	u32 val;
+
+	/*
+	 * The parents the firmware's own DVFS may switch to, held for the whole bring-up: the
+	 * vendor enables the SCP's mux clock and its PLL taps from the AP side before the
+	 * release and drops them once the ready IPI has arrived (mt6785.dts:655-669,
+	 * scp_dvfs.c:588 for the enable, :350 for the release).
+	 */
+	for (i = 0; i < scp->cluster->pll_num; i++) {
+		int err = clk_prepare_enable(scp->cluster->pll[i]);
+
+		dev_info(scp->dev, "SCP clock parent %u: %s, %lu Hz\n", i + 1,
+			 err ? "failed" : "enabled",
+			 err ? 0UL : clk_get_rate(scp->cluster->pll[i]));
+	}
 
 	topckgen = syscon_regmap_lookup_by_phandle(scp->dev->of_node,
 						   "mediatek,topckgen");
