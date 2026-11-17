@@ -211,7 +211,6 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
-	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		ret = mt6359_gauge_read_car(g, &car);
 		if (ret)
 			return ret;
@@ -234,8 +233,16 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 			ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &raw);
 			if (ret)
 				return ret;
+			/*
+			 * Two LSBs per step: with the vendor's nominal 305.176 uA the gauge
+			 * read 150-154 mA where the generic adc-battery measured 302-310 mA
+			 * in the same second (ratio 2.01-2.05, steady), and the counter - the
+			 * same charge over time - agrees with the reference, so the counter's
+			 * scale is right and only this one is short by two. That makes the
+			 * current LSB 2 * 305.176 uA, and both numbers now come from one scale.
+			 */
 			val->intval = (long long)(s16)raw *
-				      mt6359_iavg_to_ua(1, g->r_fg_scale);
+				      mt6359_iavg_to_ua(2, g->r_fg_scale);
 		}
 		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
@@ -248,15 +255,29 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 		 * adc-battery reports from the same channel (~3836 mV).
 		 */
 		ret = iio_read_channel_processed(g->vbat, &val->intval);
-		return ret < 0 ? ret : 0;
+		if (ret < 0)
+			return ret;
+		/*
+		 * The converter reports mV and the power_supply ABI wants uV: the generic
+		 * adc-battery on the same channel shows 3878000 for the 3878 the gauge was
+		 * publishing.
+		 */
+		val->intval *= 1000;
+		return 0;
 	default:
 		return -EINVAL;
 	}
 }
 
 static enum power_supply_property mt6359_gauge_props[] = {
+	/*
+	 * CHARGE_COUNTER only: it is a counter, and a counter is measured against a
+	 * reference (which it now agrees with). CHARGE_NOW would be that counter
+	 * presented as a charge of the battery - the same "plausible but wrong" number
+	 * that took capacity out, because the counter starts wherever the loader left
+	 * it. It returns with OCV anchoring.
+	 */
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
-	POWER_SUPPLY_PROP_CHARGE_NOW,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
