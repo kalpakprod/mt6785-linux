@@ -2085,7 +2085,7 @@
 			compatible = "mediatek,mt8365-csi-rx";
 			reg = <0 0x11c80000 0 0x1000>;
 			num-lanes = <4>;
-			#phy-cells = <0>;
+			#phy-cells = <1>;
 		};
 
 		seninf1: csi@1a040000 {
@@ -2095,10 +2095,9 @@
 			 * gives this SoC; the second window is what lanes, termination and settling
 			 * are programmed in.
 			 */
-			reg = <0 0x1a040000 0 0x5000>,
-			      <0 0x11c80000 0 0x1000>;
+			reg = <0 0x1a040000 0 0x5000>;
 			mediatek,cam = <&cam>;
-			phys = <&csi_rx_phy>;
+			phys = <&csi_rx_phy PHY_TYPE_DPHY>;
 			phy-names = "csi-rx";
 			clocks = <&camsys CLK_CAM_SENINF>, <&topckgen CLK_TOP_SENINF0>;
 			clock-names = "seninf", "mux";

@@ -80,8 +80,6 @@ struct mtk_seninf {
 	 * sees an LP->HS transition - which is what every port measuring zero packets and zero
 	 * errors means. The upstream driver for this block family is phy-mtk-mipi-csi-0-5. */
 	struct phy *phy;
-	/* The analog MIPI RX block lives outside this node's window but is part of the receiver. */
-	void __iomem *ana;
 	struct dentry *debugfs;
 
 	struct v4l2_subdev sd;
@@ -236,17 +234,6 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 			 readl(p + 0x0ac8));
 	}
 
-	if (!IS_ERR_OR_NULL(seninf->ana)) {
-		unsigned int i;
-
-		dev_info(seninf->dev, "analog MIPI RX, sixteen registers:\n");
-		for (i = 0; i < 16; i += 4)
-			dev_info(seninf->dev, "  ana 0x%02x: 0x%08x 0x%08x 0x%08x 0x%08x\n",
-				 i * 4, readl(seninf->ana + i * 4),
-				 readl(seninf->ana + (i + 1) * 4),
-				 readl(seninf->ana + (i + 2) * 4),
-				 readl(seninf->ana + (i + 3) * 4));
-	}
 }
 
 static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
@@ -321,13 +308,6 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	 * not routed give zero, so the numbers belong next to each other. The analog MIPI block
 	 * (0x11c80000) is outside this node window and is not mapped here yet.
 	 */
-	if (!IS_ERR_OR_NULL(seninf->ana))
-		dev_info(seninf->dev,
-			 "analog MIPI RX: 0x00 0x%08x, 0x04 0x%08x, 0x08 0x%08x, 0x0c 0x%08x, 0x10 0x%08x\n",
-			 readl(seninf->ana + 0x00), readl(seninf->ana + 0x04),
-			 readl(seninf->ana + 0x08), readl(seninf->ana + 0x0c),
-			 readl(seninf->ana + 0x10));
-
 	dev_info(seninf->dev,
 		 "routing: TOP_MUX0 0x%08x, TOP_MUX1 0x%08x, CAM_MUX1 0x%08x, CAM_MUX2 0x%08x, MUX0 0x%08x\n",
 		 readl(seninf->base + 0x0010), readl(seninf->base + 0x0014),
@@ -437,18 +417,6 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 
 	seninf->clks[0].id = "seninf";
 	seninf->clks[1].id = "mux";
-
-	/*
-	 * Second resource: the analog MIPI RX block (0x11c80000 area on this SoC, the size the vendor
-	 * device tree gives it). Optional, so a board that does not describe it still probes.
-	 */
-	{
-		struct resource *res;
-
-		res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-		if (res)
-			seninf->ana = devm_ioremap_resource(dev, res);
-	}
 
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(seninf->clks), seninf->clks);
 	if (ret)
