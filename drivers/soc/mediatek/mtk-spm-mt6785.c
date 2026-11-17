@@ -53,7 +53,15 @@
 #define SPMFW_IDX_DEFAULT			0
 #define DRAM_STEPS_FREQ_DEFAULT			4266		/* mt6785/mtk_spm.c:31-36 */
 
-static int mt6785_spm_kick_probe(struct platform_device *pdev)
+static struct platform_device *mt6785_spm_kick_pdev;
+
+/*
+ * The kick runs from a late_initcall, not from probe, because that is when the vendor runs it:
+ * late_initcall(mtk_sleep_init) -> mtk_spm_init() -> spm_module_init() -> the kick
+ * (spm/common/mtk_sleep_init.c:19-30, mt6785/mtk_spm.c:415-421, :330, :405-408). Probe only
+ * remembers the device, so the SMC lands at the same point in the boot as on stock.
+ */
+static void mt6785_spm_kick_run(struct platform_device *pdev)
 {
 	struct arm_smccc_res status, kick;
 
@@ -68,22 +76,53 @@ static int mt6785_spm_kick_probe(struct platform_device *pdev)
 	 */
 	arm_smccc_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SPMFW_IDX_KICK,
 		      SPMFW_IDX_DEFAULT, DRAM_STEPS_FREQ_DEFAULT, 0, 0, 0, 0, &kick);
-	dev_info(&pdev->dev,
-		 "spm kick: SMC %#x args %u/%u/%u returned %ld (a1 %ld a2 %ld a3 %ld)\n",
-		 MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SPMFW_IDX_KICK, SPMFW_IDX_DEFAULT,
-		 DRAM_STEPS_FREQ_DEFAULT, (long)kick.a0, (long)kick.a1, (long)kick.a2,
-		 (long)kick.a3);
+	/*
+	 * Logged unconditionally, and the failure is named: a monitor that does not handle
+	 * this call answers with an error in a0, and "the kick did nothing" has to be
+	 * distinguishable from "the driver never ran".
+	 */
+	if (kick.a0)
+		dev_warn(&pdev->dev,
+			 "spm kick: SMC %#x REFUSED, returned %ld (a1 %ld a2 %ld a3 %ld)\n",
+			 MTK_SIP_KERNEL_SPM_ARGS, (long)kick.a0, (long)kick.a1,
+			 (long)kick.a2, (long)kick.a3);
+	else
+		dev_info(&pdev->dev,
+			 "spm kick: SMC %#x args %u/%u/%u accepted, returned %ld (a1 %ld a2 %ld a3 %ld)\n",
+			 MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SPMFW_IDX_KICK, SPMFW_IDX_DEFAULT,
+			 DRAM_STEPS_FREQ_DEFAULT, (long)kick.a0, (long)kick.a1, (long)kick.a2,
+			 (long)kick.a3);
 
 	arm_smccc_smc(MTK_SIP_KERNEL_SPM_FIRMWARE_STATUS, 0, 0, 0, 0, 0, 0, 0, &status);
 	dev_info(&pdev->dev, "spm firmware after the kick: %ld (%s)\n", (long)status.a0,
 		 status.a0 == 2 ? "loaded and kicked" :
 		 status.a0 == 1 ? "still only loaded" :
 		 status.a0 == 0 ? "NOT loaded" : "not init / refused");
+}
+
+static int __init mt6785_spm_kick_late_init(void)
+{
+	if (mt6785_spm_kick_pdev)
+		mt6785_spm_kick_run(mt6785_spm_kick_pdev);
+	return 0;
+}
+late_initcall(mt6785_spm_kick_late_init);
+
+static int mt6785_spm_kick_probe(struct platform_device *pdev)
+{
+	mt6785_spm_kick_pdev = pdev;
+	dev_info(&pdev->dev, "spm kick: bound, the SMC sequence runs at late_initcall (as on stock)\n");
 	return 0;
 }
 
 static const struct of_device_id mt6785_spm_kick_of_match[] = {
-	/* the vendor's own node: scpsys@10006000, "mediatek,mt6785-scpsys" (mt6785.dtsi:943) */
+	/*
+	 * The board's own node (mt6785-xiaomi-rosemary.dts): a reg-less platform device, so
+	 * it collides with nothing. The syscon container is kept as a fallback for trees that
+	 * only have that one, but a memory-mapped virtio-free node like this one is the honest
+	 * shape for a driver that reads no register.
+	 */
+	{ .compatible = "mediatek,mt6785-spm-kick" },
 	{ .compatible = "mediatek,mt6785-scpsys" },
 	{ }
 };
@@ -96,7 +135,7 @@ static struct platform_driver mt6785_spm_kick_driver = {
 		.of_match_table = mt6785_spm_kick_of_match,
 	},
 };
-module_platform_driver(mt6785_spm_kick_driver);
+builtin_platform_driver(mt6785_spm_kick_driver);
 
 MODULE_DESCRIPTION("MT6785 SPM firmware kick (PROBE: does the PCM firmware run without the vendor's register setup?)");
 MODULE_LICENSE("GPL");
