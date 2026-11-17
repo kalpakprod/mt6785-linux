@@ -36,7 +36,9 @@
 #include <linux/iio/consumer.h>
 #include <linux/module.h>
 #include <linux/mfd/mt6397/core.h>
+#include <linux/debugfs.h>
 #include <linux/of.h>
+#include <linux/seq_file.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
@@ -787,3 +789,19 @@ MODULE_IMPORT_NS("IIO_CONSUMER");
 
 MODULE_DESCRIPTION("MediaTek MT6359 fuel gauge");
 MODULE_LICENSE("GPL");
+
+static int mt6359_gauge_car_show(struct seq_file *s, void *unused)
+{
+	struct mt6359_gauge *g = s->private;
+	long long car;
+
+	if (!g->anchored) {
+		seq_puts(s, "unanchored\n");
+		return 0;
+	}
+	if (mt6359_gauge_read_car(g, &car))
+		return -EIO;
+	seq_printf(s, "%lld %lld\n", car, car - g->base_car);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mt6359_gauge_car);

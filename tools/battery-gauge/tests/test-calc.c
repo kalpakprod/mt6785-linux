@@ -39,8 +39,9 @@ int main(int argc, char **argv)
 	 * 72035 units of discharge against 127800 uAh integrated from a current that was
 	 * verified against the MT6360's independent ADC.
 	 */
-	expect("car 1000 -> uAh", mt6359_car_to_uah(1000, 50), 1774);
-	expect("car 72035 -> uAh", mt6359_car_to_uah(72035, 5), 127790);
+	expect("car 1000 -> uAh", mt6359_car_to_uah(1000, 5), 574);
+	/* conn40: 55225 raw units against 31673 uAh integrated from the current. */
+	expect("car 55225 -> uAh", mt6359_car_to_uah(55225, 5), 31699);
 	/*
 	 * The vendor's current arithmetic (mt6359_gauge.c:250-266) with this board's
 	 * numbers: raw * 610352 / 100000, * 50 / 5, * 100 / 1000, in 0.1 mA.
@@ -60,7 +61,7 @@ int main(int argc, char **argv)
 	expect("clamped low", mt6359_uah_to_capacity(-5, 5000000), 0);
 	/* A coulomb counter of 1 C (1 A for 1 s) is 277.8 uAh; with 0.085 uAh per LSB
 	 * that is 3268 LSBs, and 3268 * 85 / 1000 = 277 uAh. */
-	expect("car 3268 -> uAh", mt6359_car_to_uah(3268, 5), 5797);
+	expect("car 3268 -> uAh", mt6359_car_to_uah(3268, 5), 1875);
 
 	/*
 	 * The NTC: the vendor divider and table (RBAT_PULL_UP_R 100k, 12-bit code, 23
@@ -89,12 +90,14 @@ int main(int argc, char **argv)
 	 * charge has moved 8500 uAh, which is 0.17 %. The test uses round numbers that
 	 * the ABI can show: 500000 counts = 42500 uAh = 0.85 %, and 10x that is 8.5 %.
 	 */
-	expect("counter +100000 -> uAh", mt6359_car_to_uah(100000, 5), 177400);
+	expect("counter +100000 -> uAh", mt6359_car_to_uah(100000, 5), 57400);
 	expect("capacity at 0 uAh", mt6359_uah_to_capacity(0, 5000000), 0);
 	expect("capacity at anchor 45 %", mt6359_uah_to_capacity(2250000, 5000000), 45);
-	/* The conn38 point end to end: 46 % of 5 Ah minus 127.79 mAh is 43.4 %. */
-	expect("capacity after a 127.8 mAh discharge",
-	       mt6359_uah_to_capacity(2300000 - 127790, 5000000), 43);
+	/* conn40 end to end: 45 % of 5 Ah plus 31673 uAh is still 45 %; plus 56 mAh is 46 %. */
+	expect("capacity after a 31.7 mAh charge",
+	       mt6359_uah_to_capacity(2250000 + 31699, 5000000), 45);
+	expect("capacity after a 56 mAh charge",
+	       mt6359_uah_to_capacity(2250000 + 56000, 5000000), 46);
 	expect("capacity never above 100", mt6359_uah_to_capacity(9000000, 5000000), 100);
 	expect("capacity never below 0", mt6359_uah_to_capacity(-900000, 5000000), 0);
 

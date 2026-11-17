@@ -32,12 +32,20 @@
  * repository do not let me derive 1.774 from them with the board's R_FG 5 / car_tune
  * 100 without assuming which of those factors applies to which register.
  *
- * So the scale is the measured one, stated as such, and the host test pins the measured
- * point (72035 units = 127.8 mAh). A calibration that comes from the phone's own log and
- * an independently verified current is worth more than a constant chain I cannot check.
+ * What the two logs show together: conn38 compared the EXPORT in uAh with the current's own
+ * uAh, so its 1.774 was uAh per uAh, not per raw unit - and using it as a per-unit scale
+ * made conn40's charge_counter three times too big (-97969 uAh against 31673 uAh
+ * integrated). conn40 is the run that can be solved as it stands, because its current, its
+ * counter and its capacity all come from one build: 97969 uAh of export / 1.774 = 55225 raw
+ * units, and 31673 uAh of current over those 55225 units is 0.574 uAh per raw unit. The
+ * same run checks the number twice: capacity moved 45 -> 46 over 883 s at about 230 mA,
+ * which is 56 mAh or 1.1 % of 5 Ah, and 0.574 gives 1.1 % where 1.774 gave 3.4 %.
+ *
+ * The raw counter is now logged (debugfs car_raw and a probe-time line in dmesg) so the next
+ * log of either kind pins the number directly instead of being solved through an export.
  */
 #ifndef MT6359_CAR_UAH_X1000
-#define MT6359_CAR_UAH_X1000	1774
+#define MT6359_CAR_UAH_X1000	574
 #endif
 
 /* Nominal sense resistor, in mOhm (vendor DEFAULT_R_FG). */
