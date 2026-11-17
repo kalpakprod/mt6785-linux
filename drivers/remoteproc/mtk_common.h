@@ -97,6 +97,7 @@
 #define MT6785_SCP_PROBE_VALUE		0x5a5a1234
 /* the two candidates for a core that loses its bus, and the probe's timing (scp_reg.h) */
 #define MT6785_SCP_WDT_REG		0x84
+#define MT6785_SCP_WDT_CTRL		0x88
 #define MT6785_SCP_WDT_SP		0xb8
 #define MT6785_SCP_WDT_LR		0xbc
 #define MT6785_SCP_WDT_PSP		0xc0
@@ -104,9 +105,13 @@
 #define MT6785_SCP_CPU_SLEEP_STATUS	0x114
 #define MT6785_SCP_SLEEP_DEBUG_REG	0x28	/* in the clock control window */
 #define MT6785_SCP_CLK_BLOCK		0x4000
-#define MT6785_SCP_PROBE_STEP_US	1000
-#define MT6785_SCP_PROBE_POLLS		2000
-#define MT6785_SCP_PROBE_REPORT		250
+/* the SCP's own clock block, offsets from the vendor's scp_reg.h:84-89 */
+#define MT6785_SCP_CLK_SW_SEL		0x0
+#define MT6785_SCP_CLK_ENABLE		0x4
+#define MT6785_SCP_CLK_CTRL_24		0x24
+#define MT6785_SCP_PROBE_STEP_US	100000
+#define MT6785_SCP_PROBE_POLLS		20
+#define MT6785_SCP_PROBE_REPORT		1
 /* the AP's awake handshake with the SCP, through the SPM (scp_reg.h:114-120) */
 #define MT6785_INFRACFG_IRQ_SET			0xB14
 #define MT6785_INFRACFG_IRQ_CLEAR		0xB18

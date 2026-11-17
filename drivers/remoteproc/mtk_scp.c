@@ -1272,26 +1272,39 @@ static int scp_start(struct rproc *rproc)
 	 * timeout, so the loop stops there.
 	 */
 	{
+		void __iomem *cfg = scp->cluster->reg_base;
+		void __iomem *clk = cfg + MT6785_SCP_CLK_BLOCK;
 		unsigned int i;
 		u32 val = MT6785_SCP_PROBE_VALUE, tcm;
 		s64 start = ktime_get();
 
 		for (i = 0; i < MT6785_SCP_PROBE_POLLS; i++) {
-			val = readl(scp->cluster->reg_base + MT6785_SCP_PROBE_REG);
+			val = readl(cfg + MT6785_SCP_PROBE_REG);
 			tcm = readl(scp->sram_base);
 			if (val != MT6785_SCP_PROBE_VALUE) {
-				dev_err(scp->dev, "bus dark after %lld us, probe word %#x TCM[0] %#x\n",
+				dev_err(scp->dev, "bus dark after %lld us (probe %#x TCM[0] %#x)\n",
 					ktime_us_delta(ktime_get(), start), val, tcm);
 				break;
 			}
-			if (!(i % MT6785_SCP_PROBE_REPORT))
-				dev_info(scp->dev, "%u us: probe %#x TCM[0] %#x\n", i * 1000,
-					 val, tcm);
+			if (!(i % MT6785_SCP_PROBE_REPORT)) {
+				u32 ms = i * MT6785_SCP_PROBE_STEP_US / 1000;
+				u32 clk_sw = readl(clk + MT6785_SCP_CLK_SW_SEL);
+				u32 clk_en = readl(clk + MT6785_SCP_CLK_ENABLE);
+
+				dev_info(scp->dev, "%u ms: clk_sw %#x clk_en %#x ctrl24 %#x\n",
+					 ms, clk_sw, clk_en,
+					 readl(clk + MT6785_SCP_CLK_CTRL_24));
+				dev_info(scp->dev, "%u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
+					 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
+					 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
+					 readl(cfg + MT6785_SCP_WDT_REG),
+					 readl(cfg + MT6785_SCP_WDT_CTRL), tcm);
+			}
 			udelay(MT6785_SCP_PROBE_STEP_US);
 		}
 		if (i == MT6785_SCP_PROBE_POLLS)
-			dev_info(scp->dev, "bus answered for the whole %u ms, probe %#x TCM[0] %#x\n",
-				 MT6785_SCP_PROBE_POLLS, val, tcm);
+			dev_info(scp->dev, "bus answered for the whole %u ms\n",
+				 MT6785_SCP_PROBE_POLLS * MT6785_SCP_PROBE_STEP_US / 1000);
 	}
 
 	mt6785_scp_awake(scp, true);
@@ -2309,6 +2322,8 @@ static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when)
 		 when, readl(cfg + MT6785_SCP_WDT_REG), readl(cfg + MT6785_SCP_WDT_SP),
 		 readl(cfg + MT6785_SCP_WDT_LR), readl(cfg + MT6785_SCP_WDT_PSP),
 		 readl(cfg + MT6785_SCP_WDT_PC));
+	dev_info(scp->dev, "%s: watchdog control %#x (1 = enabled, set by the firmware at image 0x29a60)\n",
+		 when, readl(cfg + MT6785_SCP_WDT_CTRL));
 	state = readl(cfg + MT6785_SCP_CLK_BLOCK + MT6785_SCP_SLEEP_DEBUG_REG);
 	dev_info(scp->dev, "%s: sleep debug %#x (%s), cpu sleep status %#x\n", when, state,
 		 state == 1 ? "idle" : state == 2 ? "entering sleep" : state == 4 ? "in sleep" :
