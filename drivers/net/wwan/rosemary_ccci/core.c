@@ -168,6 +168,7 @@ static void ap_mdsrc_req(struct ccci_md *md, bool on)
  * domain live, the rails cannot.
  */
 static bool md_domain_is_on(struct ccci_md *md);
+static void md_power_probe(struct ccci_md *md, const char *when);
 
 static void md_rails_cut(struct ccci_md *md)
 {
@@ -197,15 +198,18 @@ static int md_rails_prepare(struct ccci_md *md)
 	ret = regulator_set_voltage(md->vsram_md, VSRAM_MD_UV, VSRAM_MD_UV);
 	if (ret)
 		dev_warn(md->dev, "vsram_md voltage: %d\n", ret);
+	md_power_probe(md, "regulator_set_voltage(vsram_md)");
 	ret = regulator_enable(md->vsram_md);
 	if (ret)
 		return dev_err_probe(md->dev, ret, "vsram_md\n");
+	md_power_probe(md, "regulator_enable(vsram_md)");
 	md->vmodem_uv = regulator_get_voltage(md->vmodem);
 	ret = regulator_enable(md->vmodem);
 	if (ret) {
 		regulator_disable(md->vsram_md);
 		return dev_err_probe(md->dev, ret, "vmodem\n");
 	}
+	md_power_probe(md, "regulator_enable(vmodem)");
 	md->rails_on = true;
 	return 0;
 }
@@ -844,6 +848,35 @@ static void md_rails_state(struct ccci_md *md, const char *when)
 		 when, vm,
 		 md->vmodem_uv ? "set by this driver" : "never set by this driver",
 		 vs, VSRAM_MD_UV);
+}
+
+/*
+ * md_power_probe() - who just moved the modem's power, named at the call site
+ * @md: the modem
+ * @when: the exact call that just returned
+ *
+ * Trial 49 lost the modem between "brom_check" (md bit 1) and "dpmaif_start" (md bit 0), and the
+ * boot stats went with it (0x2c04010a -> 0x0): something in the attach path powered MD1 off. The
+ * candidates are the regulator calls, the srcclkena write, the genpd/runtime-PM pair and the DPMAIF
+ * start, and none of them is supposed to. So each one now reports the hardware immediately after it
+ * returns, and the next trial names the call instead of the range.
+ */
+static void md_power_probe(struct ccci_md *md, const char *when)
+{
+	unsigned int sta = 0, sta2 = 0;
+	u32 s0 = 0, s1 = 0;
+
+	if (!md->spm_map)
+		return;
+	regmap_read(md->spm_map, SPM_PWR_STATUS, &sta);
+	regmap_read(md->spm_map, SPM_PWR_STATUS_2ND, &sta2);
+	if (md->pll)
+		md_boot_stage(md, &s0, &s1);
+	dev_info(md->dev,
+		 "power after %-28s: md_bit=%u STA=%#x 2ND=%#x stats %#x/%#x%s%s\n",
+		 when, (u32)!!(sta & BIT(0)), sta, sta2, s0, s1,
+		 md->rails_on ? ", rails held by us" : ", rails the loader's",
+		 md->pm_held ? ", our PM ref held" : ", no PM ref");
 }
 
 static void md_ap_snapshot(struct ccci_md *md, const char *when)
@@ -1548,8 +1581,10 @@ static int md_boot(struct ccci_md *md)
 	 * same source: stock resets the block under a live, loader-released modem on purpose.
 	 */
 	if (!hs1_pending) {
+		md_power_probe(md, "before ccif_reset");
 		ccci_ccif_reset(md);
 		md_step(md, "ccif_reset");
+		md_power_probe(md, "ccci_ccif_reset()");
 	}
 
 	if (modem_in_ee) {
@@ -1623,10 +1658,30 @@ static int md_boot(struct ccci_md *md)
 			dev_info(md->dev,
 				 "the loader already released the modem (boot stage %#x/%#x): attaching as stock does (rosemary-r-oss modem_sys1.c:416-420, :436-437, :471, :486), no power cycle\n",
 				 stage0, stage1);
-			ret = md_power_seq_prepare(md);
-			if (ret)
-				goto err_clk;
-			md_pm_get(md);
+			/*
+			 * Nothing here may change the modem's power. Trial 49 showed the modem going
+			 * dark inside the attach sequence itself, so the attach now does no power
+			 * transition whatsoever: the loader owns the rails and the domain, this
+			 * driver already holds its runtime-PM reference from probe, and the only
+			 * thing stock writes on this path that is a plain register is the srcclkena
+			 * grant (md_cd_power_on step 2, mt6785/md_sys1_platform.c:621-628) -- which
+			 * the loader has already set to the same 0x21, so it is checked and left
+			 * alone.
+			 */
+			u32 srcc = readl(md->infra + INFRA_MD_SRCCLKENA);
+
+			md_power_probe(md, "attach: entry");
+			if ((srcc & 0xff) != 0x21) {
+				dev_info(md->dev,
+					 "attach: INFRA_MD_SRCCLKENA reads %#x, setting the low byte to 0x21 as md_cd_power_on() does (mt6785/md_sys1_platform.c:621-628)\n",
+					 srcc);
+				md_srcclkena_grant(md, true);
+			} else {
+				dev_info(md->dev,
+					 "attach: INFRA_MD_SRCCLKENA already %#x (the loader's value), left untouched\n",
+					 srcc);
+			}
+			md_power_probe(md, "attach: after the srcclkena check");
 		}
 	} else {
 		/*
@@ -1696,6 +1751,7 @@ static int md_boot(struct ccci_md *md)
 	if (ccci_dpmaif_start(md))
 		dev_warn(md->dev, "no packet data path\n");
 	md_step(md, "dpmaif_start");
+	md_power_probe(md, "ccci_dpmaif_start()");
 	md_dump_state(md, "before release");
 
 	/*
