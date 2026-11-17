@@ -65,6 +65,12 @@
 #define CAMSV_MODULE_EN_IMGO		BIT(4)
 
 #define CAMSV_CLK_EN_VAL		0x8005
+/*
+ * The interrupt mask the vendor's engine arms: 0x31871 (cezanne map, 5-cameras.md §3.2, where
+ * INT_EN 0x0018 carries that value). Arming with zero - which is what the driver did - means the
+ * engine never tells anyone that a frame arrived.
+ */
+#define CAMSV_INT_EN_VENDOR		0x31871
 /* PAK modes (§3.2): 8 RAW8, 9 packed RAW10, 13 unpacked RAW10. */
 #define CAMSV_PAK_RAW10			9
 /* TG_INTER_ST: bits [13:8] carry the TG state, 0x100 means idle. */
@@ -129,7 +135,14 @@ static void camsv_hw_reset(struct mtk_camsv *camsv)
 	 * the sequence polls for. Ten milliseconds are given to it; if it stays busy, say so with the
 	 * register and keep going, because a busy engine is information, not a reason to abort.
 	 */
+	/*
+	 * Vendor order: pulse the trigger (bit0) with the hardware reset (bit2) and then watch bit1,
+	 * which reads 1 when the engine is idle - the state the sequence waits for before it programs
+	 * anything. Rates: 100 microseconds per poll, ten milliseconds in total.
+	 */
 	writel(BIT(2) | BIT(0), camsv->base + CAMSV_SW_CTL);
+	udelay(10);
+	writel(BIT(2), camsv->base + CAMSV_SW_CTL);
 
 	for (i = 0; i < 100; i++) {
 		val = readl(camsv->base + CAMSV_SW_CTL);
@@ -160,8 +173,13 @@ static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 
 	writel(BIT(0) | BIT(16), camsv->base + CAMSV_TG_SEN_MODE);
 	writel(CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK | CAMSV_MODULE_EN_UNPACK |
 	       CAMSV_MODULE_EN_IMGO, camsv->base + CAMSV_MODULE_EN);
+	writel(CAMSV_INT_EN_VENDOR, camsv->base + CAMSV_INT_EN);
 	writel(BIT(0), camsv->base + CAMSV_TG_VF_CON);
-	writel(0x1, camsv->base + CAMSV_INT_EN);
+
+	dev_info(camsv->dev, "engine armed: INT_EN 0x%08x, MODULE_EN 0x%08x, SW_CTL 0x%08x\n",
+		 readl(camsv->base + CAMSV_INT_EN),
+		 readl(camsv->base + CAMSV_MODULE_EN),
+		 readl(camsv->base + CAMSV_SW_CTL));
 }
 
 static void camsv_hw_stop(struct mtk_camsv *camsv)

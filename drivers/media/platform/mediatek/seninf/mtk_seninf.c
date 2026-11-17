@@ -199,6 +199,20 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	struct mtk_seninf *seninf = container_of(sd, struct mtk_seninf, sd);
 
 	if (!enable) {
+		/* Stop the upstream first, then the receiver, the reverse of the start order. */
+		{
+			struct media_pad *remote =
+				media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+
+			if (!IS_ERR(remote)) {
+				struct v4l2_subdev *src =
+					media_entity_to_v4l2_subdev(remote->entity);
+
+				dev_info(seninf->dev, "s_stream upstream %s: %d\n", src->name,
+					 v4l2_subdev_call(src, video, s_stream, 0));
+			}
+		}
+
 		pm_runtime_get_sync(seninf->dev);
 		writel(0, seninf->base + SENINF_CSI2_EN);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
@@ -225,6 +239,28 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		 readl(seninf->base + SENINF_CSI2_EN),
 		 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
 		 readl(seninf->base + SENINF_CSI2_ERR_CNT));
+
+	/*
+	 * The receiver is programmed; now the sensor that feeds it has to transmit. Each entity in
+	 * the chain starts the one upstream of it, so the cascade stops at the sensor.
+	 */
+	{
+		struct media_pad *remote =
+			media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+		int src_ret;
+
+		if (IS_ERR(remote)) {
+			dev_info(seninf->dev, "no upstream sensor on the sink pad: %ld\n",
+				 PTR_ERR(remote));
+		} else {
+			struct v4l2_subdev *src =
+				media_entity_to_v4l2_subdev(remote->entity);
+
+			src_ret = v4l2_subdev_call(src, video, s_stream, 1);
+			dev_info(seninf->dev, "s_stream upstream %s: %d\n", src->name,
+				 src_ret);
+		}
+	}
 
 	pm_runtime_put_autosuspend(seninf->dev);
 
