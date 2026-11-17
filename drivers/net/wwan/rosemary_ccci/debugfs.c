@@ -48,6 +48,7 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/string.h>
 #include <linux/debugfs.h>
 #include <linux/pm_runtime.h>
 #include <linux/iopoll.h>
@@ -279,12 +280,17 @@ static int md_regs_show(struct seq_file *s, void *unused)
 	void __iomem *p;
 	size_t len, off;
 
+	/*
+	 * sysfs_streq(), not strcmp(): `echo topsm > md_block` writes "topsm\n", and a
+	 * plain compare then reports "no such block" while the value in sysfs reads
+	 * exactly right -- trial 32 hit that.
+	 */
 	for (size_t i = 0; i < ARRAY_SIZE(md_regions); i++)
-		if (!strcmp(md_regions[i].name, md_block))
+		if (md_block && sysfs_streq(md_regions[i].name, md_block))
 			r = &md_regions[i];
 
 	seq_printf(s, "selected block: %s\n",
-		   md_block && *md_block ? md_block : "(none)");
+		   md_block && *md_block ? strim(md_block) : "(none)");
 	seq_printf(s, "driver state: %s, boot stats available: %u\n",
 		   ccci_state_name(md->state), (unsigned int)!!md->pll);
 	if (!r) {
