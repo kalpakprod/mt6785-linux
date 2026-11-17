@@ -102,7 +102,12 @@ static struct device_node *cam_pad_remote_of(struct device_node *np, unsigned in
 	if (!ep)
 		return NULL;
 
-	remote = of_graph_get_remote_endpoint(ep);
+	/*
+	 * The remote *device* node, not the remote endpoint: a subdevice's fwnode is its device node,
+	 * and comparing an endpoint against it can never match. of_graph_get_remote_port_parent()
+	 * walks endpoint -> port -> device and takes its own reference, which the caller puts.
+	 */
+	remote = of_graph_get_remote_port_parent(ep);
 	of_node_put(ep);
 
 	return remote;
