@@ -292,7 +292,13 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		}
 	}
 
-	pm_runtime_put_autosuspend(seninf->dev);
+	/*
+	 * The reference taken at the top of this function is held until s_stream(0): releasing it here
+	 * is what let the device autosuspend 100 ms into a live stream, and it left the put at stop
+	 * without a matching get (the "Runtime PM usage count underflow" the phone logged).
+	 */
+	dev_info(seninf->dev, "stream on holds the receiver: pm usage %d\n",
+		 pm_runtime_active(seninf->dev));
 
 	return 0;
 }

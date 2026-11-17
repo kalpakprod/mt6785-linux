@@ -2132,8 +2132,9 @@
 			reg = <0 0x1a050000 0 0x1000>;
 			mediatek,cam = <&cam>;
 			interrupts = <GIC_SPI 279 IRQ_TYPE_LEVEL_LOW>;
-			clocks = <&camsys CLK_CAM_SV0>;
-			clock-names = "sv";
+			clocks = <&camsys CLK_CAM_SV0>, <&camsys CLK_CAM_MAIN>,
+				 <&camsys CLK_CAM_TG>;
+			clock-names = "sv", "main", "tg";
 			iommus = <&iommu M4U_PORT_CAM_IMGO>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
 			status = "disabled";
