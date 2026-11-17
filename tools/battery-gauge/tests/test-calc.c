@@ -63,14 +63,20 @@ int main(int argc, char **argv)
 	 * points). A code of 2048 is exactly half the pull-up, i.e. 100 kOhm, which is
 	 * the table's 25 degC point.
 	 */
-	/* A code of 2048 gives 100048 ohm, not exactly 100000: the divider is
-	 * raw / (4095 - raw), so the exact 25 degC point is a code of 2047.5 - and the
-	 * table's 20..25 degC segment puts this one at 24.0 degC, which is the interpolation
-	 * doing its job. */
-	expect("ntc raw 2048 -> 24.0 C", mt6359_ntc_raw_to_temp(2048), 240);
+	/*
+	 * The vendor divider: mV = raw * 4500 / 4096, then R = 100k * mV / (2800 - mV).
+	 * R = 100 kOhm (the table's 25 degC point) is mV = 1400, i.e. raw = 1274.
+	 * And the phone's own calibration rows: raw 1114 at ln8000 32.6 degC and raw 1097
+	 * at 33.4 - the conversion must land within a couple of degrees of both.
+	 */
+	expect("ntc raw 1274 -> 25.0 C", mt6359_ntc_raw_to_temp(1274), 250);
+	expect("ntc raw 1114 between 30 and 33 C", mt6359_ntc_raw_to_temp(1114) >= 295 &&
+	       mt6359_ntc_raw_to_temp(1114) <= 330, 1);
+	expect("ntc raw 1097 between 30 and 34 C", mt6359_ntc_raw_to_temp(1097) >= 295 &&
+	       mt6359_ntc_raw_to_temp(1097) <= 340, 1);
 	/* Twice the resistance is colder: 2048*2/3 ~ 2730 is 200 kOhm, ~17 degC. */
-	expect("ntc colder than 25 C", mt6359_ntc_raw_to_temp(2730) < 250, 1);
-	expect("ntc warmer than 25 C", mt6359_ntc_raw_to_temp(1365) > 250, 1);
+	expect("a smaller code is colder", mt6359_ntc_raw_to_temp(1000) > 250, 1);
+	expect("a larger code is warmer", mt6359_ntc_raw_to_temp(2000) < 250, 1);
 
 	if (planted) {
 		/* With a planted constant one of the values above must have failed. */

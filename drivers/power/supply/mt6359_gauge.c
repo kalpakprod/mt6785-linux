@@ -403,15 +403,7 @@ static enum power_supply_property mt6359_gauge_props[] = {
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
-	/*
-	 * TEMP is deliberately absent until the NTC divider is calibrated: with the
-	 * vendor's 100k pull-up the conn28 measurement (raw 1085) works out at 45-50 degC
-	 * while every other sensor in the phone sat at 35-41 degC at the same moment, so
-	 * the conversion is not trustworthy yet. The raw value is logged at probe for the
-	 * calibration instead, and publishing a temperature that is ten degrees off is
-	 * worse than publishing none. The conversion itself is kept and tested, so wiring
-	 * it back is one line once the pull-up is known.
-	 */
+	POWER_SUPPLY_PROP_TEMP,
 	/*
 	 * CAPACITY and TEMP are deliberately absent. Capacity without an OCV table
 	 * would be the coulomb count against a design charge from a counter that

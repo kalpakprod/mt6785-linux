@@ -117,6 +117,27 @@ static const struct mt6359_ntc_point mt6359_ntc_table[] = {
 };
 
 /*
+ * The BAT_TEMP conversion, in the shape LK uses on every boot (poco-m5s/evidence/
+ * try-force1/pl_lk.txt:961, "BattThermistorConverTemp 100000 79230 91387 25 30 27"
+ * and "BattVoltToTemp 1337 100000 2800 2"): the channel reads a divider of the NTC
+ * against a pull-up of RBAT_PULL_UP_R = 100000 ohm to RBAT_PULL_UP_VOLT = 2800 mV
+ * (mtk_battery_table.h:205, :208), the code is 12-bit against a 4500 mV full scale -
+ * which is what the upstream driver reports as in_temp1_scale, 4500 with a 12-bit
+ * channel (drivers/iio/adc/mt6359-auxadc.c:322, and the scale computation at :771-779)
+ * - and the resistance interpolates the 100k NTC table (:213-237, R 100000 at 25 degC
+ * and 79230 at 30 degC).
+ */
+#ifndef MT6359_NTC_VREF_MV
+#define MT6359_NTC_VREF_MV	4500
+#endif
+#ifndef MT6359_NTC_BITS
+#define MT6359_NTC_BITS		12
+#endif
+#ifndef MT6359_NTC_PULL_UP_MV
+#define MT6359_NTC_PULL_UP_MV	2800
+#endif
+
+/*
  * A raw BAT_TEMP code -> tenths of a degree Celsius, interpolating the vendor table.
  * The divider is the vendor's: R_NTC = R_pull_up * raw / (full scale - raw).
  */
@@ -125,9 +146,16 @@ static inline int mt6359_ntc_raw_to_temp(unsigned int raw)
 	long ohm;
 	size_t i;
 
-	if (raw == 0 || raw >= MT6359_NTC_ADC_MAX)
+	if (raw == 0)
 		return -ENODATA;
-	ohm = (MT6359_NTC_PULL_UP_OHM * (long)raw) / (MT6359_NTC_ADC_MAX - (long)raw);
+	{
+		/* raw -> mV across the NTC, then the divider against the pull-up. */
+		long mv = (long)raw * MT6359_NTC_VREF_MV / (1 << MT6359_NTC_BITS);
+
+		if (mv <= 0 || mv >= MT6359_NTC_PULL_UP_MV)
+			return -ENODATA;
+		ohm = (MT6359_NTC_PULL_UP_OHM * mv) / (MT6359_NTC_PULL_UP_MV - mv);
+	}
 
 	if (ohm >= mt6359_ntc_table[0].ohm)
 		return mt6359_ntc_table[0].temp_c * 10;
