@@ -152,13 +152,25 @@ static void ap_mdsrc_req(struct ccci_md *md, bool on)
  * touching the rails while the domain is on: the clock can be asked for with the
  * domain live, the rails cannot.
  */
-static void md_rails_release(struct ccci_md *md)
+static bool md_domain_is_on(struct ccci_md *md);
+
+static void md_rails_cut(struct ccci_md *md)
 {
-	if (!md->rails_on)
+	/*
+	 * force_disable(), not disable(): on the loader's boot this driver never took
+	 * a reference to the rails, so regulator_disable() would be an unbalanced put.
+	 * The bookkeeping is not the question here either -- the question is whether the
+	 * modem still has its supply, and after a stop the answer must be no.
+	 *
+	 * Called only with the domain already off: that is the only state the vendor
+	 * ever reaches its PMIC step in (md_cd_power_off() cuts the gate first,
+	 * mt6785/md_sys1_platform.c:809, and the PMIC step is :823-824).
+	 */
+	if (!md->vmodem || !md->vsram_md)
 		return;
+	regulator_force_disable(md->vmodem);
+	regulator_force_disable(md->vsram_md);
 	md->rails_on = false;
-	regulator_disable(md->vmodem);
-	regulator_disable(md->vsram_md);
 }
 
 static int md_rails_prepare(struct ccci_md *md)
@@ -247,8 +259,22 @@ static int md_power_seq_prepare(struct ccci_md *md)
 /* the vendor's power-off: clock and rails, the gate already off by the caller */
 static void md_power_seq_release(struct ccci_md *md)
 {
+	/*
+	 * The vendor's last two steps of the power-off, in its order: the 26 MHz
+	 * request, then the PMIC (md_cd_power_off(), mt6785/md_sys1_platform.c:813-824).
+	 * Both come after the gate by construction, so if the gate is still on these
+	 * steps are not reached at all -- the vendor never reaches them either, because
+	 * it waits for the bus-protect acknowledgement before (:1009-1042 of
+	 * clk-mt6785-pg.c).
+	 */
+	if (md_domain_is_on(md)) {
+		dev_warn(md->dev,
+			 "supplies: not releasing the 26 MHz request or the rails while the md domain is on (PWR_STATUS %#x)\n",
+			 readl(md->spm + SPM_PWR_STATUS));
+		return;
+	}
 	md_clock_request(md, false);
-	md_rails_release(md);
+	md_rails_cut(md);
 }
 
 /*
@@ -1518,13 +1544,29 @@ void ccci_md_stop(struct ccci_md *md)
 	 * really moved is printed, because it is the one fact the next boot depends on.
 	 */
 	md_pm_put(md);
-	md_power_seq_release(md);
+	dev_info(md->dev, "stop 1/3 gate: the md domain is %s (PWR_STATUS %#x)\n",
+		 md_domain_is_on(md) ? "STILL ON" : "off",
+		 readl(md->spm + SPM_PWR_STATUS));
+	if (md_domain_is_on(md)) {
+		/*
+		 * The clamp is the step that can refuse, and the vendor's order has
+		 * nothing after it that makes sense without it: cutting the rails under a
+		 * live domain is the one thing neither tree ever does. So stop here, say
+		 * exactly why, and leave them alone.
+		 */
+		dev_warn(md->dev,
+			 "stop: the clamp was not acknowledged (PROTECTEN %#x, PROTECT_STA %#x), so the 26 MHz request and the rails are left alone -- the loader will find a running modem\n",
+			 md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECTEN) : 0,
+			 md->infra ? readl(md->infra + INFRA_TOPAXI_PROTECT_STA1) : 0);
+	} else {
+		md_clock_request(md, false);
+		dev_info(md->dev, "stop 2/3 26 MHz request: released (INFRA_MD_SRCCLKENA %#x)\n",
+			 readl(md->infra + INFRA_MD_SRCCLKENA));
+		md_rails_cut(md);
+		dev_info(md->dev, "stop 3/3 supplies: vmodem and vsram_md cut, so the loader starts a fresh modem on the next boot\n");
+	}
 	ccci_dpmaif_stop(md);
 	clk_bulk_disable_unprepare(md->num_clks, md->clks);
-	dev_info(md->dev,
-		 "stop: the md domain is %s, so the loader %s on the next boot\n",
-		 md_domain_is_on(md) ? "STILL ON (the clamp did not acknowledge)" : "off",
-		 md_domain_is_on(md) ? "will find a running modem" : "starts a fresh one");
 	ccci_set_state(md, MD_STATE_OFF);
 }
 
