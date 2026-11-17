@@ -70,6 +70,8 @@ static const u32 mt8173_formats[] = {
 
 struct mtk_disp_rdma_data {
 	unsigned int fifo_size;
+	/* video mode wants the output-valid threshold at zero, see mt6785 data */
+	bool vdo_fifo_threshold_zero;
 	const u32 *formats;
 	size_t num_formats;
 };
@@ -206,10 +208,24 @@ void mtk_rdma_config(struct device *dev, unsigned int width,
 	 * output threshold to 70% of max fifo size to make sure the
 	 * threhold will not overflow
 	 */
-	threshold = rdma_fifo_size * 7 / 10;
-	reg = RDMA_FIFO_UNDERFLOW_EN |
-	      RDMA_FIFO_PSEUDO_SIZE(rdma_fifo_size) |
-	      RDMA_OUTPUT_VALID_FIFO_THRESHOLD(threshold);
+	if (rdma->data->vdo_fifo_threshold_zero)
+		threshold = 0;
+	else
+		threshold = rdma_fifo_size * 7 / 10;
+	if (rdma->data->vdo_fifo_threshold_zero)
+		/*
+		 * The vendor writes the FIFO size into bits 29:16 in bytes, not
+		 * in the 16-byte units mainline's macro assumes: its golden
+		 * setting value 1536 lands as 0x0600 at 29:16, which is what the
+		 * loader's FIFO_CON 0x86000000 shows. The threshold field is
+		 * 13:0 wide there and stays 0 in video mode.
+		 */
+		reg = RDMA_FIFO_UNDERFLOW_EN |
+		      ((u32)rdma_fifo_size << 16) | (threshold & 0x3fff);
+	else
+		reg = RDMA_FIFO_UNDERFLOW_EN |
+		      RDMA_FIFO_PSEUDO_SIZE(rdma_fifo_size) |
+		      RDMA_OUTPUT_VALID_FIFO_THRESHOLD(threshold);
 	mtk_ddp_write(cmdq_pkt, reg, &rdma->cmdq_reg, rdma->regs, DISP_REG_RDMA_FIFO_CON);
 }
 
@@ -394,6 +410,23 @@ static const struct mtk_disp_rdma_data mt8183_rdma_driver_data = {
 	.num_formats = ARRAY_SIZE(mt8173_formats),
 };
 
+/*
+ * MT6785 golden setting for a video-mode pipe, from the vendor's
+ * rdma_cal_golden_setting() (common/rdma20/ddp_rdma_ex.c, the tables at 288-352):
+ * FIFO size 1536 for a non-WROT-SRAM path, the output-valid FIFO threshold left at
+ * 0 when the pipe is video mode (`if (is_vdo) OUTPUT_VALID_FIFO_TH = 0;`), and
+ * underflow enabled. That is exactly the loader's DISP_REG_RDMA_FIFO_CON
+ * (0x1400b040) = 0x86000000: bit 31 underflow, bits 29:16 = 0x0600 = 1536, bits
+ * 13:0 = 0 - with the field map of the vendor header ddp_reg_dma.h:83-88
+ * (FIFO_PSEUDO_SIZE bits 29:16, OUTPUT_VALID_FIFO_THRESHOLD bits 13:0).
+ */
+static const struct mtk_disp_rdma_data mt6785_rdma_driver_data = {
+	.fifo_size = 1536,
+	.vdo_fifo_threshold_zero = true,
+	.formats = mt8173_formats,
+	.num_formats = ARRAY_SIZE(mt8173_formats),
+};
+
 static const struct mtk_disp_rdma_data mt8195_rdma_driver_data = {
 	.fifo_size = 1920,
 	.formats = mt8173_formats,
@@ -405,6 +438,8 @@ static const struct of_device_id mtk_disp_rdma_driver_dt_match[] = {
 	  .data = &mt2701_rdma_driver_data},
 	{ .compatible = "mediatek,mt8173-disp-rdma",
 	  .data = &mt8173_rdma_driver_data},
+	{ .compatible = "mediatek,mt6785-disp-rdma",
+	  .data = &mt6785_rdma_driver_data},
 	{ .compatible = "mediatek,mt8183-disp-rdma",
 	  .data = &mt8183_rdma_driver_data},
 	{ .compatible = "mediatek,mt8195-disp-rdma",

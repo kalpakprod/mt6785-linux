@@ -635,6 +635,43 @@ static void mtk_ddp_comp_clk_put(void *_clk)
 	clk_put(clk);
 }
 
+/*
+ * A DMA block reaches memory through its SMI larb. Where an IOMMU binds that
+ * larb, the IOMMU links it and keeps it resumed; without one nothing does, so
+ * the larb would stay runtime-suspended (clocks off, and after a display domain
+ * power cycle its ports back to translated) while the block runs. Link the two
+ * here so the larb follows the block. Boards that name no larb are unaffected.
+ */
+static int mtk_ddp_comp_link_larb(struct device_node *node, struct device *dev)
+{
+	struct platform_device *larb_pdev;
+	struct device_node *larb_node;
+	struct device_link *link;
+
+	larb_node = of_parse_phandle(node, "mediatek,larb", 0);
+	if (!larb_node)
+		return 0;
+
+	larb_pdev = of_find_device_by_node(larb_node);
+	of_node_put(larb_node);
+	if (!larb_pdev)
+		return -EPROBE_DEFER;
+	if (!platform_get_drvdata(larb_pdev)) {
+		put_device(&larb_pdev->dev);
+		return -EPROBE_DEFER;
+	}
+
+	link = device_link_add(dev, &larb_pdev->dev,
+			       DL_FLAG_PM_RUNTIME | DL_FLAG_STATELESS);
+	put_device(&larb_pdev->dev);
+	if (!link) {
+		dev_err(dev, "Unable to link SMI larb\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 int mtk_ddp_comp_init(struct device *dev, struct device_node *node, struct mtk_ddp_comp *comp,
 		      unsigned int comp_id)
 {
@@ -664,6 +701,10 @@ int mtk_ddp_comp_init(struct device *dev, struct device_node *node, struct mtk_d
 	comp->dev = &comp_pdev->dev;
 
 	ret = devm_add_action_or_reset(dev, mtk_ddp_comp_put_device, comp->dev);
+	if (ret)
+		return ret;
+
+	ret = mtk_ddp_comp_link_larb(node, comp->dev);
 	if (ret)
 		return ret;
 

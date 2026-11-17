@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_MTK_SENINF
+	tristate "MediaTek CSI-2 receiver (SENINF)"
+	depends on VIDEO_DEV && OF
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on VIDEO_MTK_CAM
+	help
+	  The SENINF is the CSI-2 receiver of MediaTek SoCs: it takes the D-PHY or
+	  C-PHY lanes of a camera sensor and feeds the camera muxes that the capture
+	  engines read from. This driver brings the receiver up and exposes its
+	  packet and error counters, which is what a board needs while the sensor
+	  side is being brought up.
+
+	  Say M or Y here to have the receiver probed on the SoCs whose device tree
+	  describes it.

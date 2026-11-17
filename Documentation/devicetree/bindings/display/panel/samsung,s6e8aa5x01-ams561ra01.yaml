@@ -18,6 +18,7 @@ properties:
     enum:
       - samsung,s6e8aa5x01-ams561ra01
       - samsung,s6e8fc0-m1906f9
+      - samsung,s6e8fc0-k7-38-0c-0a
 
   reg:
     maxItems: 1
@@ -34,7 +35,10 @@ required:
   - compatible
   - reg
 
-additionalProperties: false
+# The panel graph properties (port, backlight, power-domains) come in through
+# panel-common.yaml above; additionalProperties: false would hide them and reject
+# a panel node that describes its DSI endpoint.
+unevaluatedProperties: false
 
 examples:
   - |

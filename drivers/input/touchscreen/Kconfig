@@ -370,6 +370,19 @@ config TOUCHSCREEN_EXC3000
 	  To compile this driver as a module, choose M here: the
 	  module will be called exc3000.
 
+config TOUCHSCREEN_FOCALTECH_FT3418
+	tristate "FocalTech FT3418 incell AMOLED touchscreen"
+	depends on I2C
+	depends on OF
+	help
+	  Say Y here to enable support for the FocalTech FT3418 touchscreen
+	  controller, an incell part that sits behind AMOLED panels and reports
+	  up to ten contact points through its 63 byte frame. It identifies as
+	  0x54/0x52 and is not an FT5x06-family device.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called focaltech-ft3418.
+
 config TOUCHSCREEN_FUJITSU
 	tristate "Fujitsu serial touchscreen"
 	select SERIO

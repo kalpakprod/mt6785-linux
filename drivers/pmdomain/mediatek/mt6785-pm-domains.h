@@ -212,8 +212,16 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6785[] = {
 				MT8365_INFRA_NAO_TOPAXI_SI2_STA),
 			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(6)),
 		},
+		/*
+		 * Always on: a power cycle of this domain (s2idle) also loses what the
+		 * bootloader set up and mediatek-drm does not program yet (OVL/RDMA
+		 * fetch thresholds, PQ shadow and window registers, DSI extras), and
+		 * the pipe then stalls after resume. The display blocks and the SMI
+		 * stay clock-gated while the screen is off.
+		 */
 		.caps =
-			MTK_SCPD_STRICT_BUS_PROTECTION | MTK_SCPD_HAS_INFRA_NAO,
+			MTK_SCPD_STRICT_BUS_PROTECTION | MTK_SCPD_HAS_INFRA_NAO |
+			MTK_SCPD_ALWAYS_ON,
 	},
 	[MT6785_POWER_DOMAIN_VDEC] = {
 		.name = "vdec",

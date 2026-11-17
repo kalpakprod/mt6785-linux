@@ -9,6 +9,8 @@
 #include <linux/iopoll.h>
 #include <linux/irq.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
@@ -33,6 +35,7 @@
 #include "mtk_drm_drv.h"
 
 #define DSI_START		0x00
+#define VM_CMD_START			BIT(16)
 
 #define DSI_INTEN		0x08
 
@@ -42,7 +45,28 @@
 #define TE_RDY_INT_FLAG			BIT(2)
 #define VM_DONE_INT_FLAG		BIT(3)
 #define EXT_TE_RDY_INT_FLAG		BIT(4)
+#define VM_CMD_DONE_INT_FLAG		BIT(5)
+#define FRAME_DONE_INT_FLAG		BIT(4)	/* same bit as EXT_TE_RDY_INT_FLAG */
+#define TE_TIMEOUT_INT_FLAG		BIT(7)
+#define VM_VBP_STR_INT_FLAG		BIT(8)
+#define VM_VACT_STR_INT_FLAG		BIT(9)
+#define VM_VFP_STR_INT_FLAG		BIT(10)
+/*
+ * The running video frame's own events, named as the vendor names them in
+ * ddp_reg_dsi.h:102-120: FRAME_DONE (4), TE_TIMEOUT (7), VM_VBP_STR (8),
+ * VM_VACT_STR (9) and VM_VFP_STR (10). Trial 18 finds exactly these five set
+ * (0x790) while the engine is still sending the frame it was on when the DSI was
+ * put into command mode.
+ */
+#define MT6785_FRAME_DRAIN		(FRAME_DONE_INT_FLAG | TE_TIMEOUT_INT_FLAG | \
+					 VM_VBP_STR_INT_FLAG | VM_VACT_STR_INT_FLAG | \
+					 VM_VFP_STR_INT_FLAG)
+#define BUFFER_UNDERRUN_INT_FLAG	BIT(12)
+#define INP_UNFINISH_INT_FLAG		BIT(14)
 #define DSI_BUSY			BIT(31)
+/* every event bit of DSI_INTSTA, the BUSY bit left out */
+#define DSI_INT_STATUS_MASK		GENMASK(15, 0)
+
 
 #define DSI_CON_CTRL		0x10
 #define DSI_RESET			BIT(0)
@@ -97,6 +121,13 @@
 
 #define DSI_HSTX_CKL_WC		0x64
 #define HSTX_CKL_WC			GENMASK(15, 2)
+/*
+ * Let the engine work out the clock low-power word count per line itself and
+ * leave the result in DSI_HSTX_CKL_WC_AUTO_RESULT (0x68). This is how the MT6785
+ * loader runs: 0x64 = 0x00010000, i.e. only this bit, with 0x68 = 0x1cf holding
+ * the value it computed (poco-m5s/evidence/disp-trial8/regs-loader.txt).
+ */
+#define HSTX_CKL_WC_AUTO		BIT(16)
 
 #define DSI_RX_DATA0		0x74
 #define DSI_RX_DATA1		0x78
@@ -105,6 +136,18 @@
 
 #define DSI_RACK		0x84
 #define RACK				BIT(0)
+
+/*
+ * DSI_MEM_CONTI: how the host walks its own memory while writing a command out
+ * of the command queue. The vendor's MT6785 header fixes it at 0x3c for writes
+ * (DSI_WMEM_CONTI in ddp_dsi.h) and its DSI_TXRX_Control() programs it next to
+ * DSI_TXRX_CTRL on every mode change.
+ */
+#define DSI_MEM_CONTI		0x90
+#define RWMEM_CONTI		0x3c
+
+#define DSI_VM_CMD_CON		0x130	/* the mt8183 and mt6785 offset */
+#define DSI_STATE_DBG0		0x148	/* 0x148..0x168: engine state read-backs */
 
 #define DSI_PHY_LCCON		0x104
 #define LC_HS_TX_EN			BIT(0)
@@ -141,7 +184,23 @@
 
 /* DSI_VM_CMD_CON */
 #define VM_CMD_EN			BIT(0)
+#define VM_CMD_LONG_PKT			BIT(1)
 #define TS_VFP_EN			BIT(5)
+#define VM_CMD_DATA_ID			GENMASK(15, 8)
+#define VM_CMD_DATA_0			GENMASK(23, 16)
+#define VM_CMD_DATA_1			GENMASK(31, 24)
+
+/*
+ * Payload of a long VM command: three windows, DSI_VM_CMD_DATA0 (0x134),
+ * DATA10 (0x180) and DATA20 (0x1a0) in the vendor's MT6785 ddp_reg_dsi.h,
+ * 16 + 16 + 32 bytes. The panel took 22-byte gamma table writes through
+ * them on the phone (poco-m5s/evidence/disp-trial8).
+ */
+static const struct {
+	u16 off;
+	u8 len;
+} mtk_dsi_vm_cmd_data[] = { { 0x134, 16 }, { 0x180, 16 }, { 0x1a0, 32 } };
+#define VM_CMD_MAX_PAYLOAD		64
 
 /* DSI_SHADOW_DEBUG */
 #define FORCE_COMMIT			BIT(0)
@@ -194,11 +253,16 @@ struct mtk_dsi_driver_data {
 	bool has_size_ctl;
 	bool cmdq_long_packet_ctl;
 	bool support_per_frame_lp;
+	bool needs_mem_conti;
+	bool has_hstx_cklp_auto;
+	bool vm_cmd_writes;
+	bool poll_completion;
 };
 
 struct mtk_dsi {
 	struct device *dev;
 	struct mipi_dsi_host host;
+
 	struct drm_encoder encoder;
 	struct drm_bridge bridge;
 	struct drm_bridge *next_bridge;
@@ -222,6 +286,7 @@ struct mtk_dsi {
 	bool enabled;
 	bool lanes_ready;
 	u32 irq_data;
+	unsigned int irq_count;
 	wait_queue_head_t irq_wait_queue;
 	const struct mtk_dsi_driver_data *driver_data;
 };
@@ -351,6 +416,8 @@ static void mtk_dsi_clk_hs_mode(struct mtk_dsi *dsi, bool enter)
 		mtk_dsi_mask(dsi, DSI_PHY_LCCON, LC_HS_TX_EN, 0);
 }
 
+static void mtk_dsi_set_vm_cmd(struct mtk_dsi *dsi, bool enable);
+
 static void mtk_dsi_set_mode(struct mtk_dsi *dsi)
 {
 	u32 vid_mode = CMD_MODE;
@@ -365,12 +432,25 @@ static void mtk_dsi_set_mode(struct mtk_dsi *dsi)
 	}
 
 	writel(vid_mode, dsi->regs + DSI_MODE_CTRL);
+
+	/*
+	 * The VM command bits belong to video mode: they let the engine inject a
+	 * queued command at the video front porch. The vendor driver arms them
+	 * only when it switches to video (ddp_dsi.c, the C2V path) and never in
+	 * command mode, where the command queue itself carries the packet.
+	 */
+	if (vid_mode == CMD_MODE)
+		mtk_dsi_set_vm_cmd(dsi, false);
+	else
+		mtk_dsi_set_vm_cmd(dsi, true);
 }
 
-static void mtk_dsi_set_vm_cmd(struct mtk_dsi *dsi)
+static void mtk_dsi_set_vm_cmd(struct mtk_dsi *dsi, bool enable)
 {
-	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, VM_CMD_EN, VM_CMD_EN);
-	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, TS_VFP_EN, TS_VFP_EN);
+	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, VM_CMD_EN,
+		     enable ? VM_CMD_EN : 0);
+	mtk_dsi_mask(dsi, dsi->driver_data->reg_vm_cmd_off, TS_VFP_EN,
+		     enable ? TS_VFP_EN : 0);
 }
 
 static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
@@ -391,6 +471,9 @@ static void mtk_dsi_rxtx_control(struct mtk_dsi *dsi)
 		regval |= DIS_EOT;
 
 	writel(regval, dsi->regs + DSI_TXRX_CTRL);
+
+	if (dsi->driver_data->needs_mem_conti)
+		writel(RWMEM_CONTI, dsi->regs + DSI_MEM_CONTI);
 }
 
 static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
@@ -427,7 +510,8 @@ static void mtk_dsi_ps_control(struct mtk_dsi *dsi, bool config_vact)
 	if (config_vact) {
 		vact_nl = FIELD_PREP(VACT_NL, dsi->vm.vactive);
 		writel(vact_nl, dsi->regs + DSI_VACT_NL);
-		writel(ps_wc, dsi->regs + DSI_HSTX_CKL_WC);
+		if (!dsi->driver_data->has_hstx_cklp_auto)
+			writel(ps_wc, dsi->regs + DSI_HSTX_CKL_WC);
 	}
 	writel(ps_val, dsi->regs + DSI_PSCTRL);
 }
@@ -487,8 +571,18 @@ static void mtk_dsi_config_vdo_timing_per_frame_lp(struct mtk_dsi *dsi)
 	hstx_cklp_wc_max = (DIV_ROUND_UP((cklp_wc_max_adjust + horizontal_backporch_byte +
 			   ps_wc), dsi->lanes) + da_hs_trail + 1) * dsi->lanes / 6 - 1;
 
-	hstx_cklp_wc = FIELD_PREP(HSTX_CKL_WC, (hstx_cklp_wc_min + hstx_cklp_wc_max) / 2);
-	writel(hstx_cklp_wc, dsi->regs + DSI_HSTX_CKL_WC);
+	if (dsi->driver_data->has_hstx_cklp_auto) {
+		/*
+		 * The engine computes the window from the timings above and
+		 * reports it in DSI_HSTX_CKL_WC_AUTO_RESULT (0x68), the way the
+		 * MT6785 loader runs it.
+		 */
+		writel(HSTX_CKL_WC_AUTO, dsi->regs + DSI_HSTX_CKL_WC);
+	} else {
+		hstx_cklp_wc = FIELD_PREP(HSTX_CKL_WC,
+					  (hstx_cklp_wc_min + hstx_cklp_wc_max) / 2);
+		writel(hstx_cklp_wc, dsi->regs + DSI_HSTX_CKL_WC);
+	}
 
 	hs_vb_ps_wc = ps_wc - (dsi->phy_timing.lpx + dsi->phy_timing.da_hs_exit +
 		      dsi->phy_timing.da_hs_prepare + dsi->phy_timing.da_hs_zero + 2) * dsi->lanes;
@@ -576,8 +670,7 @@ static void mtk_dsi_config_vdo_timing(struct mtk_dsi *dsi)
 
 	if (dsi->driver_data->has_size_ctl)
 		writel(FIELD_PREP(DSI_HEIGHT, vm->vactive) |
-			FIELD_PREP(DSI_WIDTH, vm->hactive),
-			dsi->regs + DSI_SIZE_CON);
+			FIELD_PREP(DSI_WIDTH, vm->hactive), dsi->regs + DSI_SIZE_CON);
 
 	if (dsi->driver_data->support_per_frame_lp)
 		mtk_dsi_config_vdo_timing_per_frame_lp(dsi);
@@ -601,6 +694,7 @@ static void mtk_dsi_stop(struct mtk_dsi *dsi)
 static void mtk_dsi_set_cmd_mode(struct mtk_dsi *dsi)
 {
 	writel(CMD_MODE, dsi->regs + DSI_MODE_CTRL);
+	mtk_dsi_set_vm_cmd(dsi, false);
 }
 
 static void mtk_dsi_set_interrupt_enable(struct mtk_dsi *dsi)
@@ -620,42 +714,169 @@ static void mtk_dsi_irq_data_clear(struct mtk_dsi *dsi, u32 irq_bit)
 	dsi->irq_data &= ~irq_bit;
 }
 
+/*
+ * Printed on every IRQ wait timeout. Right now unconditionally (dev_info),
+ * because a trial that dies before userspace cannot switch on dynamic debug;
+ * it goes back to dev_dbg once the display path is proven. Temporary on purpose.
+ */
+static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
+{
+	static const struct {
+		u16 off;
+		const char *name;
+	} regs[] = {
+		{ DSI_START, "DSI_START" },
+		{ DSI_INTEN, "DSI_INTEN" },
+		{ DSI_INTSTA, "DSI_INTSTA" },
+		{ DSI_CON_CTRL, "DSI_CON_CTRL" },
+		{ DSI_MODE_CTRL, "DSI_MODE_CTRL" },
+		{ DSI_TXRX_CTRL, "DSI_TXRX_CTRL" },
+		{ DSI_PSCTRL, "DSI_PSCTRL" },
+		{ DSI_CMDQ_SIZE, "DSI_CMDQ_SIZE" },
+		{ DSI_MEM_CONTI, "DSI_MEM_CONTI" },
+		{ DSI_PHY_LCCON, "DSI_PHY_LCCON" },
+		{ DSI_PHY_LD0CON, "DSI_PHY_LD0CON" },
+		{ DSI_PHY_TIMECON0, "DSI_PHY_TIMECON0" },
+		{ DSI_PHY_TIMECON1, "DSI_PHY_TIMECON1" },
+		{ DSI_PHY_TIMECON2, "DSI_PHY_TIMECON2" },
+		{ DSI_PHY_TIMECON3, "DSI_PHY_TIMECON3" },
+		{ DSI_VM_CMD_CON, "DSI_VM_CMD_CON" },
+	};
+	int i;
+
+	dev_info(dsi->host.dev, "dsi timed out, engine state:\n");
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++)
+		dev_info(dsi->host.dev, "  %-16s 0x%08x\n", regs[i].name,
+			 readl(dsi->regs + regs[i].off));
+
+	/* the engine's own read-back of what it is doing */
+	for (i = 0; i < 9; i++)
+		dev_info(dsi->host.dev, "  STATE_DBG%d      0x%08x\n", i,
+			 readl(dsi->regs + DSI_STATE_DBG0 + 4 * i));
+
+	/* the packet the engine was handed, as it sits in the command queue */
+	for (i = 0; i < 4; i++)
+		dev_info(dsi->host.dev, "  CMDQ[%d]          0x%08x\n", i,
+			 readl(dsi->regs + dsi->driver_data->reg_cmdq_off + 4 * i));
+}
+
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 				     unsigned int timeout)
 {
-	s32 ret = 0;
-	unsigned long jiffies = msecs_to_jiffies(timeout);
 	struct drm_device *drm = dsi->bridge.dev;
+	unsigned int waited = 0;
+	u32 status;
 
-	ret = wait_event_interruptible_timeout(dsi->irq_wait_queue,
-					       dsi->irq_data & irq_flag,
-					       jiffies);
-	if (ret == 0) {
+	if (dsi->driver_data->poll_completion) {
+		/*
+		 * The MT6785 DSI does not raise its interrupt for CMD_DONE: trial
+		 * 10 counted the line's interrupts and every one of them came from
+		 * BUFFER_UNDERRUN or INP_UNFINISH. The vendor polls the status
+		 * register for exactly this reason - DSI_POLLREG32(cmdq_handle,
+		 * &DSI_REG[i]->DSI_INTSTA, 0x2, 0x2) after every command
+		 * (ddp_dsi.c:6693; macro at ddp_dsi.c:65, which is
+		 * DISP_REG_CMDQ_POLLING, ddp_reg.h:242, and runs as cmdqRecPoll
+		 * with the command queue's own timeout), 0x20 for VM_CMD_DONE
+		 * (ddp_dsi.c:6575). The same register, same mask, polled from the
+		 * CPU with the command queue's one-second budget.
+		 */
+		if (!readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+					status & irq_flag, 10, 1000000)) {
+			mtk_dsi_mask(dsi, DSI_INTSTA, status & irq_flag, 0);
+			return 1;
+		}
+
 		drm_warn(drm, "Wait DSI IRQ(0x%08x) Timeout\n", irq_flag);
-
+		mtk_dsi_dump_state(dsi);
 		mtk_dsi_enable(dsi);
 		mtk_dsi_reset_engine(dsi);
+
+		return 0;
 	}
 
-	return ret;
+	for (;;) {
+		if (wait_event_interruptible_timeout(dsi->irq_wait_queue,
+						     dsi->irq_data & irq_flag,
+						     msecs_to_jiffies(10)) > 0)
+			return 1;
+
+		/*
+		 * The engine reports the same completion in DSI_INTSTA whether or
+		 * not its interrupt reaches us, and on this SoC it does not: trial 5
+		 * timed out waiting for CMD_DONE with INTSTA bit 1 already set and
+		 * INTEN bit 1 enabled, the packet sitting in the queue and the panel
+		 * answering. The vendor never depends on that interrupt for command
+		 * completion - ddp_dsi.c polls the register instead
+		 * (DSI_POLLREG32(cmdq, &DSI_REG[i]->DSI_INTSTA, 0x2, 0x2) after every
+		 * command, and the VM command path polls 0x20). So read the register
+		 * and treat a set completion bit as done.
+		 */
+		status = readl(dsi->regs + DSI_INTSTA);
+		if (status & irq_flag) {
+			dev_warn_once(dsi->host.dev,
+				      "dsi completion 0x%08x seen in INTSTA without an interrupt (irq count %u, INTEN 0x%08x)\n",
+				      status & irq_flag, dsi->irq_count,
+				      readl(dsi->regs + DSI_INTEN));
+			mtk_dsi_mask(dsi, DSI_INTSTA, status & irq_flag, 0);
+			return 1;
+		}
+
+		waited += 10;
+		if (waited >= timeout)
+			break;
+	}
+
+	drm_warn(drm, "Wait DSI IRQ(0x%08x) Timeout\n", irq_flag);
+
+	mtk_dsi_dump_state(dsi);
+
+	mtk_dsi_enable(dsi);
+	mtk_dsi_reset_engine(dsi);
+
+	return 0;
 }
 
 static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 {
 	struct mtk_dsi *dsi = dev_id;
-	u32 status, tmp;
+	u32 status, tmp = 0;
 	u32 flag = LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | VM_DONE_INT_FLAG;
+	unsigned int i;
 
-	status = readl(dsi->regs + DSI_INTSTA) & flag;
+	dsi->irq_count++;
+	/*
+	 * Read every event bit, not just the ones we wait on: with the vendor's
+	 * wider enable set an unhandled bit would keep a level-triggered line
+	 * asserted and the interrupt would storm. Wake on our own flags only.
+	 */
+	status = readl(dsi->regs + DSI_INTSTA) & DSI_INT_STATUS_MASK;
 
 	if (status) {
-		do {
+		/*
+		 * Acknowledge the read until the engine is idle again. This used to
+		 * be an unbounded `do { } while (tmp & DSI_BUSY)`, which hangs the
+		 * whole machine in interrupt context when the engine never goes
+		 * idle: trial 4 (poco-m5s/evidence/disp-trial4/pstore-console.txt)
+		 * died there with DSI_INTSTA 0x80001790, BUSY still set, and no
+		 * oops or lockup report before the hardware watchdog. Bound it and
+		 * say so instead.
+		 */
+		for (i = 0; i < 1000; i++) {
 			mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
 			tmp = readl(dsi->regs + DSI_INTSTA);
-		} while (tmp & DSI_BUSY);
+			if (!(tmp & DSI_BUSY))
+				break;
+			udelay(4);
+		}
+
+		if (tmp & DSI_BUSY)
+			dev_warn_ratelimited(dsi->host.dev,
+					     "dsi engine still busy after rack, INTSTA 0x%08x\n",
+					     tmp);
 
 		mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
-		mtk_dsi_irq_data_set(dsi, status);
+		mtk_dsi_irq_data_set(dsi, status & flag);
 		wake_up_interruptible(&dsi->irq_wait_queue);
 	}
 
@@ -664,9 +885,41 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 
 static s32 mtk_dsi_switch_to_cmd_mode(struct mtk_dsi *dsi, u8 irq_flag, u32 t)
 {
-	mtk_dsi_irq_data_clear(dsi, irq_flag);
-	mtk_dsi_set_cmd_mode(dsi);
 	struct drm_device *drm = dsi->bridge.dev;
+	u32 status;
+	int ret;
+
+	mtk_dsi_irq_data_clear(dsi, irq_flag);
+	mtk_dsi_stop(dsi);
+	mtk_dsi_set_cmd_mode(dsi);
+
+	/*
+	 * Leaving video mode is not enough on MT6785, and neither is waiting for BUSY:
+	 * trial 18 varies only the pause after the mode write on the working hand
+	 * sequence - 20 ms and more read the panel, 10 ms and less loses every packet,
+	 * and in the losing case INTSTA reads 0x790, i.e. FRAME_DONE (4) |
+	 * TE_TIMEOUT (7) | VM_VBP_STR (8) | VM_VACT_STR (9) | VM_VFP_STR (10)
+	 * (ddp_reg_dsi.h:102-120) with BUSY *clear*. The engine is still sending the
+	 * frame it was on when MODE_CTRL went to 0 and drops commands written meanwhile,
+	 * so the wait is for that frame's events to drain - the end of the frame is
+	 * observable, nothing sleeps a fixed time. Two frames at 60 Hz is the bound.
+	 */
+	if (dsi->driver_data->poll_completion) {
+		ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+					 !(status & (MT6785_FRAME_DRAIN | DSI_BUSY)),
+					 100, 2 * 16700);
+		if (ret) {
+			drm_err(drm, "the video frame did not finish: INTSTA 0x%08x\n",
+				status);
+			mtk_dsi_dump_state(dsi);
+			mtk_dsi_reset_engine(dsi);
+			return -ETIME;
+		}
+
+		mtk_dsi_mask(dsi, DSI_INTSTA, MT6785_FRAME_DRAIN, 0);
+
+		return 0;
+	}
 
 	if (!mtk_dsi_wait_for_irq_done(dsi, irq_flag, t)) {
 		drm_err(drm, "failed to switch cmd mode\n");
@@ -733,14 +986,12 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	mtk_dsi_enable(dsi);
 
 	if (dsi->driver_data->has_shadow_ctl)
-		writel(FORCE_COMMIT | BYPASS_SHADOW,
-		       dsi->regs + dsi->driver_data->reg_shadow_dbg_off);
+		writel(FORCE_COMMIT | BYPASS_SHADOW, dsi->regs + dsi->driver_data->reg_shadow_dbg_off);
 
 	mtk_dsi_reset_engine(dsi);
 	mtk_dsi_phy_timconfig(dsi);
 
 	mtk_dsi_ps_control(dsi, true);
-	mtk_dsi_set_vm_cmd(dsi);
 	mtk_dsi_config_vdo_timing(dsi);
 	mtk_dsi_set_interrupt_enable(dsi);
 
@@ -1113,6 +1364,17 @@ static ssize_t mtk_dsi_host_send_cmd(struct mtk_dsi *dsi,
 {
 	mtk_dsi_wait_for_idle(dsi);
 	mtk_dsi_irq_data_clear(dsi, flag);
+	/*
+	 * Start from a clean status word and a known enable mask, the way the
+	 * vendor does before every command (ddp_dsi.c, check_rdrdy_cmddone_irq():
+	 * it re-enables RD_RDY and CMD_DONE when they read back as 0, and warns
+	 * "Last DSI Read Why not clear irq???" when the status bits are still
+	 * set). DSI_INTSTA is sticky and nothing in this driver cleared it since
+	 * the loader left it, so a leftover bit could be read as this command's
+	 * completion.
+	 */
+	mtk_dsi_mask(dsi, DSI_INTSTA, flag, 0);
+	mtk_dsi_set_interrupt_enable(dsi);
 	mtk_dsi_cmdq(dsi, msg);
 	mtk_dsi_start(dsi);
 
@@ -1120,6 +1382,186 @@ static ssize_t mtk_dsi_host_send_cmd(struct mtk_dsi *dsi,
 		return -ETIME;
 	else
 		return 0;
+}
+
+/*
+ * Send a write while the engine stays in video mode: the VM command engine
+ * puts the packet into the vertical front porch (TS_VFP_EN, set with VM_CMD_EN
+ * by mtk_dsi_set_vm_cmd() on the switch to video). This is how the MT6785
+ * vendor driver sends every command in video mode (ddp_dsi.c DSI_set_cmdq_V2()
+ * -> DSI_send_vm_cmd(), DSI_EnableVM_CMD() polls INTSTA bit 5), and how the
+ * phone's loader sets the brightness.
+ *
+ * It is needed, not only nicer: on MT6785 a long packet sent from the command
+ * queue right before the switch back to video leaves the engine adding four
+ * zero bytes to every long packet of the video stream (the pixel lines and the
+ * HSA blanking packet), so the panel shows each line shifted by 4/3 pixel and
+ * its colours rotated. Measured on the phone with the DSI packet checksum
+ * (DSI 0x144 with CHKSUM_REC_EN): a black line checks as 3244 zero bytes
+ * instead of 3240, a white one as 3240 x 0xff followed by four zeros. Any long
+ * command-queue packet (2 to 8 bytes tried, LP or HS) does it, a short packet
+ * sent after it undoes it, a DSI engine or D-PHY reset does not, and a VM
+ * command does not cause it. Mainline's path stops the video, sends the
+ * backlight's two-byte brightness as a long DCS write and restarts the video,
+ * which is exactly that order.
+ */
+static bool mtk_dsi_vm_cmd_can_send(struct mtk_dsi *dsi,
+				    const struct mipi_dsi_msg *msg)
+{
+	return dsi->driver_data->vm_cmd_writes &&
+	       !MTK_DSI_HOST_IS_READ(msg->type) &&
+	       msg->tx_len <= VM_CMD_MAX_PAYLOAD;
+}
+
+static ssize_t mtk_dsi_vm_cmd_send(struct mtk_dsi *dsi,
+				   const struct mipi_dsi_msg *msg)
+{
+	const u8 *tx_buf = msg->tx_buf;
+	u32 con = VM_CMD_EN | TS_VFP_EN | FIELD_PREP(VM_CMD_DATA_ID, msg->type);
+	unsigned int w = 0, start = 0;
+	size_t i, j;
+	u32 val;
+	int ret;
+
+	if (mipi_dsi_packet_format_is_long(msg->type)) {
+		con |= VM_CMD_LONG_PKT |
+		       FIELD_PREP(VM_CMD_DATA_0, msg->tx_len & 0xff) |
+		       FIELD_PREP(VM_CMD_DATA_1, msg->tx_len >> 8);
+		for (i = 0; i < msg->tx_len; i += 4) {
+			if (i - start >= mtk_dsi_vm_cmd_data[w].len)
+				start += mtk_dsi_vm_cmd_data[w++].len;
+			val = 0;
+			for (j = 0; j < 4 && i + j < msg->tx_len; j++)
+				val |= tx_buf[i + j] << (j * 8);
+			writel(val, dsi->regs + mtk_dsi_vm_cmd_data[w].off + i - start);
+		}
+	} else {
+		if (msg->tx_len > 0)
+			con |= FIELD_PREP(VM_CMD_DATA_0, tx_buf[0]);
+		if (msg->tx_len > 1)
+			con |= FIELD_PREP(VM_CMD_DATA_1, tx_buf[1]);
+	}
+
+	writel(con, dsi->regs + dsi->driver_data->reg_vm_cmd_off);
+	mtk_dsi_mask(dsi, DSI_INTSTA, VM_CMD_DONE_INT_FLAG, 0);
+	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, 0);
+	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, VM_CMD_START);
+
+	/* sent in the next front porch; a frame is 16.7 ms at 60 Hz */
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, val,
+				 val & VM_CMD_DONE_INT_FLAG, 100,
+				 100 * USEC_PER_MSEC);
+
+	mtk_dsi_mask(dsi, DSI_START, VM_CMD_START, 0);
+	mtk_dsi_mask(dsi, DSI_INTSTA, VM_CMD_DONE_INT_FLAG, 0);
+
+	if (ret) {
+		dev_err(dsi->dev, "VM command 0x%02x not sent: %d\n", msg->type, ret);
+		return ret;
+	}
+
+	return msg->tx_len;
+}
+
+/*
+ * Read a panel register with the sequence measured to work on this phone
+ * (poco-m5s/evidence/disp-trial9/dcsread.py, and the vendor's
+ * DSI_dcs_read_lcm_reg_v2(), ddp_dsi.c:4487): the maximum-return-size packet on its
+ * own with its own start, then the read with BTA in low power, then RD_RDY, the RX
+ * registers, RACK and an idle engine.
+ *
+ * Two things of the vendor's three-entry queue (DSI_send_read_cmd(), ddp_dsi.c:4014)
+ * are deliberately not used here: its first entry, a DCS 0x15 write of 0xB0 (the
+ * manufacturer global-parameter offset register, which nothing proves for this
+ * s6e8fc0 panel), and its HSTX config bit. Trial 17 shows why the queue as a whole
+ * cannot be a starting point: with the three entries and HSTX the engine never ran at
+ * all - INTSTA stayed 0x0 with DSI_START 0x1 and CMDQ_SIZE 3 - while the hand
+ * sequence, one entry per start and no HSTX, reads the panel correctly on the same
+ * kernel. So each step waits for a bit that measurment shows: the engine going idle
+ * (BUSY clear) after the size packet, and RD_RDY for the read.
+ */
+static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
+				    const struct mipi_dsi_msg *msg)
+{
+	struct drm_device *drm = dsi->bridge.dev;
+	u32 reg_cmdq_off = dsi->driver_data->reg_cmdq_off;
+	u32 size = min_t(u32, msg->rx_len, 10);
+	u8 read_data[16], cmd = *((u8 *)msg->tx_buf);
+	void *src_addr;
+	ssize_t recv_cnt;
+	u32 status;
+	int ret, i;
+
+	if (!msg->rx_buf)
+		return -EINVAL;
+
+	/* nothing may be queued while the engine still works */
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 !(status & DSI_BUSY), 100, 1000000);
+	if (ret) {
+		drm_err(drm, "engine busy before the read\n");
+		return -ETIME;
+	}
+
+	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
+
+	/* 1. the maximum return size: its own packet, its own start */
+	writel((0x37 << 8) | (size << 16), dsi->regs + reg_cmdq_off);
+	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
+	mtk_dsi_start(dsi);
+
+	ret = readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
+				 !(status & DSI_BUSY), 100, 300000);
+	if (ret) {
+		drm_err(drm, "engine still busy after the size packet\n");
+		mtk_dsi_dump_state(dsi);
+		mtk_dsi_reset_engine(dsi);
+		return -ETIME;
+	}
+
+	/* 2. the read itself: BTA, low power, one entry, one start */
+	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
+	writel((msg->type << 8) | (cmd << 16) | BTA, dsi->regs + reg_cmdq_off);
+	mtk_dsi_mask(dsi, DSI_CMDQ_SIZE, CMDQ_SIZE, 1);
+	mtk_dsi_start(dsi);
+
+	/*
+	 * The read-ready comes from the interrupt and only from it: mtk_dsi_irq()
+	 * acknowledges the read (RACK), clears the status word and wakes this queue,
+	 * so there is exactly one owner of DSI_INTSTA and this path must not poll
+	 * the flag the handler has already cleared. Trial 22 measured the race in
+	 * its DIAG trace: RD_RDY set (INTSTA 0x80000001), then "R 0x084 = 0,
+	 * W 0x084 = 1, R 0x00c, W 0x00c" - the handler's ack - and then 346 polls of
+	 * a register that no longer carried the flag, so the RX data was never read.
+	 */
+	ret = wait_event_interruptible_timeout(dsi->irq_wait_queue,
+					       dsi->irq_data & LPRX_RD_RDY_INT_FLAG,
+					       msecs_to_jiffies(300));
+	mtk_dsi_irq_data_clear(dsi, LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG);
+	if (ret <= 0) {
+		drm_err(drm, "no read-ready from the panel\n");
+		mtk_dsi_dump_state(dsi);
+		mtk_dsi_reset_engine(dsi);
+		return -ETIME;
+	}
+
+	/* the handler stopped the engine and acknowledged before waking us */
+	for (i = 0; i < 16; i++)
+		read_data[i] = readb(dsi->regs + DSI_RX_DATA0 + i);
+
+	recv_cnt = mtk_dsi_recv_cnt(read_data[0], read_data);
+
+	if (recv_cnt > 2)
+		src_addr = &read_data[4];
+	else
+		src_addr = &read_data[1];
+
+	recv_cnt = min_t(ssize_t, recv_cnt, 10);
+	recv_cnt = min_t(ssize_t, recv_cnt, msg->rx_len);
+	if (recv_cnt > 0)
+		memcpy(msg->rx_buf, src_addr, recv_cnt);
+
+	return recv_cnt;
 }
 
 static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
@@ -1135,11 +1577,26 @@ static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
 	int ret, i;
 
 	dsi_mode = readl(dsi->regs + DSI_MODE_CTRL);
+	if ((dsi_mode & MODE) && mtk_dsi_vm_cmd_can_send(dsi, msg))
+		return mtk_dsi_vm_cmd_send(dsi, msg);
+
 	if (dsi_mode & MODE) {
 		mtk_dsi_stop(dsi);
 		ret = mtk_dsi_switch_to_cmd_mode(dsi, VM_DONE_INT_FLAG, 500);
 		if (ret)
 			goto restore_dsi_mode;
+	}
+
+	/*
+	 * The MT6785 read has its own sequence (see mtk_dsi_read_lcm_reg): the size
+	 * packet, then the read with BTA, each with its own start.
+	 */
+	if (MTK_DSI_HOST_IS_READ(msg->type) && dsi->driver_data->poll_completion) {
+		ssize_t cnt = mtk_dsi_read_lcm_reg(dsi, msg);
+
+		ret = (cnt < 0) ? (int)cnt : 0;
+		recv_cnt = cnt;
+		goto restore_dsi_mode;
 	}
 
 	if (MTK_DSI_HOST_IS_READ(msg->type))
@@ -1259,6 +1716,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret, "Failed to request DSI irq\n");
 	}
 
+
 	dsi->bridge.of_node = dev->of_node;
 	dsi->bridge.type = DRM_MODE_CONNECTOR_DSI;
 
@@ -1293,6 +1751,40 @@ static const struct mtk_dsi_driver_data mt8183_dsi_driver_data = {
 	.has_size_ctl = true,
 };
 
+/*
+ * MT6785 has the MT8183 register layout - command queue at 0x200, VM command at
+ * 0x130, shadow control at 0x190, all confirmed in the vendor's mt6785 ddp_reg_dsi.h
+ * - but it also needs DSI_MEM_CONTI on every lane configuration, which the MT8183
+ * path never writes. Without it the host does not walk its memory while sending
+ * a command from the command queue, so a DCS write never completes: trial 2
+ * timed out on CMD_DONE for EXIT_SLEEP_MODE with DSI_MEM_CONTI (0x090) reading 0
+ * while the working loader state has 0x3c
+ * (poco-m5s/evidence/disp-trial2/dsi-mipitx-regs{-loader,}.txt).
+ */
+static const struct mtk_dsi_driver_data mt6785_dsi_driver_data = {
+	.reg_cmdq_off = 0x200,
+	.reg_vm_cmd_off = 0x130,
+	.reg_shadow_dbg_off = 0x190,
+	/*
+	 * No shadow control, because the vendor only touches it under
+	 * DISP_OPT_SHADOW_REGISTER and this phone runs with that off: its
+	 * _ddp_dsi_start() writes DSI_SHADOW_DEBUG only inside that option
+	 * (ddp_dsi.c:6321-6346), and the loader's working state reads
+	 * 0x190 = 0x00000000 (poco-m5s/evidence/disp-trial8/regs-loader.txt).
+	 *
+	 * Mainline writes FORCE_COMMIT | BYPASS_SHADOW there for every SoC whose
+	 * data says has_shadow_ctl, which is mt8183 and later; for mt6785 that
+	 * bypasses the DSI's shadow registers, so a timing register write takes
+	 * effect the moment it lands instead of at a frame boundary.
+	 */
+	.has_shadow_ctl = false,
+	.has_size_ctl = true,
+	.needs_mem_conti = true,
+	.has_hstx_cklp_auto = true,
+	.vm_cmd_writes = true,
+	.poll_completion = true,
+};
+
 static const struct mtk_dsi_driver_data mt8186_dsi_driver_data = {
 	.reg_cmdq_off = 0xd00,
 	.reg_vm_cmd_off = 0x200,
@@ -1315,6 +1807,7 @@ static const struct of_device_id mtk_dsi_of_match[] = {
 	{ .compatible = "mediatek,mt2701-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8167-dsi", .data = &mt2701_dsi_driver_data },
 	{ .compatible = "mediatek,mt8173-dsi", .data = &mt8173_dsi_driver_data },
+	{ .compatible = "mediatek,mt6785-dsi", .data = &mt6785_dsi_driver_data },
 	{ .compatible = "mediatek,mt8183-dsi", .data = &mt8183_dsi_driver_data },
 	{ .compatible = "mediatek,mt8186-dsi", .data = &mt8186_dsi_driver_data },
 	{ .compatible = "mediatek,mt8188-dsi", .data = &mt8188_dsi_driver_data },
