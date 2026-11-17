@@ -744,6 +744,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	dev_err(scp->dev, "core PC %#x LR %#x SP %#x PSP %#x\n",
 		readl(cfg + MT8183_SCP_DEBUG_PC), readl(cfg + MT8183_SCP_DEBUG_LR),
 		readl(cfg + MT8183_SCP_DEBUG_SP), readl(cfg + MT8183_SCP_DEBUG_PSP));
+	dev_err(scp->dev, "SCP_A_TO_HOST interrupts seen: %u\n", scp->to_host_irqs);
 	dev_err(scp->dev, "sleep %#x to_host %#x gipc_in %#x\n",
 		readl(cfg + MT8183_SCP_SLEEP_STATUS),
 		readl(cfg + MT8183_SCP_TO_HOST), readl(cfg + MT8183_HOST_TO_SCP));
@@ -1192,6 +1193,14 @@ static int scp_start(struct rproc *rproc)
 			 MT6785_SCP_CM4_READY_TO_REBOOT);
 
 	scp->data->scp_reset_deassert(scp);
+
+	/*
+	 * One read back, immediately: the core has just been released and cannot have taken the
+	 * bus yet, so this is the last honest look at the register the write went to.
+	 */
+	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs)
+		dev_info(dev, "released the core: sw_rstn reads %#x (bit0 set is released)\n",
+			 readl(scp->cluster->reg_base + MT8183_SW_RSTN));
 	/*
 	 * Nothing reads the SCP's registers or its TCM from here on: the core owns the bus, and
 	 * the vendor's driver does not read it either. Readiness is the ready IPI over
@@ -2360,33 +2369,37 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 		return -EINVAL;
 	}
 	if (loader_len > MT6785_SCP_LOADER_SLOT ||
-	    base + MT6785_SCP_DRAM_OFS + dram_len >
+	    base + MT6785_LK_DRAM_OFS + dram_len >
 		    scp->dma_addr + scp->data->scp_sizes->max_dram_size) {
 		dev_err(scp->dev, "image does not fit: loader %#zx dram %#zx\n",
 			loader_len, dram_len);
 		return -EINVAL;
 	}
 
+	/*
+	 * LK's own layout, address for address (pl_lk.txt:2406-2411): the firmware's TCM part at
+	 * +0x800 with 0xbb800 bytes - the loader copies exactly that to core 0x800, so anything
+	 * beyond it is not staged at all - and the dram record at +0x100000. The backup slot stays
+	 * free for the vendor's own copy.
+	 */
 	fw_len = min_t(size_t, scp_len, MT6785_SCP_FIRMWARE_TCM_MAX);
-	rest_len = scp_len - fw_len;
+	rest_len = 0;
+	scp->mtk_dram_ofs = MT6785_LK_DRAM_OFS;
 
 	memcpy_toio(scp->sram_base, loader, loader_len);
 	/* LK's own copy puts the initial stack pointer and the reset vector here (0x538, 0x1e1) */
 	dev_info(scp->dev, "loader in the TCM: SP %#x reset vector %#x, %#zx bytes from the firmware\n",
 		 readl(scp->sram_base), readl(scp->sram_base + 4), loader_len);
-	memcpy_toio(scp->cpu_addr + MT6785_SCP_LOADER_SLOT, scp_img, fw_len);
-	if (rest_len)
-		memcpy_toio(scp->cpu_addr + MT6785_SCP_REST_OFS,
-			    scp_img + fw_len, rest_len);
-	memcpy_toio(scp->cpu_addr + MT6785_SCP_DRAM_OFS, dram, dram_len);
+	memcpy_toio(scp->cpu_addr + MT6785_LK_FIRMWARE_OFS, scp_img, fw_len);
+	memcpy_toio(scp->cpu_addr + scp->mtk_dram_ofs, dram, dram_len);
 
 	ri.ap_loader_start = base;
 	ri.ap_loader_size = MT6785_SCP_LOADER_SLOT;
-	ri.ap_firmware_start = base + MT6785_SCP_LOADER_SLOT;
+	ri.ap_firmware_start = base + MT6785_LK_FIRMWARE_OFS;
 	ri.ap_firmware_size = fw_len;
-	ri.ap_dram_start = base + MT6785_SCP_DRAM_OFS;
+	ri.ap_dram_start = base + scp->mtk_dram_ofs;
 	ri.ap_dram_size = dram_len;
-	ri.ap_dram_backup_start = base + MT6785_SCP_DRAM_OFS * 2;
+	ri.ap_dram_backup_start = base + MT6785_LK_DRAM_OFS * 2;
 	ri.il1c_con = MT6785_SCP_L1C_CON;
 	ri.dl1c_con = MT6785_SCP_L1C_CON;
 	ri.struct_size = sizeof(ri);
@@ -2394,9 +2407,9 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 	/* the loader must see the region info before the core is released */
 	wmb();
 
-	dev_info(scp->dev, "staged the MTK image: loader %#zx into the TCM, firmware %#x (+%#x in the carve-out) at %#llx, dram %#zx at %#llx\n",
-		 loader_len, fw_len, rest_len, (u64)ri.ap_firmware_start,
-		 dram_len, (u64)ri.ap_dram_start);
+	dev_info(scp->dev, "staged the MTK image: loader %#zx into the TCM, firmware %#x at %#llx, dram %#zx at %#llx\n",
+		 loader_len, fw_len, (u64)ri.ap_firmware_start, dram_len,
+		 (u64)ri.ap_dram_start);
 
 	return 0;
 }
