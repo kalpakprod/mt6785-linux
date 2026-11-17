@@ -73,6 +73,15 @@
  * errors 0" on every port looks like.
  */
 #define SENINF_TOP_PHY_SENINF_CTL_CSI0	0x001C
+
+/*
+ * Which receiver instance the streaming sensor is wired to: the board routes its sensors through
+ * a MIPI switch onto one port, and which one cannot be read from any source we have. A module
+ * parameter lets one boot try every port: 0 = instance 1 (base + 0x0), 1 and 2 the next ones.
+ */
+static int csi_port;
+module_param(csi_port, int, 0444);
+MODULE_PARM_DESC(csi_port, "receiver instance to program and read, 0-based");
 #define SENINF_TOP_PHY_CSI0_4D1C	0x80001100
 #define SENINF_TOP_PHY_CSI0_MASK	0x7fffc8fe
 
@@ -326,66 +335,40 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	/*
-	 * The complete kernel-side sequence for this receiver, taken verbatim from the ChromeOS
-	 * mt8183 driver - the same ISP 5.0 generation - with its own masks, order and values
-	 * (scratch/native/5-cameras/tmp/cros/mtk_seninf.c:321-408 for the CSI/MIPI part). Offsets come
-	 * from its header (mtk_seninf_reg.h) and agree with this phone's vendor dump. 4D1C D-PHY on
-	 * CSI0, four lanes, RAW10.
+	 * Only the writes disp62 saw hold are kept, at the cezanne layout this receiver answers on:
+	 * 0xa00 keeps the lane enables (0xf, and nothing else - SENINF1_CSI2_CTL on cezanne),
+	 * 0xa08 keeps 0x500 of the settle word, 0xa10 keeps 0x71f, 0xa18 keeps 0xa. The MT8183
+	 * writes that read back zero (0x200 pad_sel and the 0x80 pulse, 0x204, 0xa74, 0xb20, 0xa40,
+	 * 0xb10, 0x1c) are dropped: they are another receiver's field map.
 	 */
 	{
-		void __iomem *in = seninf->base;	/* SENINF1: instance base 0x1a040000 */
-		u32 val;
+		void __iomem *in = seninf->base + 0x1000 * csi_port;
+		struct { u32 off; u32 val; const char *what; } seq[] = {
+			{ 0x0a00, 0x0000000f, "CSI2 lane enables (sticky)" },
+			{ 0x0a08, 0x00000500, "CSI2 settle (sticky part 0x500)" },
+			{ 0x0a10, 0x0000071f, "CSI2 interrupt enable (sticky)" },
+			{ 0x0a18, 0x0000000a, "CSI2 debug select (sticky)" },
+			{ 0x0d00, 0x00000001, "seninf mux enable" },
+			{ 0x0d04, 0x002b0000, "seninf mux data type RAW10" },
+			{ 0x0400, 0x00000000, "cam mux ctrl0" },
+			{ 0x0404, 0x00000001, "cam mux ctrl1" },
+			{ 0x0408, 0x00000000, "cam mux ctrl2" },
+			{ 0x040c, 0x00000000, "cam mux ctrl3" },
+			{ 0x0410, 0x00000008, "cam mux enable, mux 3 (CAMSV0)" },
+		};
+		unsigned int i;
 
-#define WR32(_off, _val, _what) do { \
-		writel((_val), in + (_off)); \
-		dev_info(seninf->dev, "seninf %s: 0x%08llx = 0x%08x -> 0x%08x\n", (_what), \
-			 (unsigned long long)seninf->base_pa + (_off), (u32)(_val), \
-			 readl(in + (_off))); \
-	} while (0)
+		dev_info(seninf->dev, "programming receiver instance %d at 0x%08llx\n",
+			 csi_port + 1, (unsigned long long)seninf->base_pa + 0x1000 * csi_port);
 
-		/// cros :351-356 - the 4D1C case for CSI0.
-		WR32(0x001c, (0x7fffc8fe & readl(in + 0x001c)) | 0x80001100,
-		     "TOP_PHY_SENINF_CTL_CSI0 (4D1C)");
-
-		/// cros :360-366 - enable the interface, select the pad, clear the source select.
-		WR32(0x0200, readl(in + 0x0200) | 0x1, "SENINF1_CTRL enable");
-		WR32(0x0200, (0x8fffffff & readl(in + 0x0200)) | (1 << 28),
-		     "SENINF1_CTRL pad_sel 10bit");
-		WR32(0x0200, 0xffff0fff & readl(in + 0x0200), "SENINF1_CTRL src sel");
-		WR32(0x0204, (0xffffff9f & readl(in + 0x0204)) | 0x40, "SENINF1_CTRL_EXT");
-
-		/// cros :372-392 - DPCM, settle, lanes, header order, resync, mode, sync, trail.
-		WR32(0x0a0c, 0, "CSI2_DPCM");
-		WR32(0x0a08, (0xffff00ff & readl(in + 0x0a08)) | (0x15 << 8),
-		     "CSI2_LNRD_TIMING settle 0x15");
-		val = readl(in + 0x0a00) | (1 << 16) | 0x10 | ((1 << 4) - 1);
-		WR32(0x0a00, val, "CSI2_CTL 4 lanes, header order");
-		WR32(0x0a74, (0xfffff3f8 & readl(in + 0x0a74)) | 0x3, "CSI2_RESYNC_MERGE_CTL");
-		WR32(0x0ae8, 0xfffff800 & readl(in + 0x0ae8), "CSI2_MODE");
-		WR32(0x0b20, 0x1dff00, "CSI2_DPHY_SYNC");
-		WR32(0x0a20, 0xfffffffe & readl(in + 0x0a20), "CSI2_SPARE0");
-		WR32(0x0a00, (0xf5ffff7f & readl(in + 0x0a00)) | 0x2000000,
-		     "CSI2_CTL |= 0x2000000");
-		WR32(0x0a40, (0xffffff00 & readl(in + 0x0a40)) | 0x8, "CSI2_HS_TRAIL 0x8");
-
-		/// cros :394-408 - debug port, interrupt enables, then the one-microsecond enable pulse.
-		WR32(0x0a18, 0x8000001a, "CSI2_DGB_SEL");
-		WR32(0x0a10, 0xffffffff, "CSI2_INT_EN");
-		WR32(0x0a14, 0xffffffff, "CSI2_INT_STATUS clear");
-		WR32(0x0b10, 0x1f, "CSI2_INT_EN_EXT");
-		WR32(0x0200, (0xffffff7f & readl(in + 0x0200)) | 0x80, "SENINF1_CTRL |= 0x80");
-		udelay(1);
-		WR32(0x0200, 0xffffff7f & readl(in + 0x0200), "SENINF1_CTRL clear 0x80");
-#undef WR32
-
-		/* The cam-mux block stays at this SoC's own offsets (vendor dump, note 44). */
-		writel(0x00000000, in + 0x0400);
-		writel(0x00000001, in + 0x0404);
-		writel(0x00000000, in + 0x0408);
-		writel(0x00000000, in + 0x040c);
-		writel(0x00000008, in + 0x0410);
-		dev_info(seninf->dev, "cam mux: CTRL1 0x%08x EN 0x%08x\n",
-			 readl(in + 0x0404), readl(in + 0x0410));
+		for (i = 0; i < ARRAY_SIZE(seq); i++) {
+			writel(seq[i].val, in + seq[i].off);
+			dev_info(seninf->dev, "prog %s: 0x%08llx = 0x%08x -> 0x%08x\n",
+				 seq[i].what,
+				 (unsigned long long)seninf->base_pa + 0x1000 * csi_port +
+				 seq[i].off,
+				 seq[i].val, readl(in + seq[i].off));
+		}
 	}
 
 
