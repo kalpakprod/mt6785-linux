@@ -100,6 +100,10 @@ struct mt6359_gauge {
 	long long charge_full_uah;
 
 	/* Previous counter sample, for current_now. */
+	/* Charge at the resting point the OCV table gave us, and the counter then. */
+	long long base_uah;
+	long long base_car;
+	struct power_supply_battery_info *batt;
 	long long last_car;
 	ktime_t last_time;
 	long long current_ua;
@@ -217,6 +221,22 @@ static int mt6359_gauge_get_property(struct power_supply *psy,
 			return ret;
 		val->intval = mt6359_car_to_uah(car, MT6359_R_FG_NOMINAL);
 		return 0;
+	case POWER_SUPPLY_PROP_CAPACITY:
+		/*
+		 * The upstream conversion, not an invented scheme: the percentage at boot
+		 * comes from power_supply_batinfo_ocv2cap() on the rested voltage, and every
+		 * later read adds the counter's movement since that point, so the number
+		 * follows the charge with the OCV table as its anchor.
+		 */
+		if (!g->batt || g->charge_full_uah <= 0)
+			return -ENODATA;
+		ret = mt6359_gauge_read_car(g, &car);
+		if (ret)
+			return ret;
+		car = mt6359_car_to_uah(car, MT6359_R_FG_NOMINAL) - g->base_car +
+		      g->base_uah;
+		val->intval = mt6359_uah_to_capacity(car, g->charge_full_uah);
+		return 0;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 		val->intval = g->charge_full_uah;
 		return 0;
@@ -281,6 +301,7 @@ static enum power_supply_property mt6359_gauge_props[] = {
 	 */
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	/*
@@ -344,6 +365,19 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	 * charge is multiplied by 10 (mt6359_gauge.c:258-260, :303-305). Printing that
 	 * factor as "10 mOhm" was wrong in the first trial; it is a factor.
 	 */
+	/*
+	 * The battery profile from the DT (simple-battery, the node the board already had),
+	 * read the upstream way: power_supply_get_battery_info() (drivers/power/supply/
+	 * power_supply_core.c) and, for the conversion, power_supply_batinfo_ocv2cap()
+	 * (:1309) which interpolates the OCV table of the current temperature.
+	 */
+	ret = power_supply_get_battery_info(g->psy, &g->batt);
+	if (ret) {
+		dev_warn(&pdev->dev, "no battery profile (%d): capacity stays unsupported\n",
+			 ret);
+		g->batt = NULL;
+	}
+
 	/* The board's own numbers, as the vendor battery profile carries them. */
 	g->r_fg_value = 5;		/* R_FG_VALUE 5, bat_setting/mt6785_battery_prop.dtsi:16 */
 	g->car_tune_value = 100;	/* CAR_TUNE_VALUE 100, same file :24 */
@@ -404,6 +438,30 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	if (IS_ERR(g->psy))
 		return dev_err_probe(&pdev->dev, PTR_ERR(g->psy),
 				     "cannot register the power supply\n");
+
+	/*
+	 * Anchor capacity on the resting open-circuit voltage once, here. The upstream
+	 * helper wants uV and a temperature; with one table in the profile the first
+	 * ocv-capacity-celsius entry is the temperature it applies to.
+	 */
+	if (g->batt && g->vbat) {
+		int ocv = 0, temp = 25, pct;
+
+		if (!iio_read_channel_processed(g->vbat, &ocv)) {
+			ocv *= 1000;	/* the channel reports mV */
+			/* One table in the profile: its first temperature. */
+			temp = g->batt->ocv_temp[0];
+			pct = power_supply_batinfo_ocv2cap(g->batt, ocv, temp);
+			if (pct > 0) {
+				g->base_uah = g->charge_full_uah * pct / 100;
+				g->base_car = mt6359_car_to_uah(g->last_car,
+								MT6359_R_FG_NOMINAL);
+				dev_info(&pdev->dev,
+					 "capacity anchored at %d %% (%d uV, %d C)\n",
+					 pct, ocv, temp);
+			}
+		}
+	}
 
 	INIT_DELAYED_WORK(&g->sample, mt6359_gauge_sample);
 	schedule_delayed_work(&g->sample, msecs_to_jiffies(MT6359_FG_SAMPLE_MS));

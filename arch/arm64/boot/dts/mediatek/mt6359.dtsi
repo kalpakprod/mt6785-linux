@@ -37,6 +37,9 @@
 		 */
 		gauge {
 			compatible = "mediatek,mt6359-gauge";
+			/* Rosemary's battery profile, the simple-battery node of the board
+			 * DT: the gauge turns its OCV table into a capacity at boot. */
+			monitored-battery = <&battery>;
 			mediatek,r-fg-value = <5>;
 			/* The battery voltage channel is set by the board: it is the MT6360
 			 * ADC channel the generic adc-battery already reads (channel 4 in
