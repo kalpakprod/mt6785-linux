@@ -1553,12 +1553,6 @@ static int ov13b10_diag_probe(struct ov13b10 *ov13b)
 			 gpiod_get_value_cansleep(sel));
 	}
 
-	ret = pm_runtime_resume_and_get(ov13b->dev);
-	if (ret) {
-		dev_warn(ov13b->dev, "DIAG: cannot power the part for the probe: %d\n", ret);
-		return ret;
-	}
-
 	ret = ov13b10_diag_read_id(client, client->addr, id);
 	dev_warn(ov13b->dev, "DIAG: id at 0x%02x: %s %*phN\n", client->addr,
 		 ret < 0 ? "no answer" : "answer", 3, id);
@@ -1574,8 +1568,6 @@ static int ov13b10_diag_probe(struct ov13b10 *ov13b)
 			 ret < 0 ? "no answer" : "answer", 3, alt_id);
 		i2c_unregister_device(alt);
 	}
-
-	pm_runtime_put_autosuspend(ov13b->dev);
 
 	return 0;
 }
@@ -1727,6 +1719,13 @@ static int ov13b10_probe(struct i2c_client *client)
 			return ret;
 		}
 
+		/*
+		 * DIAG (not for upstream): the part is powered and out of reset right here, and this
+		 * is the last moment before the identify can fail the whole probe: read the chip id
+		 * at both candidate addresses and report the MIPI switch.
+		 */
+		ov13b10_diag_probe(ov13b);
+
 		/* Check module identity */
 		ret = ov13b10_identify_module(ov13b);
 		if (ret) {
@@ -1763,15 +1762,6 @@ static int ov13b10_probe(struct i2c_client *client)
 		pm_runtime_set_active(ov13b->dev);
 	pm_runtime_enable(ov13b->dev);
 	pm_runtime_idle(ov13b->dev);
-
-	/*
-	 * DIAG (not for upstream): which address does this module answer at, and is the MIPI
-	 * switch driven at all? The failed probe leaves the sensor unpowered (rails released, reset
-	 * asserted, MCLK off), so nobody can answer that with i2cdetect - it has to happen here,
-	 * while the driver can power the part itself.
-	 */
-	if (ov13b10_diag_probe(ov13b))
-		dev_warn(ov13b->dev, "DIAG: the address/switch probe did not complete\n");
 
 	ret = v4l2_async_register_subdev_sensor(&ov13b->sd);
 	if (ret < 0)
