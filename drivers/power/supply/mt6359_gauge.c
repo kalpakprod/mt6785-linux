@@ -507,17 +507,25 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	 * condition the anchor now requires - no IR-drop compensation is invented here.
 	 */
 	{
-		int ocv = 0, pct, cur = 0;
+		int ocv = 0, pct;
+		long long cur_raw = 0;
 
-		ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, (long long *)&cur);
+		/*
+		 * The type matters: this was `int cur` read through a `(long long *)` cast,
+		 * i.e. an eight-byte store into a four-byte stack slot. That smashed the
+		 * frame and reset the phone the moment the module was loaded - before a
+		 * single printk could reach a live dmesg stream, which is exactly how
+		 * conn31 failed. No such casts anywhere: the helper takes a long long *.
+		 */
+		ret = mt6359_gauge_read_reg(g, MT6359_FGADC_CUR_CON0, &cur_raw);
 		if (ret) {
 			dev_warn(&pdev->dev, "cannot read current for the anchor (%d)\n", ret);
 			goto no_anchor;
 		}
-		if (abs((int)(s16)cur) * 610 > 50000) {
+		if (abs((int)(s16)cur_raw) * 610 > 50000) {
 			dev_warn(&pdev->dev,
 				 "battery is loaded (%d mA): no OCV anchor, capacity off until a rest\n",
-				 (int)(s16)cur * 610 / 1000);
+				 (int)(s16)cur_raw * 610 / 1000);
 			goto no_anchor;
 		}
 
@@ -541,6 +549,26 @@ static int mt6359_gauge_probe(struct platform_device *pdev)
 	}
 
 no_anchor:
+
+	/*
+	 * The hardware-latched power-on OCV, the vendor's own anchor source:
+	 * PMIC_AUXADC_ADC_OUT_PWRON_PCHR is MT6359_AUXADC_ADC19 (offset 0x10aa), the
+	 * value in its low 15 bits and its ready flag in bit 15
+	 * (upmu_hw.h:714, :10279-10286); the vendor takes it in
+	 * read_hw_ocv_6359_power_on() (mt6359_gauge.c:1199-1224). Read and logged here as
+	 * the calibration point: the vendor converts it with its REG_to_MV_value()
+	 * helper, whose reference and divider constants are not in any source in this
+	 * repository, so the value is not turned into millivolts by guesswork yet.
+	 */
+	{
+		unsigned int hw_ocv = 0;
+
+		if (!regmap_read(g->regmap, 0x10aa, &hw_ocv))
+			dev_info(&pdev->dev,
+				 "power-on OCV: raw %u, ready %u%s\n", hw_ocv & 0x7fff,
+				 (hw_ocv >> 15) & 1,
+				 (hw_ocv >> 15) & 1 ? "" : " (no sample latched)");
+	}
 
 	/* Calibration data for the NTC divider: raw and the two candidates. */
 	if (g->ntc) {
