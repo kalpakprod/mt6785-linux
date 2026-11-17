@@ -881,6 +881,24 @@ static void md_spm_firmware_state(struct ccci_md *md)
 		 r.a0 == 1 ? "loaded" :
 		 r.a0 == 0 ? "NOT loaded" : "not init / refused",
 		 (long)r.a1, (long)r.a2, (long)r.a3);
+	if (md->spm) {
+		unsigned int src_req = readl(md->spm + SPM_SRC_REQ);
+		unsigned int src_mask = readl(md->spm + SPM_SRC_MASK);
+
+		/*
+		 * The MD's requests reach the PCM block through this router, so its mask says
+		 * whether the modem's 26 MHz / 1.8 V / DDR requests are forwarded to the SPM at
+		 * all (bits 0-6 for MD1, 7-13 for MD2, mt6785/mtk_spm_reg.h:837-851). Read-only:
+		 * the vendor kernel's own MT6785 init writes nothing here (its
+		 * spm_register_init() only maps the base and takes the IRQ, mt6785/mtk_spm.c:
+		 * 138-170), so anything we would write would be our own invention.
+		 */
+		dev_info(md->dev,
+			 "spm src router: SPM_SRC_REQ %#x (MD1 bits %#x), SPM_SRC_MASK %#x (MD1 bits %#x, MD2 bits %#x)\n",
+			 src_req, (unsigned int)(src_req & SPM_SRC_MD_MASK_0), src_mask,
+			 (unsigned int)(src_mask & SPM_SRC_MD_MASK_0),
+			 (unsigned int)(src_mask & SPM_SRC_MD_MASK_1));
+	}
 }
 
 static void md_loader_state(struct ccci_md *md, const char *when)

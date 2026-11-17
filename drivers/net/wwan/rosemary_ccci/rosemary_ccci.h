@@ -270,6 +270,17 @@ struct ap_query_md_feature_v2_1 {
 #define MD1_PWR_ON		BIT(2)
 #define MD1_PWR_ON_2ND		BIT(3)
 #define SPM_MD1_PWR_CON		0x318
+/*
+ * The SPM's request router, which is what the MD's own requests go through before the PCM
+ * block shows them: SPM_SRC_REQ (SPM 0x0B8) and SPM_SRC_MASK (SPM 0x0BC), whose MD bits are
+ * REG_MD_SRCCLKENA_0_MASK_B BIT(0), ..._SRCCLKENA2INFRA_REQ_0 BIT(1), MD_APSRC2INFRA_REQ_0
+ * BIT(2), MD_APSRC_REQ_0 BIT(3), MD_VRF18_REQ_0 BIT(4), MD_DDR_EN_0 BIT(5), MD_DDR_EN2_0
+ * BIT(6), and the _1 twins at bits 7-13 (base/power/spm/mt6785/mtk_spm_reg.h:66-67, :823-851).
+ */
+#define SPM_SRC_REQ		0x0b8
+#define SPM_SRC_MASK		0x0bc
+#define SPM_SRC_MD_MASK_0	GENMASK(6, 0)	/* the MD1 request bits of the mask */
+#define SPM_SRC_MD_MASK_1	GENMASK(13, 7)	/* the MD2 request bits */
 #define SPM_AP_MDSRC_REQ	0x434	/* ack in BIT(4) (mtk_spm_reg.h:265,
 					 * AP_MDSMSRC_ACK_LSB at :1851)
 					 */
