@@ -284,5 +284,14 @@ static struct platform_driver mt6359_gauge_driver = {
 };
 module_platform_driver(mt6359_gauge_driver);
 
+/*
+ * devm_iio_channel_get() and iio_read_channel_processed() are exported into the
+ * IIO_CONSUMER symbol namespace, and a module that uses them must import it or
+ * modpost refuses to link: "uses symbol ... from namespace IIO_CONSUMER, but does
+ * not import it". Caught only by a build that runs modpost, which is why the check
+ * in tools/checks looks for this class statically as well.
+ */
+MODULE_IMPORT_NS("IIO_CONSUMER");
+
 MODULE_DESCRIPTION("MediaTek MT6359 fuel gauge");
 MODULE_LICENSE("GPL");
