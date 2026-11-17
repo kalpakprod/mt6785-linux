@@ -157,6 +157,8 @@ struct mtk_scp_of_data {
 	 * running subsystem: it is adopted instead of being reset and reloaded.
 	 */
 	bool scp_maybe_preloaded;
+	/* the SoC's loader leaves its loader and region info in the SRAM, which is worth keeping */
+	bool scp_use_lk_images;
 	void *(*scp_da_to_va)(struct mtk_scp *scp, u64 da, size_t len);
 
 	u32 host_to_scp_reg;
@@ -210,6 +212,8 @@ struct mtk_scp {
 
 	/* the loader started this SCP and the driver adopted it instead of loading its own image */
 	bool preloaded;
+	/* LK's own loader and region information were still in the SRAM and are being used */
+	bool lk_images;
 
 	struct rproc_subdev *rpmsg_subdev;
 

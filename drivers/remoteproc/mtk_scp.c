@@ -549,6 +549,34 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	writel(0x0, cluster->reg_base + MT8183_SCP_L1_SRAM_PD);
 	writel(0x0, cluster->reg_base + MT8183_SCP_TCM_TAIL_SRAM_PD);
 
+	/*
+	 * LK loads the loader into the TCM and writes the region information before Linux runs
+	 * (pl_lk.txt:2305-2418: the loader image, the firmware staged at 0x9fc00800 and the
+	 * region info). If the SRAM kept it, that state is the vendor's own: keep it and only
+	 * release the core (reset_scp(), scp_helper.c:569-620), instead of loading our image
+	 * over LK's. The test is the region information itself - a loader size inside the TCM
+	 * and non-zero firmware and DRAM pointers.
+	 */
+	if (scp->data->scp_use_lk_images) {
+		struct mt6785_scp_region_info lk;
+		int i;
+
+		memcpy_fromio(&lk, scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET,
+			      sizeof(lk));
+		dev_info(scp->dev, "LK region info: loader %#x+%#x firmware %#x+%#x dram %#x+%#x l1c %#x/%#x\n",
+			 lk.ap_loader_start, lk.ap_loader_size,
+			 lk.ap_firmware_start, lk.ap_firmware_size,
+			 lk.ap_dram_start, lk.ap_dram_size, lk.il1c_con, lk.dl1c_con);
+		scp->lk_images = lk.ap_loader_size && lk.ap_loader_size <= 0x2000 &&
+				 lk.ap_firmware_start && lk.ap_firmware_size &&
+				 lk.ap_dram_start;
+		for (i = 0; scp->lk_images && i < MIN(lk.ap_loader_size, 0x1000) / 4; i++)
+			if (!readl(scp->sram_base + 4 * i))
+				scp->lk_images = false;
+		if (scp->lk_images)
+			dev_info(scp->dev, "LK's loader and region information survived: keeping them, releasing the core only\n");
+	}
+
 	dev_info(scp->dev, "sram pdn after: %#x %#x %#x, clk_sw %#x, tcm[0] %#x\n",
 		 readl(cluster->reg_base + MT8183_SCP_SRAM_PDN),
 		 readl(cluster->reg_base + MT8183_SCP_L1_SRAM_PD),
@@ -1002,6 +1030,18 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 	if (ret) {
 		dev_err(dev, "failed to enable clocks\n");
 		return ret;
+	}
+
+	if (scp->data->scp_use_lk_images) {
+		/* the SRAM has to be powered before it can be looked at */
+		ret = scp->data->scp_before_load(scp);
+		if (ret)
+			goto leave;
+		if (scp->lk_images) {
+			dev_info(dev, "using the loader and region information LK left in the SRAM\n");
+			ret = 0;
+			goto leave;
+		}
 	}
 
 	/* Hold SCP in reset while loading FW. */
@@ -2123,6 +2163,7 @@ static const struct mtk_scp_of_data mt6785_of_data = {
 	.scp_dump_regs = mt6785_scp_dump_regs,
 	.scp_keep_state_on_error = true,
 	.scp_maybe_preloaded = true,
+	.scp_use_lk_images = true,
 	.scp_ipi_ack = mt6785_scp_ipi_ack,
 	.scp_clocks_on = mt6785_scp_clocks_on,
 	.scp_da_to_va = mt8192_scp_da_to_va,
