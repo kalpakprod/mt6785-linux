@@ -1300,7 +1300,11 @@ static int scp_start(struct rproc *rproc)
 					 readl(cfg + MT6785_SCP_WDT_REG),
 					 readl(cfg + MT6785_SCP_WDT_CTRL), tcm);
 			}
-			udelay(MT6785_SCP_PROBE_STEP_US);
+			/*
+			 * 100 ms between samples, and this runs in process context, so
+			 * fsleep() is the right primitive for a delay this long.
+			 */
+			fsleep(MT6785_SCP_PROBE_STEP_US);
 		}
 		if (i == MT6785_SCP_PROBE_POLLS)
 			dev_info(scp->dev, "bus answered for the whole %u ms\n",
