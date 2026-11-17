@@ -3,6 +3,7 @@ config VIDEO_MTK_SENINF
 	tristate "MediaTek CSI-2 receiver (SENINF)"
 	depends on VIDEO_DEV && OF
 	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on VIDEO_MTK_CAM
 	help
 	  The SENINF is the CSI-2 receiver of MediaTek SoCs: it takes the D-PHY or
 	  C-PHY lanes of a camera sensor and feeds the camera muxes that the capture

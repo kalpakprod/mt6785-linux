@@ -49,11 +49,13 @@ struct mtk_cam_core *mtk_cam_core_get(struct device *dev)
 {
 	return mtk_cam_core_from_np(dev->of_node);
 }
+EXPORT_SYMBOL_GPL(mtk_cam_core_get);
 
 void mtk_cam_core_put(struct mtk_cam_core *cam)
 {
 	(void)cam;
 }
+EXPORT_SYMBOL_GPL(mtk_cam_core_put);
 
 /* The registered subdevice whose device node is @np, or NULL. */
 static struct v4l2_subdev *cam_subdev_by_node(struct mtk_cam_core *cam,
@@ -153,6 +155,7 @@ int mtk_cam_core_link(struct mtk_cam_core *cam)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mtk_cam_core_link);
 
 static int mtk_cam_core_probe(struct platform_device *pdev)
 {

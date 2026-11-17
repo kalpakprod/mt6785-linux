@@ -3,8 +3,6 @@ config VIDEO_MTK_CAM
 	tristate "MediaTek camera pipeline core"
 	depends on VIDEO_DEV && MEDIA_CONTROLLER && OF
 	depends on ARCH_MEDIATEK || COMPILE_TEST
-	select VIDEO_MTK_SENINF
-	select VIDEO_MTK_CAMSV
 	help
 	  The camera pipeline of MediaTek SoCs is a chain of subdevices - the sensor on its I2C
 	  bus, the CSI-2 receiver (SENINF) and the capture engine (CAMSV) - described by the device
