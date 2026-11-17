@@ -17,6 +17,7 @@
 #include <linux/of.h>
 #include <linux/of_graph.h>
 #include <media/v4l2-async.h>
+#include <media/v4l2-mc.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
@@ -58,60 +59,16 @@ void mtk_cam_core_put(struct mtk_cam_core *cam)
 }
 EXPORT_SYMBOL_GPL(mtk_cam_core_put);
 
-static struct v4l2_subdev *cam_subdev_by_node(struct mtk_cam_core *cam,
-					      struct device_node *np)
-{
-	unsigned int i;
-
-	if (!np)
-		return NULL;
-
-	for (i = 0; i < cam->n_entities; i++)
-		if (cam->entities[i].np == np)
-			return cam->entities[i].sd;
-
-	return NULL;
-}
-
-static struct device_node *cam_remote_of(struct device_node *np, unsigned int port)
-{
-	struct device_node *ports = of_get_child_by_name(np, "ports");
-	struct device_node *ep, *remote = NULL;
-
-	if (!ports) {
-		/* A single-port node spells it "port". */
-		ports = of_get_child_by_name(np, "port");
-		if (ports) {
-			ep = of_get_child_by_name(ports, "endpoint");
-			if (ep) {
-				remote = of_graph_get_remote_endpoint(ep);
-				of_node_put(ep);
-			}
-			of_node_put(ports);
-		}
-		return remote;
-	}
-
-	for_each_endpoint_of_node(ports, ep) {
-		u32 reg = 0;
-
-		of_property_read_u32(of_graph_get_port_parent(ep), "reg", &reg);
-		if (reg != port)
-			continue;
-
-		remote = of_graph_get_remote_endpoint(ep);
-		break;
-	}
-
-	of_node_put(ports);
-
-	return remote;
-}
-
 /*
- * One entity bound: remember it, and when every entity of the pipeline is present, wire the
- * chain the device tree describes - sensor -> receiver -> engine - with pad links on the media
- * device. The graph is the board's; this file only follows it.
+ * A pipeline entity bound. Two rules make a missing neighbour harmless:
+ *
+ *  - the link for this entity is created from its own firmware endpoint as soon as it appears
+ *    (`v4l2_create_fwnode_links_to_pad()` does the walk and the link), so one sensor failing
+ *    never leaves the other without its link;
+ *  - the subdevice nodes are registered once the receiver and the engine are there - the two
+ *    entities the pipeline cannot work without - rather than in `.complete`, which upstream
+ *    reaches only when every match has bound and which an optional sensor would hold open for
+ *    ever.
  */
 static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 			      struct v4l2_subdev *sd,
@@ -119,44 +76,41 @@ static int mtk_cam_core_bound(struct v4l2_async_notifier *notifier,
 {
 	struct mtk_cam_core *cam =
 		container_of(notifier, struct mtk_cam_core, notifier);
-	struct device_node *in_np, *remote;
-	struct v4l2_subdev *from;
+	struct v4l2_subdev *seninf = NULL, *camsv = NULL;
+	struct fwnode_handle *ep;
 	unsigned int i;
 
-	if (cam->n_entities >= ARRAY_SIZE(cam->entities))
-		return -ENOSPC;
-
-	for (i = 0; i < cam->n_entities; i++)
-		if (cam->entities[i].sd == sd)
-			return 0;
-
-	cam->entities[cam->n_entities].sd = sd;
-	cam->entities[cam->n_entities].np = sd->dev ? sd->dev->of_node : NULL;
-	cam->n_entities++;
+	if (cam->n_entities < ARRAY_SIZE(cam->entities)) {
+		cam->entities[cam->n_entities].sd = sd;
+		cam->entities[cam->n_entities].np = sd->dev ? sd->dev->of_node : NULL;
+		cam->n_entities++;
+	}
 
 	dev_info(cam->dev, "%s bound (%u entities)\n", sd->name, cam->n_entities);
 
-	/*
-	 * For every entity that has an input port, look at the endpoint that port names and link
-	 * the two entities through the media device.
-	 */
+	/* The subdevice's endpoint names the entity it feeds; make that link now. */
+	fwnode_graph_for_each_endpoint(dev_fwnode(sd->dev), ep) {
+		fwnode_handle_get(ep);
+		if (v4l2_create_fwnode_links_to_pad(sd, &sd->entity.pads[0], 0))
+			dev_dbg(cam->dev, "%s: no link from endpoint %pfwf\n", sd->name, ep);
+		fwnode_handle_put(ep);
+	}
+
 	for (i = 0; i < cam->n_entities; i++) {
-		in_np = cam->entities[i].np;
-		if (!in_np)
-			continue;
+		if (!strncmp(cam->entities[i].sd->name, "1a040000", 8))
+			seninf = cam->entities[i].sd;
+		if (!strncmp(cam->entities[i].sd->name, "1a050000", 8))
+			camsv = cam->entities[i].sd;
+	}
 
-		/* A sensor has one output; receivers and engines have their input on port 0. */
-		remote = cam_remote_of(in_np, 0);
-		if (!remote)
-			continue;
+	if (seninf && camsv && !cam->nodes_registered) {
+		/* The engine's sink pad is fed by the receiver's source pad. */
+		if (!media_create_pad_link(&seninf->entity, seninf->entity.num_pads - 1,
+					   &camsv->entity, 0, MEDIA_LNK_FL_ENABLED))
+			dev_info(cam->dev, "link %s -> %s\n", seninf->name, camsv->name);
 
-		from = cam_subdev_by_node(cam, remote);
-		if (from && media_create_pad_link(&from->entity, from->entity.num_pads - 1,
-						  &cam->entities[i].sd->entity, 0, 0) == 0)
-			dev_info(cam->dev, "link %s -> %s\n", from->name,
-				 cam->entities[i].sd->name);
-
-		of_node_put(remote);
+		if (!v4l2_device_register_subdev_nodes(&cam->v4l2_dev))
+			cam->nodes_registered = true;
 	}
 
 	return 0;

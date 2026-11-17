@@ -99,9 +99,16 @@
 		};
 	};
 
-	ov13b10: camera@36 {
+	/*
+	 * The front sensor answers at 0x10 on this board, not at the first address its driver table
+	 * lists: the probe's own reads showed "id at 0x36: no answer" and "id at 0x10: answer 560d42",
+	 * and 0x10 is the 7-bit form of the 0x20 the vendor module table carries as the alternate
+	 * (ov13b10sunny_mipiraw_Sensor.c:160, `.i2c_addr_table = {0x6C, 0x20, 0xff}` - the vendor
+	 * driver tries its list in order at runtime, which a device-tree node cannot do).
+	 */
+	ov13b10: camera@10 {
 		compatible = "ovti,ov13b10";
-		reg = <0x36>;
+		reg = <0x10>;
 
 		clocks = <&topckgen CLK_TOP_CAMTG2>;
 		assigned-clocks = <&topckgen CLK_TOP_CAMTG2>;

@@ -21,6 +21,7 @@ struct mtk_cam_core {
 	struct v4l2_async_notifier notifier;
 	struct { struct v4l2_subdev *sd; struct device_node *np; } entities[8];
 	unsigned int n_entities;
+	bool nodes_registered;
 };
 
 #if IS_ENABLED(CONFIG_VIDEO_MTK_CAM)

@@ -1503,75 +1503,6 @@ static void ov13b10_free_controls(struct ov13b10 *ov13b)
 	mutex_destroy(&ov13b->mutex);
 }
 
-/*
- * DIAG (not for upstream): read the chip id register (0x300a, 24 bits) through a raw transfer on
- * an arbitrary address, so the module's real I2C address can be settled in one probe while the
- * part is powered and out of reset.
- */
-static int ov13b10_diag_read_id(struct i2c_client *client, u16 addr, u8 *id)
-{
-	struct i2c_msg msgs[2] = {
-		{
-			.addr = addr,
-			.flags = 0,
-			.len = 2,
-			.buf = (u8[]){ 0x30, 0x0a },
-		},
-		{
-			.addr = addr,
-			.flags = I2C_M_RD,
-			.len = 3,
-			.buf = id,
-		},
-	};
-
-	return i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
-}
-
-static int ov13b10_diag_probe(struct ov13b10 *ov13b)
-{
-	struct i2c_client *client = to_i2c_client(ov13b->dev);
-	struct i2c_client *alt;
-	struct gpio_desc *sel;
-	u8 id[3] = { 0 };
-	int ret;
-
-	/*
-	 * The MIPI switch the vendor's front-camera list carries
-	 * (imgsensor/src/mt6785/camera_hw/imgsensor_cfg_table.c:37-46, pin
-	 * IMGSENSOR_HW_PIN_MIPI_SWITCH_SEL). Its polarity: the vendor drives the line high before
-	 * reset is released (5_cameras.md §1.2). Our device tree has no such line, and the driver
-	 * can only report that - inventing a GPIO number would be worse than saying "absent".
-	 */
-	sel = devm_gpiod_get_optional(ov13b->dev, "mipi-switch", GPIOD_OUT_HIGH);
-	if (IS_ERR(sel)) {
-		dev_warn(ov13b->dev, "DIAG: mipi-switch lookup failed: %ld\n", PTR_ERR(sel));
-	} else if (!sel) {
-		dev_warn(ov13b->dev, "DIAG: no mipi-switch line in the device tree\n");
-	} else {
-		dev_warn(ov13b->dev, "DIAG: mipi-switch driven high (vendor way), value %d\n",
-			 gpiod_get_value_cansleep(sel));
-	}
-
-	ret = ov13b10_diag_read_id(client, client->addr, id);
-	dev_warn(ov13b->dev, "DIAG: id at 0x%02x: %s %*phN\n", client->addr,
-		 ret < 0 ? "no answer" : "answer", 3, id);
-
-	alt = i2c_new_dummy_device(client->adapter, 0x10);
-	if (IS_ERR(alt)) {
-		dev_warn(ov13b->dev, "DIAG: cannot open 0x10: %ld\n", PTR_ERR(alt));
-	} else {
-		u8 alt_id[3] = { 0 };
-
-		ret = ov13b10_diag_read_id(client, 0x10, alt_id);
-		dev_warn(ov13b->dev, "DIAG: id at 0x10: %s %*phN\n",
-			 ret < 0 ? "no answer" : "answer", 3, alt_id);
-		i2c_unregister_device(alt);
-	}
-
-	return 0;
-}
-
 static int ov13b10_get_pm_resources(struct ov13b10 *ov13b)
 {
 	unsigned long freq;
@@ -1718,13 +1649,6 @@ static int ov13b10_probe(struct i2c_client *client)
 			dev_err(ov13b->dev, "failed to power on\n");
 			return ret;
 		}
-
-		/*
-		 * DIAG (not for upstream): the part is powered and out of reset right here, and this
-		 * is the last moment before the identify can fail the whole probe: read the chip id
-		 * at both candidate addresses and report the MIPI switch.
-		 */
-		ov13b10_diag_probe(ov13b);
 
 		/* Check module identity */
 		ret = ov13b10_identify_module(ov13b);
