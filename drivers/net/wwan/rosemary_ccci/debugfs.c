@@ -607,7 +607,8 @@ static ssize_t md_page_write(struct file *file, const char __user *buf, size_t l
 	tmp[len] = 0;
 	if (sscanf(tmp, "%7s %x", win, &off) != 2)
 		return -EINVAL;
-	if (sysfs_streq(win, "nc")) {
+	/* "n" and "nc" both mean the non-cacheable window; "c" the cacheable one */
+	if (sysfs_streq(win, "nc") || sysfs_streq(win, "n")) {
 		if (off + 4096 > md->nc_size)
 			return -ERANGE;
 		md->page_win = 0;
@@ -620,6 +621,22 @@ static ssize_t md_page_write(struct file *file, const char __user *buf, size_t l
 	}
 	md->page_off = off;
 	return len;
+}
+
+static const char *md_nc_region_name(u32 off)
+{
+	if (off < NC_MDSS_DBG) return "RAW_MDCCCI_DBG";
+	if (off < NC_RESERVED) return "RAW_MDSS_DBG";
+	if (off < NC_RUNTIME_DATA) return "RAW_RESERVED";
+	if (off < NC_FORCE_ASSERT) return "RAW_RUNTIME_DATA";
+	if (off < NC_CCISM_SCP) return "RAW_FORCE_ASSERT/DBM";
+	if (off < NC_CCB_CTRL) return "CCISM_SCP";
+	if (off < NC_NETD) return "RAW_CCB_CTRL (ours)";
+	if (off < NC_USB) return "RAW_NETD";
+	if (off < NC_AUDIO) return "RAW_USB";
+	if (off < NC_CCISM_MCU) return "RAW_AUDIO";
+	if (off < NC_DFD) return "CCISM_MCU / CCISM_MCU_EXP";
+	return "NC_DFD and beyond";
 }
 
 static int md_page_show(struct seq_file *s, void *unused)
@@ -638,6 +655,22 @@ static int md_page_show(struct seq_file *s, void *unused)
 		return 0;
 	}
 	seq_printf(s, "[%s + %#x]\n", md->page_win ? "C" : "NC", off);
+	/*
+	 * Where the page falls relative to what this driver knows, because that is what decides
+	 * who could have written it: a page inside the CCB span or inside the NC regions we
+	 * clear holds content written after our clear; one outside holds whatever the loader or
+	 * a previous session left.
+	 */
+	if (md->page_win == 0) {
+		seq_printf(s, "  NC region: %s\n", md_nc_region_name(off));
+	} else if (md->ccb_data_size) {
+		phys_addr_t page_phys = md->c_phys + off;
+
+		seq_printf(s, "  CCB span: %#llx + %#x; this page is %s it\n",
+			   (unsigned long long)md->ccb_data_base, md->ccb_data_size,
+			   (page_phys >= md->ccb_data_base &&
+			    page_phys < md->ccb_data_base + md->ccb_data_size) ? "inside" : "outside");
+	}
 	for (u32 i = 0; i < 4096; i += 16) {
 		char txt[17];
 
