@@ -2079,6 +2079,7 @@
 		seninf1: csi@1a040000 {
 			compatible = "mediatek,mt6785-seninf";
 			reg = <0 0x1a040000 0 0x1000>;
+			mediatek,cam = <&cam>;
 			clocks = <&camsys CLK_CAM_SENINF>, <&topckgen CLK_TOP_SENINF0>;
 			clock-names = "seninf", "mux";
 			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
@@ -2123,6 +2124,7 @@
 		camsv1: capture@1a050000 {
 			compatible = "mediatek,mt6785-camsv";
 			reg = <0 0x1a050000 0 0x1000>;
+			mediatek,cam = <&cam>;
 			interrupts = <GIC_SPI 279 IRQ_TYPE_LEVEL_LOW>;
 			clocks = <&camsys CLK_CAM_SV0>;
 			clock-names = "sv";
