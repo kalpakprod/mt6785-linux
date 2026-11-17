@@ -212,6 +212,36 @@ else
 	fail "with no filesystem at all all eight attempts are recorded and nothing is faked"
 fi
 
+# --- 13. hold mode: poco.crashhold=1 must not reboot, and must say so
+root=$work/hold
+mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'kernel: boot\n' > "$root/dev/kmsg"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash poco.crashhold=1\n' > "$root/proc/cmdline"
+: > "$root/mount-ok.ext4.rw"
+CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
+if [ -f "$root/crashhold.txt" ] &&
+   grep -q "hold=1" "$root"/var/lib/poco/crash/*.kmsg 2>/dev/null; then
+	pass "hold mode blocks for the watchdog instead of rebooting"
+else
+	fail "hold mode blocks for the watchdog instead of rebooting"
+fi
+
+# --- 14. planted fault: the same boot without the flag must take the reboot path
+root=$work/nohold
+mkdir -p "$root/proc" "$root/var/lib/poco/crash" "$root/mnt" "$root/dev"
+printf 'ELF fake vmcore\n' > "$root/proc/vmcore"
+printf 'kernel: boot\n' > "$root/dev/kmsg"
+printf 'poco.crashdev=/dev/fake poco.crashdir=/var/lib/poco/crash\n' > "$root/proc/cmdline"
+: > "$root/mount-ok.ext4.rw"
+CRASH_TEST_ROOT=$root "$work/crash-init" >"$root/log.txt" 2>&1 || true
+if [ ! -f "$root/crashhold.txt" ] &&
+   grep -q "hold=0" "$root"/var/lib/poco/crash/*.kmsg 2>/dev/null; then
+	pass "without the flag the capture still takes the reboot path"
+else
+	fail "without the flag the capture still takes the reboot path"
+fi
+
 echo
 echo "$fails case(s) failed"
 exit "$fails"

@@ -51,6 +51,20 @@ static const char *crashdir = "/var/lib/poco/crash";
 static const char *mountpoint = "/mnt";
 #endif
 
+/*
+ * poco.crashhold=1: do not reboot when done. The hardware watchdog that the
+ * previous kernel armed keeps running across kexec (watchdog.stop_on_reboot=0) and
+ * nothing in this initramfs pets it, so the SoC resets through the WDT about its
+ * timeout later - the one reset path MTK builds a DDR reserve mode for. If that
+ * reset keeps DRAM, this kernel's own console (loglevel 8, ramoops parameters on
+ * its command line) is in console-ramoops-0 on the next boot, which is the whole
+ * point: it is how a capture kernel that dies gets a voice.
+ *
+ * Diagnostic only. A real capture must reboot when it is done, and
+ * crash-kexec-load.sh does not pass this.
+ */
+static int crashhold;
+
 #ifdef CRASH_TEST
 #define MOUNT_DIR getenv("CRASH_TEST_ROOT") ? getenv("CRASH_TEST_ROOT") : "."
 #else
@@ -98,6 +112,8 @@ static void read_cmdline(void)
 			crashdev = strdup(tok + 14);
 		else if (!strncmp(tok, "poco.crashdir=", 14))
 			crashdir = strdup(tok + 14);
+		else if (!strncmp(tok, "poco.crashhold=", 15))
+			crashhold = atoi(tok + 15);
 	}
 }
 
@@ -531,7 +547,7 @@ int main(int argc, char **argv)
 	time_t now = time(NULL);
 	struct tm tm;
 	int i, done = 0, selftest = 0;
-	long total;
+	long total = -1;
 	FILE *f;
 
 	(void)argc;
@@ -694,6 +710,11 @@ int main(int argc, char **argv)
 	logmsg("crash-init: %s (%ld bytes)", done ? marker : "no dump", total);
 
 out:
+	/* The summary first, then the final dump of the log: the file is written
+	 * from /dev/kmsg, so a line added after it would be lost. */
+	kmsg_line("crash-init: %s (%ld bytes), hold=%d\n",
+		  done ? marker : "no dump", total, crashhold);
+
 	/* The second half of the log, if the filesystem is mounted at all. */
 	if (*crashdir) {
 		char kmsgfile[sizeof(marker) + 8];
@@ -722,6 +743,26 @@ out:
 	sync();
 #endif
 	sleep(1);
+	if (crashhold) {
+		kmsg_line("crash-init: holding for the hardware watchdog; no reboot from here\n");
+		logmsg("crash-init: holding for the hardware watchdog");
+#ifdef CRASH_TEST
+		{
+			char hp[512];
+			FILE *hf = fopen(root_path("/crashhold.txt", hp, sizeof(hp)), "w");
+
+			if (hf) {
+				fprintf(hf, "hold\n");
+				fclose(hf);
+			}
+		}
+		return done ? 0 : 1;
+#else
+		for (;;)
+			pause();
+#endif
+	}
+
 #ifndef CRASH_TEST
 	reboot(RB_AUTOBOOT);
 	/* If the reboot is refused something is very wrong; never fall through
