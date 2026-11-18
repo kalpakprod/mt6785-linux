@@ -3374,6 +3374,24 @@ static int mt6785_scp_clocks_on(struct mtk_scp *scp)
 			 err ? 0UL : clk_get_rate(scp->cluster->pll[i]));
 	}
 
+	/*
+	 * The parent stock runs the SCP's mux on. With the SCP running, stock's CK_CFG_0
+	 * (0x10000020) reads 0x80008302, i.e. select bits 16-18 = 2
+	 * (poco-m5s/evidence/stock-session-2026-11/scp-up.txt), and select 2 of scp_parents[]
+	 * is mainpll_d2_d4 at 136.5 MHz (clk-mt6785-top.c:142-150, mux at :473). Our device tree
+	 * pins the mux to clk26m, and the trial reads 0x502 (select 0): the core would run 5.25
+	 * times slower than the reference, which stretches every timing loop the firmware has -
+	 * its watchdog kick interval and the oscillator calibration whose arithmetic audio41
+	 * already matched to 26 MHz. The vendor takes this parent from the AP's clock framework
+	 * before the release (scp_dvfs.c:627-643), so this does the same.
+	 */
+	if (scp->cluster->pll_num > 1) {
+		int err = clk_set_parent(scp->clk, scp->cluster->pll[1]);
+
+		dev_info(scp->dev, "SCP clock: parent 2 (mainpll_d2_d4) %s, %lu Hz\n",
+			 err ? "refused" : "set", err ? 0UL : clk_get_rate(scp->clk));
+	}
+
 	topckgen = syscon_regmap_lookup_by_phandle(scp->dev->of_node,
 						   "mediatek,topckgen");
 	if (IS_ERR(topckgen)) {
@@ -3382,7 +3400,12 @@ static int mt6785_scp_clocks_on(struct mtk_scp *scp)
 	}
 
 	regmap_read(topckgen, MT6785_SCP_CLK_CFG_0, &val);
+	dev_info(scp->dev, "CK_CFG_0 %#x: scp select %u, power-down %u\n", val,
+		 (val >> 16) & 0x7, (val >> 23) & 0x1);
 	regmap_write(topckgen, MT6785_SCP_CLK_CFG_0, val | 0x3ff);
+	regmap_read(topckgen, MT6785_SCP_CLK_CFG_0, &val);
+	dev_info(scp->dev, "CK_CFG_0 %#x after the gate enable: scp select %u\n", val,
+		 (val >> 16) & 0x7);
 	regmap_read(topckgen, MT6785_SCP_CLK_CFG_1, &val);
 	regmap_write(topckgen, MT6785_SCP_CLK_CFG_1, val | 0x11);
 
