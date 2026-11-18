@@ -72,6 +72,7 @@ install -m 0755 "$here/bin/run-mnld" "$PREFIX/root/data/local/tmp/run-mnld"
 install -m 0644 "$here/lib/libprops-shim.so" \
 	"$PREFIX/root/system/lib64/libprops-shim.so"
 install -m 0644 "$here/etc/gps.props" "$PREFIX/root/data/local/tmp/gps.props"
+install -m 0644 "$here/etc/gps-mnl.prop" "$PREFIX/root/data/vendor/gps/mnl.prop"
 install -m 0755 "$here/scripts/lib.sh" "$PREFIX/lib.sh"
 install -m 0755 "$here/scripts/start.sh" "$PREFIX/start.sh"
 install -m 0755 "$here/scripts/stop.sh" "$PREFIX/stop.sh"

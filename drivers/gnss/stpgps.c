@@ -49,6 +49,7 @@
 
 #define STPGPS_DEV_NAME		"stpgps"
 #define GPS_EMI_DEV_NAME	"gps_emi"
+#define GPS_PWR_DEV_NAME	"gps_pwr"
 
 /* Vendor ioctl numbers, unchanged: the daemon sends the numbers, not names. */
 #define COMBO_IOC_GPS_HWVER		6
@@ -130,6 +131,7 @@
 struct stpgps {
 	struct miscdevice gps_misc;
 	struct miscdevice emi_misc;
+	struct miscdevice pwr_misc;
 
 	/* Guards opened/rx_list: read() and the RX path both take it. */
 	struct mutex lock;
@@ -824,6 +826,47 @@ static const struct file_operations gps_emi_fops = {
 	.unlocked_ioctl = gps_emi_ioctl,
 };
 
+/* ------------------------------------------------------------ power node */
+
+/*
+ * /dev/gps_pwr.
+ *
+ * mnld opens it (O_RDWR|O_NONBLOCK) for the power hints of the standalone GPS
+ * designs: on those, this node switches the chip's rails through the PMIC. This
+ * board has no such switch - the GNSS task lives on the CONNSYS MCU and is
+ * powered by FUNC_CTRL(GPS on) through WMT, which is what /dev/stpgps does - but
+ * the daemon asks for the node anyway and its power thread retries forever when
+ * it is missing. So the node exists and answers "done" to every request, which
+ * is the truth for this board: there is nothing left for it to switch.
+ */
+static int gps_pwr_open(struct inode *inode, struct file *file)
+{
+	struct stpgps *gps = container_of(file->private_data, struct stpgps,
+					  pwr_misc);
+
+	file->private_data = gps;
+
+	return 0;
+}
+
+static long gps_pwr_ioctl(struct file *file, unsigned int cmd,
+			  unsigned long arg)
+{
+	struct stpgps *gps = file->private_data;
+
+	dev_dbg(gps->gps_misc.this_device,
+		"gps_pwr: cmd %u answered 0 (the GPS rails are switched by FUNC_CTRL)\n",
+		cmd);
+
+	return 0;
+}
+
+static const struct file_operations gps_pwr_fops = {
+	.owner = THIS_MODULE,
+	.open = gps_pwr_open,
+	.unlocked_ioctl = gps_pwr_ioctl,
+};
+
 /* ---------------------------------------------------------------- driver */
 
 static int stpgps_probe(struct platform_device *pdev)
@@ -926,11 +969,23 @@ static int stpgps_probe(struct platform_device *pdev)
 		goto err_free;
 	}
 
+	gps->pwr_misc.minor = MISC_DYNAMIC_MINOR;
+	gps->pwr_misc.name = GPS_PWR_DEV_NAME;
+	gps->pwr_misc.fops = &gps_pwr_fops;
+	gps->pwr_misc.parent = &pdev->dev;
+
+	err = misc_register(&gps->pwr_misc);
+	if (err) {
+		dev_err(&pdev->dev, "cannot create /dev/%s (%d)\n",
+			GPS_PWR_DEV_NAME, err);
+		goto err_unreg_gps;
+	}
+
 	err = misc_register(&gps->emi_misc);
 	if (err) {
 		dev_err(&pdev->dev, "cannot create /dev/%s (%d)\n",
 			GPS_EMI_DEV_NAME, err);
-		goto err_unreg_gps;
+		goto err_unreg_pwr;
 	}
 
 	err = mtk_wcn_stp_register_event_cb(GPS_TASK_INDX, stpgps_rx_cb);
@@ -944,14 +999,16 @@ static int stpgps_probe(struct platform_device *pdev)
 	WRITE_ONCE(stpgps_dev, gps);
 
 	dev_info(&pdev->dev,
-		 "GNSS bridge ready: /dev/%s, /dev/%s, EMI window 0x%llx+0x%zx\n",
-		 STPGPS_DEV_NAME, GPS_EMI_DEV_NAME,
+		 "GNSS bridge ready: /dev/%s, /dev/%s, /dev/%s, EMI window 0x%llx+0x%zx\n",
+		 STPGPS_DEV_NAME, GPS_EMI_DEV_NAME, GPS_PWR_DEV_NAME,
 		 (unsigned long long)gps->emi_phys, gps->emi_size);
 
 	return 0;
 
 err_unreg_emi:
 	misc_deregister(&gps->emi_misc);
+err_unreg_pwr:
+	misc_deregister(&gps->pwr_misc);
 err_unreg_gps:
 	misc_deregister(&gps->gps_misc);
 err_free:
@@ -981,6 +1038,7 @@ static void stpgps_remove(struct platform_device *pdev)
 	wake_up_interruptible(&gps->close_wait);
 
 	misc_deregister(&gps->emi_misc);
+	misc_deregister(&gps->pwr_misc);
 	misc_deregister(&gps->gps_misc);
 
 	mutex_lock(&gps->lock);

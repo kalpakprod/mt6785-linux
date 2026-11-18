@@ -34,6 +34,8 @@ extern int open(const char *path, int flags, ...);
 extern long read(int fd, void *buf, unsigned long count);
 extern int close(int fd);
 extern long write(int fd, const void *buf, unsigned long count);
+extern long syscall(long number, ...);
+extern char *getenv(const char *name);
 
 struct entry {
 	char name[NAME_MAX_LEN];
@@ -147,6 +149,193 @@ static const char *lookup(const char *name)
 	return NULL;
 }
 
+/*
+ * ---- which paths does mnld look for --------------------------------------
+ *
+ * The daemon's log names the failures it notices ("open error is No such file
+ * or directory") but not the path, and the phone has no strace. Interposing the
+ * open family here answers the question in one run: every failed open, and every
+ * successful one under /dev or /data, is printed with its result. The property
+ * lookups are printed too, so the shim's own answer is visible instead of
+ * assumed.
+ *
+ * The calls go to the kernel through syscall() - the real open would resolve to
+ * this very function and recurse. Bounded, and switchable with
+ * GPS_ENGINE_LOG_OPENS=0.
+ */
+#define AT_FDCWD_	(-100)
+#define SYS_OPENAT_	56	/* aarch64 */
+
+static int g_logged;
+static int g_opens_off = -1;
+
+static void out(const char *s, unsigned long n);
+static void append(char *dst, unsigned long *pos, const char *src,
+		   unsigned long max);
+static void log_line(const char *what, const char *path, long res, int err);
+static int log_on(void);
+
+#define PROP_SEEN_MAX 96
+static char g_seen[PROP_SEEN_MAX][NAME_MAX_LEN];
+static int g_seen_n;
+
+/* Each property printed once: bionic asks for ro.arch dozens of times. */
+static int prop_first(const char *name)
+{
+	int i;
+
+	if (!name)
+		return 0;
+	for (i = 0; i < g_seen_n; i++)
+		if (streq(g_seen[i], name))
+			return 0;
+	if (g_seen_n >= PROP_SEEN_MAX)
+		return 0;
+	copy(g_seen[g_seen_n], name, NAME_MAX_LEN);
+	g_seen_n++;
+	return 1;
+}
+
+/* prefix test without a libc */
+static int has_prefix(const char *s, const char *p)
+{
+	while (*p) {
+		if (*s++ != *p++)
+			return 0;
+	}
+	return 1;
+}
+
+static int prop_skip(const char *name)
+{
+	return !name || !name[0] ||
+	       streq(name, "ro.arch") ||
+	       streq(name, "ro.vendor.redirect_socket_calls") ||
+	       has_prefix(name, "libc.") ||
+	       has_prefix(name, "heapprofd");
+}
+
+static int log_on(void)
+{
+	if (g_opens_off < 0) {
+		const char *e = getenv("GPS_ENGINE_LOG_OPENS");
+
+		g_opens_off = (e && e[0] == '0');
+	}
+	return !g_opens_off && g_logged < 400;
+}
+
+static void log_line(const char *what, const char *path, long res, int err)
+{
+	char buf[320];
+	unsigned long pos = 0;
+	char num[16];
+	int i = 0;
+
+	if (!log_on())
+		return;
+	g_logged++;
+	append(buf, &pos, "PROBE ", sizeof(buf));
+	append(buf, &pos, what, sizeof(buf));
+	append(buf, &pos, " ", sizeof(buf));
+	append(buf, &pos, path ? path : "(null)", sizeof(buf));
+	if (err) {
+		unsigned int e = (unsigned int)err;
+
+		append(buf, &pos, " -> errno ", sizeof(buf));
+		if (e == 0)
+			num[i++] = '0';
+		while (e > 0 && i < (int)sizeof(num) - 1) {
+			num[i++] = '0' + (e % 10);
+			e /= 10;
+		}
+		while (i > 0)
+			buf[pos++] = num[--i];
+	} else {
+		append(buf, &pos, " -> ok", sizeof(buf));
+	}
+	(void)res;
+	buf[pos++] = '\n';
+	out(buf, pos);
+}
+
+static int interesting(const char *path, int err)
+{
+	if (err)
+		return 1;
+	if (!path)
+		return 0;
+	if (path[0] == '/')
+		return path[1] == 'd' &&
+		       (path[2] == 'e' || path[2] == 'a');
+	return 0;	/* relative: only failures */
+}
+
+/* O_CREAT carries a third argument; dropping it would create mode-0 files. */
+static unsigned int open_mode(int flags, __builtin_va_list ap)
+{
+	if (flags & 0100)	/* O_CREAT */
+		return (unsigned int)__builtin_va_arg(ap, int);
+	return 0;
+}
+
+int open(const char *path, int flags, ...)
+{
+	__builtin_va_list ap;
+	unsigned int mode;
+	long fd;
+	int err = 0;
+
+	__builtin_va_start(ap, flags);
+	mode = open_mode(flags, ap);
+	__builtin_va_end(ap);
+
+	fd = syscall(SYS_OPENAT_, AT_FDCWD_, path, flags, mode);
+	if (fd < 0) {
+		err = (int)-fd;
+		fd = -1;
+	}
+	if (interesting(path, err))
+		log_line("open", path, fd, err);
+	return (int)fd;
+}
+
+int open64(const char *path, int flags, ...)
+{
+	return open(path, flags);
+}
+
+int openat(int dirfd, const char *path, int flags, ...)
+{
+	__builtin_va_list ap;
+	unsigned int mode;
+	long fd;
+	int err = 0;
+
+	__builtin_va_start(ap, flags);
+	mode = open_mode(flags, ap);
+	__builtin_va_end(ap);
+
+	fd = syscall(SYS_OPENAT_, dirfd, path, flags, mode);
+	if (fd < 0) {
+		err = (int)-fd;
+		fd = -1;
+	}
+	if (interesting(path, err))
+		log_line("openat", path, fd, err);
+	return (int)fd;
+}
+
+int __open_2(const char *path, int flags)
+{
+	return open(path, flags);
+}
+
+int __openat_2(int dirfd, const char *path, int flags)
+{
+	return openat(dirfd, path, flags);
+}
+
 int __system_property_get(const char *name, char *value)
 {
 	const char *v = lookup(name);
@@ -159,6 +348,8 @@ int __system_property_get(const char *name, char *value)
 		len++;
 	}
 	value[len] = '\0';
+	if (log_on() && !prop_skip(name) && prop_first(name))
+		log_line("prop", name, len, 0);
 	return len;
 }
 
