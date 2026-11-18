@@ -1,13 +1,12 @@
 #!/bin/sh
-# Stop the engine and leave the kernel device closed, which powers the GNSS
-# function off through the driver's release().
-#
-# Safe to run when nothing is running: start.sh calls it first, so a restart
-# never trips over the previous run's processes or its abstract socket.
+# Stop the engine: the daemon, the forwarder, and the mounts start.sh put inside
+# the tree. Leaving the mounts behind is what made a later install.sh delete
+# across a live /proc, so taking them down is part of stopping, not an option.
 set -u
 
 PREFIX=/opt/gps-engine
 ROOT=$PREFIX/root
+. "$PREFIX/lib.sh"
 
 stopped=0
 
@@ -26,8 +25,8 @@ else
 	echo "stop: nmea-forward was not running"
 fi
 
-# Wait for the abstract sockets to fall away with their processes, which is what
-# makes the next start's bind succeed.
+# Wait for the processes to fall away with their sockets, so the next start's
+# bind succeeds.
 i=0
 while [ $i -lt 30 ]; do
 	if ! pgrep -f "vendor/bin/mnld" >/dev/null 2>&1 &&
@@ -38,13 +37,19 @@ while [ $i -lt 30 ]; do
 	sleep 0.1
 done
 
-# Leave the mounts in place: they are harmless and re-mounting every run is
-# noise. Unmount only when asked.
-if [ "${1:-}" = "--unmount" ]; then
-	for d in dev proc sys; do
-		mountpoint -q "$ROOT/$d" && umount "$ROOT/$d" && echo "stop: unmounted $d"
-	done
+if [ "${1:-}" = "--keep-mounted" ]; then
+	echo "stop: mounts left in place (--keep-mounted)"
+	exit 0
 fi
 
-echo "stop: /dev/stpgps should now be closed; a second session without a connsys"
+# The engine is gone, so its mounts go too. Lazy where a process still holds
+# one; the helper reports anything that survives.
+if unmount_tree; then
+	echo "stop: /dev, /proc and /sys are no longer mounted in the tree"
+else
+	echo "stop: some mounts could not be taken down (see above)" >&2
+	exit 1
+fi
+
+echo "stop: /dev/stpgps is closed again; a second session without a connsys"
 echo "      power cycle returns EIO, so if the next start fails, power-cycle."

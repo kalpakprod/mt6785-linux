@@ -7,16 +7,16 @@
 # mtk_hal2mnl so it knows a HAL is present. mnld then starts, opens the kernel
 # devices and uploads its DSP image.
 #
-# Running it twice is safe: whatever the previous run left behind is stopped
-# first, and the abstract sockets it held are waited for, so a restart never
-# dies with "bind: Address in use".
+# Running it twice is safe: whatever the previous run left is stopped first
+# (processes and mounts), and the logs of this run go to their own files, so an
+# old run's errors can never be read as this run's.
 set -eu
 
 PREFIX=/opt/gps-engine
 ROOT=$PREFIX/root
 STATE=/var/log/gps-engine
 RUNNER=$ROOT/data/local/tmp/run-mnld
-mkdir -p "$STATE"
+. "$PREFIX/lib.sh"
 
 say() { echo "start: $*"; }
 
@@ -30,8 +30,15 @@ if [ ! -c /dev/stpgps ]; then
 	exit 1
 fi
 
-# Stop what a previous run left, and wait for the sockets to fall away. The
-# forwarder binds an abstract socket, which lives as long as its process.
+mkdir -p "$STATE"
+stamp=$(date +%Y%m%d-%H%M%S)
+MNLD_LOG=$STATE/mnld-$stamp.log
+NMEA_LOG=$STATE/nmea-$stamp.log
+ln -sf "$MNLD_LOG" "$STATE/mnld.log"
+ln -sf "$NMEA_LOG" "$STATE/nmea.log"
+
+# Whatever the previous run left: processes first (stop.sh takes the mounts down
+# too), then a sweep of our own in case stop.sh could not.
 "$PREFIX/stop.sh" >/dev/null 2>&1 || true
 i=0
 while [ $i -lt 30 ]; do
@@ -46,48 +53,51 @@ if pgrep -f "nmea-forward" >/dev/null 2>&1; then
 	echo "start: an old nmea-forward is still running and holds mtk_mnl2hal" >&2
 	exit 1
 fi
+if ! unmount_tree; then
+	echo "start: old mounts are in the way; not starting" >&2
+	exit 1
+fi
 
 # The daemon needs the kernel's device nodes and the two pseudo filesystems.
 for d in dev proc sys; do
-	grep -q " $ROOT/$d " /proc/mounts 2>/dev/null || mount --bind "/$d" "$ROOT/$d" ||
+	mount --bind "/$d" "$ROOT/$d" ||
 		{ echo "start: cannot bind-mount /$d into the tree" >&2; exit 1; }
 done
-
 if [ ! -c "$ROOT/dev/stpgps" ]; then
 	echo "start: $ROOT/dev/stpgps does not exist - the bind mount hides it?" >&2
+	"$PREFIX/stop.sh" --keep-mounted >/dev/null 2>&1 || true
 	exit 1
 fi
 
 # The forwarder first: mnld blocks in sendto until somebody listens.
-: > "$STATE/nmea.log"
-setsid /usr/local/bin/nmea-forward >>"$STATE/nmea.log" 2>&1 < /dev/null &
-fwd=$!
+setsid /usr/local/bin/nmea-forward >>"$NMEA_LOG" 2>&1 < /dev/null &
 sleep 1
-if ! kill -0 "$fwd" 2>/dev/null; then
-	sed -n '1,5p' "$STATE/nmea.log" >&2
-	echo "start: nmea-forward exited at once" >&2
+if ! pgrep -f "/usr/local/bin/nmea-forward" >/dev/null 2>&1; then
+	sed -n '1,5p' "$NMEA_LOG" >&2
+	echo "start: nmea-forward did not stay up (its log is above)" >&2
 	exit 1
 fi
-say "nmea-forward pid $fwd (mtk_mnl2hal bound)"
+say "nmea-forward is up, mtk_mnl2hal bound (log $NMEA_LOG)"
 
 # The daemon, through the static wrapper that sets LD_PRELOAD: `chroot` itself
 # cannot carry the variable (the host's loader would try to preload a bionic
 # library), and the tree has no env(1).
-: > "$STATE/mnld.log"
 setsid chroot "$ROOT" /data/local/tmp/run-mnld /vendor/bin/mnld \
-	>>"$STATE/mnld.log" 2>&1 < /dev/null &
+	>>"$MNLD_LOG" 2>&1 < /dev/null &
 sleep 2
-# setsid may or may not fork, so ask for the process rather than trust $!.
 mnld=$(pgrep -f "vendor/bin/mnld" | head -1)
 if [ -n "$mnld" ]; then
-	say "mnld pid $mnld"
+	say "mnld is up, pid $mnld (log $MNLD_LOG)"
 else
-	sed -n '1,10p' "$STATE/mnld.log" >&2
-	echo "start: mnld exited at once (its log is above)" >&2
+	sed -n '1,10p' "$MNLD_LOG" >&2
+	echo "start: mnld did not stay up (its log is above)" >&2
+	"$PREFIX/stop.sh" || true
 	exit 1
 fi
 
 echo
-echo "watch it with:   tail -f $STATE/mnld.log $STATE/nmea.log"
-echo "kernel side:     dmesg | grep -iE 'FUNC_CTRL|stpgps|fwctl|GNSS channel'"
-echo "stop it with:    $PREFIX/stop.sh"
+echo "this run's logs:  $MNLD_LOG"
+echo "                  $NMEA_LOG"
+echo "watch it with:    tail -f $MNLD_LOG $NMEA_LOG"
+echo "kernel side:      dmesg | grep -iE 'FUNC_CTRL|stpgps|fwctl|GNSS channel'"
+echo "stop it with:     $PREFIX/stop.sh"

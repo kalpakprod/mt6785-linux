@@ -48,24 +48,46 @@ static void on_signal(int sig)
 	g_stop = 1;
 }
 
+/*
+ * Fill in an abstract address.
+ *
+ * Two details decide whether the peer can find it, and both were wrong in the
+ * first version of this program:
+ *
+ *   - the name starts at sun_path[1]; sun_path[0] is the NUL that *makes* the
+ *     address abstract. Writing the name at sun_path[0] overwrote that NUL, so
+ *     the kernel read it as a filesystem path: the first run left a socket file
+ *     in the working directory and every later run answered EADDRINUSE - which
+ *     is exactly the "bind mtk_mnl2hal: Address in use" that started this.
+ *   - the length must be what the daemon uses: bionic pads the name to the whole
+ *     108-byte sun_path, so the abstract name includes the trailing zeros. An
+ *     address of 13 bytes is a *different* name for the kernel.
+ */
+static void abstract_addr(struct sockaddr_un *addr, const char *name)
+{
+	memset(addr, 0, sizeof(*addr));
+	addr->sun_family = AF_UNIX;
+	addr->sun_path[0] = '\0';
+	if (strlen(name) >= sizeof(addr->sun_path) - 1) {
+		fprintf(stderr, "nmea-forward: socket name too long: %s\n", name);
+		exit(2);
+	}
+	memcpy(addr->sun_path + 1, name, strlen(name));
+}
+
 static int bind_abstract(const char *name)
 {
 	struct sockaddr_un addr;
-	socklen_t len;
 	int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
 
 	if (fd < 0)
 		return -1;
-	memset(&addr, 0, sizeof(addr));
-	addr.sun_family = AF_UNIX;
-	/* Abstract: the name starts at sun_path[0] and is NOT nul-terminated;
-	 * the length the kernel compares is what the daemon binds, and bionic
-	 * pads the name to 108 bytes, so the whole struct is the address. */
-	addr.sun_path[0] = '\0';
-	memcpy(addr.sun_path, name, strlen(name));
-	len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(name);
-	if (bind(fd, (struct sockaddr *)&addr, len) != 0) {
+	abstract_addr(&addr, name);
+	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+		int err = errno;
+
 		close(fd);
+		errno = err;
 		return -1;
 	}
 	return fd;
@@ -74,22 +96,19 @@ static int bind_abstract(const char *name)
 static int send_abstract(int fd, const char *name)
 {
 	struct sockaddr_un addr;
-	socklen_t len;
 	int32_t cmd[2] = { 1, 0 };
 
-	memset(&addr, 0, sizeof(addr));
-	addr.sun_family = AF_UNIX;
-	addr.sun_path[0] = '\0';
-	memcpy(addr.sun_path, name, strlen(name));
-	len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(name);
+	abstract_addr(&addr, name);
 
 	/* Two datagrams, each a little-endian "1, command" pair: init then
 	 * start, which is what a HAL does when the framework comes up. */
 	cmd[1] = CMD_INIT;
-	if (sendto(fd, cmd, sizeof(cmd), 0, (struct sockaddr *)&addr, len) < 0)
+	if (sendto(fd, cmd, sizeof(cmd), 0, (struct sockaddr *)&addr,
+		   sizeof(addr)) < 0)
 		return -1;
 	cmd[1] = CMD_START;
-	if (sendto(fd, cmd, sizeof(cmd), 0, (struct sockaddr *)&addr, len) < 0)
+	if (sendto(fd, cmd, sizeof(cmd), 0, (struct sockaddr *)&addr,
+		   sizeof(addr)) < 0)
 		return -1;
 	return 0;
 }
@@ -137,10 +156,23 @@ int main(int argc, char **argv)
 
 	rx = bind_abstract(SOCK_FROM_MNL);
 	if (rx < 0) {
-		fprintf(stderr, "nmea-forward: bind %s: %s\n", SOCK_FROM_MNL,
-			strerror(errno));
+		int err = errno;
+
+		/* Say exactly which address was tried and who holds it. With the
+		 * abstract marker in place, EADDRINUSE means another process has
+		 * this name; a stale filesystem socket was the old bug and cannot
+		 * happen any more. */
+		fprintf(stderr, "nmea-forward: bind @%s (%zu-byte abstract name): %s\n",
+			SOCK_FROM_MNL, sizeof(struct sockaddr_un), strerror(err));
+		if (err == EADDRINUSE) {
+			fprintf(stderr, "nmea-forward: another process holds it: %s\n",
+				"stop it (stop.sh) or check `ss -xa | grep mtk_mnl2hal`");
+		}
 		return 1;
 	}
+	if (getenv("GPS_ENGINE_VERBOSE"))
+		fprintf(stderr, "nmea-forward: bound @%s (%zu bytes)\n",
+			SOCK_FROM_MNL, sizeof(struct sockaddr_un));
 	tx = socket(AF_UNIX, SOCK_DGRAM, 0);
 	if (tx < 0) {
 		fprintf(stderr, "nmea-forward: socket: %s\n", strerror(errno));

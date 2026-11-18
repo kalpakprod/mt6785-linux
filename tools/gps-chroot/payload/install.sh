@@ -8,10 +8,14 @@
 # is a separate, explicit command, because what happens next is a vendor binary
 # talking to the chip.
 #
-# Everything it touches is inside PREFIX. It never chowns, chmods or removes
-# anything outside /opt/gps-engine and /usr/local/bin, so extracting the tarball
-# into a home directory (or /root) and running it from there cannot disturb that
-# directory's permissions.
+# Two rules, both about not destroying the phone:
+#   * it touches only /opt/gps-engine and /usr/local/bin - never chowns or
+#     chmods anything else, so extracting the tarball into a home directory and
+#     running it from there cannot change that directory's modes;
+#   * before replacing the tree it unmounts every mount point under it and
+#     refuses to delete anything while one is left. A start.sh run leaves /dev,
+#     /proc and /sys bind-mounted inside the tree, and `rm -rf` through those
+#     would walk into the live /proc and /dev.
 set -eu
 
 PREFIX=/opt/gps-engine
@@ -25,13 +29,23 @@ die() { echo "install: $*" >&2; exit 1; }
 case "$(uname -m)" in aarch64) ;; *) die "this tree is aarch64 only" ;; esac
 [ -d "$here/root" ] || die "root/ is missing - is this the whole tarball?"
 [ -f "$here/bin/nmea-forward" ] || die "bin/nmea-forward is missing"
-[ -f "$here/lib/libprops-shim.so" ] || die "lib/libprops-shim.so is missing"
 [ -f "$here/bin/run-mnld" ] || die "bin/run-mnld is missing"
+[ -f "$here/lib/libprops-shim.so" ] || die "lib/libprops-shim.so is missing"
+[ -f "$here/scripts/lib.sh" ] || die "scripts/lib.sh is missing"
+
+# The mount helpers work on the *installed* tree; source them from the archive
+# and point them at the destination.
+ROOT=$PREFIX/root
+. "$here/scripts/lib.sh"
 
 mkdir -p "$PREFIX" "$BINDIR" "$STATE"
+
+# 1. Replace the tree. install_tree() takes down whatever a previous start.sh
+#    mounted inside it, verifies nothing is left, and only then deletes and
+#    copies - if any mount survives, nothing is deleted at all.
 echo "installing the tree into $PREFIX"
-rm -rf "$PREFIX/root"
-cp -a "$here/root" "$PREFIX/root"
+install_tree "$here/root" ||
+	die "the tree could not be replaced safely (a mount is still active in it?); nothing was deleted"
 
 # The engine expects Android's shape: /data writable, /dev, /proc, /sys mounted.
 mkdir -p "$PREFIX/root/data/vendor/gps" "$PREFIX/root/data/vendor/log/gps" \
@@ -42,7 +56,7 @@ chmod 1777 "$PREFIX/root/tmp"
 
 # Modes, explicitly: everything the engine executes inside the tree has to be
 # executable there, whatever mode the archive happened to carry (an mnld at 0644
-# is the "chroot: Permission denied" that a first trial hits).
+# is the "chroot: Permission denied" a first trial hits).
 chmod 0755 "$PREFIX/root/vendor/bin/mnld" "$PREFIX/root/vendor/bin/mtk_agpsd"
 chmod 0755 "$PREFIX/root/apex/com.android.runtime/bin/"* 2>/dev/null || true
 # Any other ELF executable in the tree gets its execute bit too; libraries stay 0644.
@@ -58,11 +72,12 @@ install -m 0755 "$here/bin/run-mnld" "$PREFIX/root/data/local/tmp/run-mnld"
 install -m 0644 "$here/lib/libprops-shim.so" \
 	"$PREFIX/root/system/lib64/libprops-shim.so"
 install -m 0644 "$here/etc/gps.props" "$PREFIX/root/data/local/tmp/gps.props"
+install -m 0755 "$here/scripts/lib.sh" "$PREFIX/lib.sh"
 install -m 0755 "$here/scripts/start.sh" "$PREFIX/start.sh"
 install -m 0755 "$here/scripts/stop.sh" "$PREFIX/stop.sh"
 install -m 0755 "$here/scripts/check.sh" "$PREFIX/check.sh"
 
-# The unit needs the same wrapper; keep the shipped one in step with the tree.
+# Optional: a unit that runs the same start.sh. Installed disabled on purpose.
 if [ -d /etc/systemd/system ]; then
 	sed "s|@PREFIX@|$PREFIX|g" "$here/gps-engine.service" \
 		> /etc/systemd/system/gps-engine.service
