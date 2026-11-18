@@ -100,6 +100,10 @@ static INT32 polling_consys_chipid(VOID);
 static VOID consys_acr_reg_setting(VOID);
 static VOID consys_afe_reg_setting(VOID);
 static INT32 consys_hw_vcn18_ctrl(MTK_WCN_BOOL enable);
+static void consys_vcn18_log_state(const char *what);
+static void consys_vcn18_handover_srclken0(void);
+static void consys_vcn18_force_sw_on(void);
+static void consys_vcn18_force_sw_off(void);
 static VOID consys_vcn28_hw_mode_ctrl(UINT32 enable);
 static INT32 consys_hw_vcn28_ctrl(UINT32 enable);
 static INT32 consys_hw_wifi_vcn33_ctrl(UINT32 enable);
@@ -511,6 +515,7 @@ static INT32 consys_clock_buffer_ctrl(MTK_WCN_BOOL enable)
 #define MT6359_LDO_VCN18_CON0		0x1c2a
 #define MT6359_LDO_VCN18_OP_EN		0x1c2e
 #define MT6359_LDO_VCN18_OP_CFG		0x1c34
+#define MT6359_LDO_VCN33_1_CON0		0x1bd8	/* mt6359 registers.h */
 #define MT6359_LDO_VCN33_2_CON0		0x1c08
 #define MT6359_LDO_VCN33_2_OP_EN	0x1c0c
 #define MT6359_LDO_VCN33_2_OP_CFG	0x1c12
@@ -1011,6 +1016,8 @@ static INT32 polling_consys_chipid(VOID)
 			(conn_reg.mcu_conn_hif_pdma_base == 0))
 		return 0;
 
+	consys_vcn18_log_state("before the chip-id poll");
+
 	/*12.poll CONNSYS CHIP ID until chipid is returned */
 	while (retry-- > 0) {
 		consys_ver_id = CONSYS_REG_READ(conn_reg.mcu_top_misc_off_base +
@@ -1024,11 +1031,22 @@ static INT32 polling_consys_chipid(VOID)
 			WMT_PLAT_PR_DBG("consys FW version id(0x%x)\n", consys_fw_ver & 0xFFFF);
 
 			consys_dl_rom_patch(consys_ver_id, consys_fw_ver);
+			/* The chip is alive: it can hold its own rail now. */
+			consys_vcn18_handover_srclken0();
 			break;
 		}
 		WMT_PLAT_PR_ERR("Read CONSYS version id(0x%08x)", consys_ver_id);
 		msleep(20);
 	}
+	if (consys_ver_id != CONSYS_IP_VER_ID) {
+		/*
+		 * The MCU never answered, so nothing will hold its rail: take
+		 * VCN18 out of the SRCLKEN0 handover now, so this failure cannot
+		 * poison the next attempt or the next boot (lead note 37).
+		 */
+		consys_vcn18_force_sw_on();
+	}
+
 	consys_ver_id = CONSYS_REG_READ(conn_reg.mcu_top_misc_off_base + CONSYS_CONF_ID_OFFSET);
 	WMT_PLAT_PR_DBG("consys configuration id(0x%x)\n", consys_ver_id & 0xF);
 	consys_ver_id = CONSYS_REG_READ(conn_reg.mcu_base + CONSYS_HW_ID_OFFSET);
@@ -1094,6 +1112,99 @@ static VOID consys_afe_reg_setting(VOID)
 	WMT_PLAT_PR_DBG("No need to do afe");
 }
 
+/*
+ * VCN18's two states, and the log line that says which one is in effect.
+ *
+ * `SW on` keeps the rail up as long as the host enables it - the state the MCU
+ * needs while it is still booting. `SRCLKEN0` hands the rail to the connsys: on
+ * from then on only while the chip asserts the pin, which is what the vendor
+ * wants for runtime power saving and what must not happen before the chip is
+ * alive.
+ */
+static void consys_vcn18_log_state(const char *what)
+{
+#if CONSYS_PMIC_CTRL_ENABLE
+	unsigned int con0 = 0, op_en = 0, op_cfg = 0;
+	unsigned int v33_1 = 0, v33_2 = 0;
+
+	if (!g_regmap)
+		return;
+	regmap_read(g_regmap, MT6359_LDO_VCN18_CON0, &con0);
+	regmap_read(g_regmap, MT6359_LDO_VCN18_OP_EN, &op_en);
+	regmap_read(g_regmap, MT6359_LDO_VCN18_OP_CFG, &op_cfg);
+	regmap_read(g_regmap, MT6359_LDO_VCN33_1_CON0, &v33_1);
+	regmap_read(g_regmap, MT6359_LDO_VCN33_2_CON0, &v33_2);
+	/*
+	 * Lead note 37 measured a failing boot as CON0=0x0424 (EN=0),
+	 * OP_EN=0x8001, OP_CFG=0x0001: SRCLKEN0 with HW_LP, rail off. These
+	 * read-backs make that state visible on every attempt instead of being
+	 * inferred from the regulator framework's summary.
+	 */
+	WMT_PLAT_PR_ERR("VCN18 %s: CON0=0x%08x (EN=%u OP_MODE=0x%x LP=%u) OP_EN=0x%08x OP_CFG=0x%08x | VCN33_1=0x%08x VCN33_2=0x%08x\n",
+			what, con0, con0 & 1, (con0 & MT6359_LDO_OP_MODE_MASK) >> 10,
+			(con0 >> 1) & 1, op_en, op_cfg, v33_1, v33_2);
+#else
+	(void)what;
+#endif
+}
+
+/*
+ * Put VCN18 back into the one state a booting MCU can rely on: SW control, host
+ * enabled, hardware operators cleared. This is the recovery after a failed
+ * power-on - the chip-id poll did not answer, so nothing will assert SRCLKEN0,
+ * and leaving the LDO handed over to it keeps the rail off. Running this before
+ * the next attempt (or on the next boot) takes the latch out of the way.
+ */
+static void consys_vcn18_force_sw_on(void)
+{
+#if CONSYS_PMIC_CTRL_ENABLE
+	unsigned int con0 = 0;
+
+	if (!g_regmap)
+		return;
+	/* OP_MODE = SW, HW0_OP_EN/HW0_OP_CFG = 0, then SW_OP_EN = 1 and EN = 1 */
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_CON0,
+			   MT6359_LDO_OP_MODE_MASK, 0);
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_OP_EN,
+			   MT6359_LDO_HW0_OP_BIT, 0);
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_OP_CFG,
+			   MT6359_LDO_HW0_OP_BIT, 0);
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_OP_EN,
+			   MT6359_LDO_SW_OP_EN_BIT, MT6359_LDO_SW_OP_EN_BIT);
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_CON0, 0x1, 0x1);
+	regmap_read(g_regmap, MT6359_LDO_VCN18_CON0, &con0);
+	consys_vcn18_log_state(con0 & 1 ? "forced back to SW on" :
+					 "forced to SW, rail still off");
+#else
+#endif
+}
+
+/* Same as force_sw_on but with the rail switched off, for the power-off path. */
+static void consys_vcn18_force_sw_off(void)
+{
+#if CONSYS_PMIC_CTRL_ENABLE
+	if (!g_regmap)
+		return;
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_CON0,
+			   MT6359_LDO_OP_MODE_MASK, 0);
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_OP_EN,
+			   MT6359_LDO_HW0_OP_BIT, 0);
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_OP_CFG,
+			   MT6359_LDO_HW0_OP_BIT, 0);
+	regmap_update_bits(g_regmap, MT6359_LDO_VCN18_CON0, 0x1, 0);
+#endif
+}
+
+static void consys_vcn18_handover_srclken0(void)
+{
+#if CONSYS_PMIC_CTRL_ENABLE
+	/*Set VCN18 as low-power mode(1), HW0_OP_EN as 1, HW0_OP_CFG as HW_LP(1)*/
+	wmt_pmic_ldo_lp(MT6359_LDO_VCN18_CON0, MT6359_LDO_VCN18_OP_EN,
+			MT6359_LDO_VCN18_OP_CFG, SRCLKEN0, 1, 1, HW_LP);
+	consys_vcn18_log_state("handed to SRCLKEN0 after the MCU answered");
+#endif
+}
+
 static INT32 consys_hw_vcn18_ctrl(MTK_WCN_BOOL enable)
 {
 #if CONSYS_PMIC_CTRL_ENABLE
@@ -1111,9 +1222,20 @@ static INT32 consys_hw_vcn18_ctrl(MTK_WCN_BOOL enable)
 		}
 		/*Set VCN18 SW_LP as 0*/
 		wmt_pmic_set_ldo_lp(MT6359_LDO_VCN18_CON0, 0);
-		/*Set VCN18 as low-power mode(1), HW0_OP_EN as 1, HW0_OP_CFG as HW_LP(1)*/
-		wmt_pmic_ldo_lp(MT6359_LDO_VCN18_CON0, MT6359_LDO_VCN18_OP_EN,
-				MT6359_LDO_VCN18_OP_CFG, SRCLKEN0, 1, 1, HW_LP);
+		/*
+		 * VCN18 stays in SW mode here, and the handover to SRCLKEN0 happens
+		 * only after the MCU answered (consys_vcn18_handover_srclken0(),
+		 * called from polling_consys_chipid()).
+		 *
+		 * Handing it over at this point is what killed Wi-Fi after the hard
+		 * reset of 18.11 (LEAD-NOTE-37): from the handover on, the rail is on
+		 * only while the connsys asserts SRCLKEN0, and a chip that has no
+		 * rail cannot assert it - the LDO falls, the MCU never boots
+		 * (0x18002600=0x0, CPUPCR=0x0, 0x18007000(0x0)), and because the
+		 * MT6359 keeps its registers across a SoC reset (they are VBAT-backed)
+		 * every later boot repeated the same poisoned handover.
+		 */
+		consys_vcn18_log_state("SW on");
 
 		/*1.AP power on VCN_3V3 LDO (with PMIC_WRAP API) VCN_3V3  */
 		/*default vcn33_1 SW mode*/
@@ -1128,6 +1250,13 @@ static INT32 consys_hw_vcn18_ctrl(MTK_WCN_BOOL enable)
 			regulator_disable(reg_VCN33_1);
 		/* delay 300us */
 		udelay(300);
+		/*
+		 * Take the LDO out of the connsys' hands before switching it off:
+		 * an SRCLKEN0 handover left behind after a clean shutdown is the
+		 * same latch a crash leaves (lead note 37), and it survives a
+		 * reboot because the PMIC does.
+		 */
+		consys_vcn18_force_sw_off();
 		/*AP power off MT6359 VCN_1V8 LDO */
 		if (reg_VCN18) {
 			if (regulator_disable(reg_VCN18))
@@ -1135,6 +1264,7 @@ static INT32 consys_hw_vcn18_ctrl(MTK_WCN_BOOL enable)
 			else
 				WMT_PLAT_PR_DBG("disable VCN_1V8 ok\n");
 		}
+		consys_vcn18_log_state("after the off path");
 	}
 #endif
 	return 0;
