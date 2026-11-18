@@ -523,6 +523,56 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 static unsigned int mt6785_handshake;
 module_param_named(handshake, mt6785_handshake, uint, 0644);
 MODULE_PARM_DESC(handshake, "value to write to GPR_CM4_A_REBOOT before releasing the SCP (0 = leave it alone)");
+
+/*
+ * A list of register writes to make before the release, so one hypothesis can be tried in
+ * twenty seconds instead of a build and a reboot:
+ *
+ *   echo 0x10006440:0x1,0x105c4004:0x6 > /sys/module/mtk_scp/parameters/ulposc_poke
+ *   echo start > /sys/class/remoteproc/remoteproc0/state
+ *
+ * Each entry is AP physical address:value in hex, comma separated, and every write is logged
+ * with its readback. The page containing the address is mapped on the spot and unmapped again,
+ * so an address that does not map is reported and skipped rather than crashing the boot. It is
+ * a test switch like handshake: empty (the default) writes nothing.
+ */
+static char mt6785_poke[256];
+module_param_string(ulposc_poke, mt6785_poke, sizeof(mt6785_poke), 0644);
+MODULE_PARM_DESC(ulposc_poke, "addr:val[,addr:val...] written before the SCP release, hex, for one trial");
+
+static void mt6785_scp_apply_poke(struct mtk_scp *scp)
+{
+	char *p = mt6785_poke;
+
+	while (p && *p) {
+		char *end = strchr(p, ',');
+		unsigned long addr, val;
+		char *colon;
+		void *m;
+
+		if (end)
+			*end = '\0';
+		colon = strchr(p, ':');
+		if (!colon || kstrtoul(p, 16, &addr) || kstrtoul(colon + 1, 16, &val)) {
+			dev_err(scp->dev, "ulposc_poke: '%s' is not addr:val in hex, skipped\n", p);
+			goto next;
+		}
+		m = memremap(addr & PAGE_MASK, PAGE_SIZE, MEMREMAP_WB);
+		if (!m) {
+			dev_err(scp->dev, "ulposc_poke: %#lx does not map, skipped\n", addr);
+			goto next;
+		}
+		dev_info(scp->dev, "ulposc_poke: %#lx: %#x -> %#lx, reads %#x\n",
+			 addr, readl(m + (addr & ~PAGE_MASK)), val,
+			 (writel(val, m + (addr & ~PAGE_MASK)),
+			  readl(m + (addr & ~PAGE_MASK))));
+		memunmap(m);
+next:
+		if (!end)
+			break;
+		p = end + 1;
+	}
+}
 /* the AP->SCP doorbell and a scratch word the loader polls (vendor scp_reg.h:19-24, :44) */
 #define MT6785_SCP_GIPC_IN		0x28
 #define MT6785_SCP_GENERAL_REG6		0x68
@@ -1393,6 +1443,8 @@ static int scp_start(struct rproc *rproc)
 	 *
 	 * Nothing else in the driver writes this word before a normal release.
 	 */
+	mt6785_scp_apply_poke(scp);
+
 	if (mt6785_handshake) {
 		writel(mt6785_handshake, scp->cluster->reg_base + MT6785_SCP_GPR_CM4_A_REBOOT);
 		dev_info(scp->dev, "reboot handshake word set to %#x before the release (reads %#x), as the parameter asked\n",
