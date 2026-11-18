@@ -115,6 +115,28 @@ static bool scan_ports;
 module_param(scan_ports, bool, 0644);
 MODULE_PARM_DESC(scan_ports,
 		 "program all three CSI ports and receivers, not only the selected one");
+
+/*
+ * Which sensor sink pad this stream starts: -1 keeps the first one (pad 0, the camera the port was
+ * built for), 1 starts the sensor on the second pad instead. The board's front OV13B10 and rear
+ * IMX355 share CSI port 2 through the MIPI switch, so starting the other one - with the switch level
+ * forced - is the cheapest way to ask whether any sensor on this port produces a packet at all.
+ */
+static int sensor_pad = -1;
+module_param(sensor_pad, int, 0644);
+MODULE_PARM_DESC(sensor_pad,
+		 "sink pad whose sensor this stream starts: -1 = pad 0, or a pad number");
+
+/* The upstream pad of this stream: the sink pad the parameter names, or the first one. */
+static struct media_pad *mtk_seninf_upstream(struct mtk_seninf *seninf)
+{
+	unsigned int pad = sensor_pad < 0 ? 0 : sensor_pad;
+
+	if (pad >= 2)
+		return ERR_PTR(-EINVAL);
+
+	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
+}
 MODULE_PARM_DESC(mipi_sel_force,
 		 "force the MIPI switch level at stream on: -1 = device tree, 0 or 1 = force");
 MODULE_PARM_DESC(csi_port,
@@ -429,7 +451,7 @@ static unsigned int mtk_seninf_lanes(struct mtk_seninf *seninf)
 	u32 lanes[4];
 	int n;
 
-	remote = media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+	remote = mtk_seninf_upstream(seninf);
 	if (IS_ERR(remote))
 		return 4;
 	src = media_entity_to_v4l2_subdev(remote->entity);
@@ -469,8 +491,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	if (!enable) {
 		/* Stop the upstream first, then the receiver, the reverse of the start order. */
 		{
-			struct media_pad *remote =
-				media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+			struct media_pad *remote = mtk_seninf_upstream(seninf);
 
 			if (!IS_ERR(remote)) {
 				struct v4l2_subdev *src =
@@ -744,8 +765,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	 * the chain starts the one upstream of it, so the cascade stops at the sensor.
 	 */
 	{
-		struct media_pad *remote =
-			media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+		struct media_pad *remote = mtk_seninf_upstream(seninf);
 		int src_ret;
 
 		if (IS_ERR(remote)) {
@@ -775,8 +795,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	 * driven before the sensor is started, with the value logged.
 	 */
 	{
-		struct media_pad *remote =
-			media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+		struct media_pad *remote = mtk_seninf_upstream(seninf);
 
 		if (!IS_ERR(remote) && seninf->mipi_sel) {
 			struct v4l2_subdev *src =
