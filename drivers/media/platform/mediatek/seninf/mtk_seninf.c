@@ -123,6 +123,8 @@ struct mtk_seninf {
 	phys_addr_t inst_pa;
 	/* The receiver instance this stream is on; every per-instance access uses it. */
 	void __iomem *inst;
+	/* Its zero-based index, 0..4, so late work can find the top route again. */
+	unsigned int cur_idx;
 	/* The block's physical base, so logs can name absolute addresses. */
 	phys_addr_t base_pa;
 	struct dentry *debugfs;
@@ -254,6 +256,20 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 			    &mtk_seninf_clear_fops);
 }
 
+/*
+ * Which of the three top-route registers this receiver uses, from the HAL's masks
+ * (hal_csirx_seninf_top_setting, libcam.halsensor.so 0x32910-0x3292c: 0x60 for indices 0, 3
+ * and 4; 0x64 for 1, 5 and 6; 0x68 for the rest).
+ */
+static u32 mtk_seninf_top_offset(unsigned int idx)
+{
+	if (idx == 0 || idx == 3 || idx == 4)
+		return 0x60;
+	if (idx == 1 || idx == 5 || idx == 6)
+		return 0x64;
+	return 0x68;
+}
+
 static void mtk_seninf_late_counters(struct work_struct *work)
 {
 	struct mtk_seninf *seninf =
@@ -304,6 +320,57 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 			 readl(p + 0x0ac8));
 	}
 
+	/*
+	 * Still nothing after half a second. Two things can be tried from the kernel without a new
+	 * flash, and each one leaves its verdict in the counters:
+	 *
+	 *  1. Program the receiver again now that the sensor is certainly sending, in case the
+	 *     sensor's own start is what upsets the route (the HAL programs the receiver first and
+	 *     starts the sensor afterwards, like this driver - so the reverse order is the case this
+	 *     rules out, and a repeated write is harmless either way).
+	 *  2. Move the board's MIPI switch to its other position and look again. Nothing in any
+	 *     source says which level connects which sensor on this board; the vendor's power
+	 *     sequence only shows that the front sensor's sequence drives it high and the rear 8 MP
+	 *     sensor's sequence does not drive it at all. If the level this driver set isolates the
+	 *     IMX355, the packet counter moves when it is flipped.
+	 */
+	if (!readl(seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT)) {
+		void __iomem *in = seninf_inst(seninf);
+		u32 top = mtk_seninf_top_offset(seninf->cur_idx);
+		u32 mask = readl(in + 0x0a00);
+		int cur, flipped;
+
+		writel(mask, in + 0x0a00);
+		writel((readl(seninf->base + top) & ~0x2u) | 0x1u, seninf->base + top);
+		msleep(80);
+		dev_info(seninf->dev,
+			 "stage 1, route re-asserted after the sensor started: pkt %u err %u FSM 0x%08x\n",
+			 readl(in + SENINF_CSI2_PACKET_CNT),
+			 readl(in + SENINF_CSI2_ERR_CNT), readl(in + 0x0a2c));
+
+		if (readl(in + SENINF_CSI2_PACKET_CNT) || !seninf->mipi_sel)
+			return;
+
+		cur = gpiod_get_value_cansleep(seninf->mipi_sel);
+		flipped = !cur;
+		gpiod_set_value_cansleep(seninf->mipi_sel, flipped);
+		msleep(80);
+		dev_info(seninf->dev,
+			 "stage 2, mipi switch %d -> %d: pkt %u err %u FSM 0x%08x\n",
+			 cur, flipped, readl(in + SENINF_CSI2_PACKET_CNT),
+			 readl(in + SENINF_CSI2_ERR_CNT), readl(in + 0x0a2c));
+
+		if (readl(in + SENINF_CSI2_PACKET_CNT))
+			return;
+
+		gpiod_set_value_cansleep(seninf->mipi_sel, cur);
+		msleep(80);
+		dev_info(seninf->dev,
+			 "stage 3, mipi switch back to %d: pkt %u err %u FSM 0x%08x\n",
+			 cur, readl(in + SENINF_CSI2_PACKET_CNT),
+			 readl(in + SENINF_CSI2_ERR_CNT), readl(in + 0x0a2c));
+	}
+
 }
 
 /*
@@ -352,6 +419,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	void __iomem *inst = seninf->base + 0x1000 * seninf_idx;
 
 	seninf->inst = inst;
+	seninf->cur_idx = seninf_idx;
 	seninf->inst_pa = seninf->base_pa + 0x1000 * seninf_idx;
 	int ret;
 
@@ -557,13 +625,8 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	 * stock dump's address list either, which is why they were never suspected.
 	 */
 	{
-		u32 top_off = 0x68;
+		u32 top_off = mtk_seninf_top_offset(seninf_idx);
 		u32 before, want;
-
-		if (seninf_idx == 0 || seninf_idx == 3 || seninf_idx == 4)
-			top_off = 0x60;
-		else if (seninf_idx == 1 || seninf_idx == 5 || seninf_idx == 6)
-			top_off = 0x64;
 
 		before = readl(seninf->base + top_off);
 		want = (before & ~0x2u) | 0x1u;
