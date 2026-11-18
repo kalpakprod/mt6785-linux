@@ -1343,6 +1343,17 @@ static int scp_start(struct rproc *rproc)
 	 */
 	mt6785_scp_slp_prot_clear(scp);
 
+	/*
+	 * The awake request, taken before the first read of a running SCP rather than after
+	 * the timeline: it is the vendor's guard around every access it makes to the core
+	 * (scp_awake.c:79-100, unlock at :162-178), and its acknowledgment is the firmware's
+	 * own ISR. comb9 took it at 1445 ms - after the firmware had already switched its clock
+	 * tree on at 1000 ms and the window had stopped answering - and it was never
+	 * acknowledged. From here it is held across the sampling and released when the ready IPI
+	 * arrives or the wait fails.
+	 */
+	mt6785_scp_awake(scp, true);
+
 	scp->data->scp_reset_deassert(scp);
 
 	/*
@@ -1413,8 +1424,6 @@ static int scp_start(struct rproc *rproc)
 				 MT6785_SCP_PROBE_POLLS * MT6785_SCP_PROBE_STEP_US / 1000);
 	}
 
-	mt6785_scp_awake(scp, true);
-
 	/*
 	 * One read back, immediately: the core has just been released and cannot have taken the
 	 * bus yet, so this is the last honest look at the register the write went to.
@@ -1444,6 +1453,8 @@ static int scp_start(struct rproc *rproc)
 	}
 	if (ret == -ERESTARTSYS) {
 		dev_err(dev, "wait SCP interrupted by a signal!\n");
+		/* the awake lock is held from the release on, so it has to go back here too */
+		mt6785_scp_awake(scp, false);
 		goto stop;
 	}
 
