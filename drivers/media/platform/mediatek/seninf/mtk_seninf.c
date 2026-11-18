@@ -32,6 +32,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/phy/phy.h>
@@ -318,7 +319,7 @@ static unsigned int mtk_seninf_lanes(struct mtk_seninf *seninf)
 		return 4;
 
 	n = fwnode_property_count_u32(ep, "data-lanes");
-	if (n <= 0 || n > ARRAY_SIZE(lanes) ||
+	if (n <= 0 || n > (int)ARRAY_SIZE(lanes) ||
 	    fwnode_property_read_u32_array(ep, "data-lanes", lanes, n)) {
 		fwnode_handle_put(ep);
 		return 4;
