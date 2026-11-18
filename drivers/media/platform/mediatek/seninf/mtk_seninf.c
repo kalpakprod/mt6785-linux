@@ -274,6 +274,19 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 		 readl(seninf_inst(seninf) + 0x0ac8));
 
 	/*
+	 * The top route and the CSI-2 bank once more, now that the sensor is really sending: a word
+	 * that is not what s_stream wrote says something cleared it, and the top registers were
+	 * never read on the phone before this trial.
+	 */
+	dev_info(seninf->dev, "500 ms in: top +0x60 %08x +0x64 %08x +0x68 %08x\n",
+		 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
+		 readl(seninf->base + 0x68));
+	dev_info(seninf->dev, "500 ms in: mask %08x +0x04 %08x +0x08 %08x +0x10 %08x +0x18 %08x +0xc0 %08x\n",
+		 readl(seninf_inst(seninf) + 0x0a00), readl(seninf_inst(seninf) + 0x0a04),
+		 readl(seninf_inst(seninf) + 0x0a08), readl(seninf_inst(seninf) + 0x0a10),
+		 readl(seninf_inst(seninf) + 0x0a18), readl(seninf_inst(seninf) + 0x0ac0));
+
+	/*
 	 * Measured, not guessed: the per-index port assignment lives in the closed HAL, so the port
 	 * the streaming sensor really arrives on is whichever of these moves. One line per receiver
 	 * instance (5 x 0x1000 from this node's base): its CSI-2 control, enable, packet and error
@@ -531,6 +544,36 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 				 seq[i].what, seq[i].off, seq[i].val,
 				 readl(inst + seq[i].off));
 		}
+	}
+
+	/*
+	 * The route from the analog port into this receiver. Only the HAL knows it:
+	 * SeninfDrvImp::hal_csirx_seninf_top_setting (libcam.halsensor.so 0x328a0) picks one of
+	 * three registers by receiver index - 0x60 for indices 0, 3 and 4, 0x64 for 1, 5 and 6,
+	 * 0x68 for the rest (:0x32910-0x3292c, test masks 0x19 and 0x62) - and its normal path
+	 * writes "clear bit 1, set bit 0" into it (:0x3294c-0x32960). SENINF5 is index 4, so it
+	 * is 0x60 here. The routing block is [this+0x38], the SENINF window itself (:0x328a8).
+	 * Nothing in this port ever wrote those three registers, and they were not in the 18.11
+	 * stock dump's address list either, which is why they were never suspected.
+	 */
+	{
+		u32 top_off = 0x68;
+		u32 before, want;
+
+		if (seninf_idx == 0 || seninf_idx == 3 || seninf_idx == 4)
+			top_off = 0x60;
+		else if (seninf_idx == 1 || seninf_idx == 5 || seninf_idx == 6)
+			top_off = 0x64;
+
+		before = readl(seninf->base + top_off);
+		want = (before & ~0x2u) | 0x1u;
+		writel(want, seninf->base + top_off);
+
+		dev_info(seninf->dev,
+			 "top route +0x%02x: 0x%08x -> 0x%08x (want 0x%08x), +0x60 %08x +0x64 %08x +0x68 %08x\n",
+			 top_off, before, readl(seninf->base + top_off), want,
+			 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
+			 readl(seninf->base + 0x68));
 	}
 
 	dev_info(seninf->dev,
