@@ -900,6 +900,7 @@ static void imx355_diag_mipi(struct imx355 *imx355)
 {
 	u64 mode = 0, r112 = 0, r113 = 0, r114 = 0, r820 = 0;
 	u64 r301 = 0, r303 = 0, r305 = 0, r30d = 0, r30e = 0, vts = 0, hts = 0;
+	u64 t[9] = { 0 };
 
 	cci_read(imx355->regmap, CCI_REG8(0x0100), &mode, NULL);
 	cci_read(imx355->regmap, CCI_REG8(0x0112), &r112, NULL);
@@ -923,6 +924,23 @@ static void imx355_diag_mipi(struct imx355 *imx355)
 	dev_info(imx355->dev,
 		 "DIAG mipi: VTS 0x%04llx (vendor 0x0e4c), HTS 0x%04llx (0x072c)\n",
 		 vts, hts);
+
+	/*
+	 * The MIPI global timing words: the clock-lane and settle settings the receiver has to
+	 * agree with. 0x0830/0x0831 are the ones that pick the clock lane's mode on this part.
+	 */
+	cci_read(imx355->regmap, CCI_REG8(0x0800), &t[0], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0802), &t[1], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0804), &t[2], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0806), &t[3], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0808), &t[4], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x080a), &t[5], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x080c), &t[6], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0830), &t[7], NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0831), &t[8], NULL);
+	dev_info(imx355->dev,
+		 "DIAG mipi timing: 0800 %02llx 0802 %02llx 0804 %02llx 0806 %02llx 0808 %02llx 080a %02llx 080c %02llx 0830 %02llx 0831 %02llx\n",
+		 t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8]);
 }
 
 /* Stop streaming */
