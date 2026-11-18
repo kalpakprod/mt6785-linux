@@ -94,6 +94,18 @@
  */
 static int csi_port = 2;
 module_param(csi_port, int, 0644);
+
+/*
+ * The board's MIPI switch level, forced instead of taken from the sensor node's mipi-sel-level: -1
+ * keeps the device tree's value. The front and rear 8 MP sensors share CSI port 2 through this
+ * switch (vendor imgsensor_cfg_table.c:101-145 drives it high for the front one and not at all for
+ * the rear 8 MP one), so streaming the front sensor needs the other level - and if neither sensor
+ * produces a packet with the level forced each way, the fault is not the switch.
+ */
+static int mipi_sel_force = -1;
+module_param(mipi_sel_force, int, 0644);
+MODULE_PARM_DESC(mipi_sel_force,
+		 "force the MIPI switch level at stream on: -1 = device tree, 0 or 1 = force");
 MODULE_PARM_DESC(csi_port,
 		 "HAL CSI port to program (0 = PORT_0, 1 = PORT_1, 2 = PORT_2, the default: the stock HAL puts imx355 and ov13b10 there); read at every stream on");
 
@@ -725,6 +737,8 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			if (src->dev && src->dev->of_node)
 				of_property_read_u32(src->dev->of_node, "mipi-sel-level",
 						     &level);
+			if (mipi_sel_force >= 0)
+				level = mipi_sel_force;
 
 			gpiod_set_value_cansleep(seninf->mipi_sel, level);
 			dev_info(seninf->dev, "mipi switch: %s -> %u, reads %d\n",
