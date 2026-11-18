@@ -40,7 +40,7 @@ not "Works".
 | Cameras | In progress | camsv video nodes and sensor drivers probe; no image yet |
 | Wi-Fi (gen4m) | In progress | `wlan0` comes up and scans real networks, stable over repeated scans; association not checked yet |
 | Bluetooth | In progress | `hci0` powers on; the controller firmware then asserts |
-| Modem (calls, SMS, data) | In progress | modem passes boot ROM; first handshake not reached yet |
+| Modem (calls, SMS, data) | In progress | modem reaches state `ready` with the radio off and answers `AT`/`ATI` (author's build); calls, SMS and data not checked, they need the radio on. The branch with this state follows once its property file is split from device identifiers |
 | Sensors (via SCP) | In progress | SCP bring-up |
 | SD card, IR, GPS, NFC, 3D (Mali-G76/Panfrost), FDE, USB OTG | Untested | |
 
