@@ -37,6 +37,7 @@
 #include <linux/pm_wakeup.h>
 #include <linux/poll.h>
 #include <linux/skbuff.h>
+#include <linux/sprintf.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
@@ -106,6 +107,15 @@
 #define STPGPS_FRAME_SIZE	1024
 
 /*
+ * How much of the first frames of each direction reaches the log. The daemon's
+ * boot exchange is short and its framing is undocumented: a session that dies
+ * after one 116-byte frame and a 20-byte answer cannot be explained from byte
+ * counters alone, so the first few frames of each direction are printed raw.
+ */
+#define STPGPS_DUMP_FRAMES	4
+#define STPGPS_DUMP_BYTES	48
+
+/*
  * The vendor driver tracks the chip's reset from the WMT notification
  * (gps_cdev_rst_cb) and reports it through COMBO_IOC_WMT_STATUS as -888 while
  * the chip is resetting and -889 once it came back, so the daemon knows it has
@@ -157,6 +167,10 @@ struct stpgps {
 	/* GPS wake lock, COMBO_IOC_TAKE/GIVE_GPS_WAKELOCK and open/close. */
 	struct wakeup_source *ws;
 	bool ws_held;
+
+	/* Frames already dumped this session, per direction. */
+	unsigned int tx_dumped;
+	unsigned int rx_dumped;
 
 	/*
 	 * STP hands frames over in its own RX thread, which must not sleep in a
@@ -236,6 +250,9 @@ static void stpgps_wmt_cb(ENUM_WMTDRV_TYPE_T src, ENUM_WMTDRV_TYPE_T dst,
 	wake_up_interruptible(&gps->close_wait);
 }
 
+static void stpgps_dump_frame(struct stpgps *gps, bool tx, const u8 *buf,
+			      size_t len);
+
 /* Takes the frames STP holds for the GNSS task and puts them on our queue. */
 static int stpgps_drain(struct stpgps *gps)
 {
@@ -257,6 +274,7 @@ static int stpgps_drain(struct stpgps *gps)
 		}
 
 		skb_put(skb, cnt);
+		stpgps_dump_frame(gps, false, skb->data, cnt);
 		mutex_lock(&gps->lock);
 		list_add_tail(&skb->list, &gps->rx_list);
 		gps->rx_bytes += cnt;
@@ -266,6 +284,34 @@ static int stpgps_drain(struct stpgps *gps)
 	}
 
 	return total;
+}
+
+/*
+ * One line per frame, for the first frames of a session: hex, because that is
+ * what the vendor's framing is read from. `dir` is "tx" or "rx".
+ */
+static void stpgps_dump_frame(struct stpgps *gps, bool tx, const u8 *buf,
+			      size_t len)
+{
+	unsigned int *count = tx ? &gps->tx_dumped : &gps->rx_dumped;
+	const char *dir = tx ? "tx" : "rx";
+	char hex[3 * STPGPS_DUMP_BYTES + 1];
+	size_t i, n = min(len, (size_t)STPGPS_DUMP_BYTES);
+
+	if (*count >= STPGPS_DUMP_FRAMES)
+		return;
+	(*count)++;
+
+	for (i = 0; i < n; i++)
+		snprintf(hex + 3 * i, 4, "%02x ", buf[i]);
+	hex[3 * n] = '\0';
+
+	if (n < len)
+		dev_info(gps->gps_misc.this_device,
+			 "GNSS %s frame %zu B (first %zu): %s...\n", dir, len, n, hex);
+	else
+		dev_info(gps->gps_misc.this_device,
+			 "GNSS %s frame %zu B: %s\n", dir, len, hex);
 }
 
 static void stpgps_rx_work(struct work_struct *work)
@@ -319,6 +365,8 @@ static int stpgps_open(struct inode *inode, struct file *file)
 
 	gps->gps_on = true;
 	gps->rst_state = STPGPS_RST_NONE;
+	gps->tx_dumped = 0;
+	gps->rx_dumped = 0;
 	file->private_data = gps;
 
 	/* A reset of the GPS task ends the session: the daemon has to know. */
@@ -462,6 +510,8 @@ static ssize_t stpgps_write(struct file *file, const char __user *buf,
 		return PTR_ERR(kbuf);
 
 	err = mtk_wcn_stp_send_data(kbuf, count, GPS_TASK_INDX);
+	if (err > 0)
+		stpgps_dump_frame(gps, true, kbuf, err);
 	kfree(kbuf);
 
 	if (err < 0)

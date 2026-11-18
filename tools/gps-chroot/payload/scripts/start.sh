@@ -30,6 +30,35 @@ if [ ! -c /dev/stpgps ]; then
 	exit 1
 fi
 
+# The connsys MCU has to be booted by Wi-Fi before the GPS function can be
+# switched on. A GPS-first FUNC_CTRL makes the WMT core's power-on sequence poll
+# for an MCU that never boots ("connector MCU did not boot: 0x18002600=0x0",
+# "get hwcode (chip id) fail"), and after that failure every later attempt fails
+# too, until the phone is rebooted. With Wi-Fi up first the same call answers
+# "OPID(3) type(2) ok". See REPORT.md, LEAD-NOTE 30, for the code path.
+#
+# So: bring Wi-Fi on first - once per boot, and only if nobody did it already.
+if [ "${GPS_ENGINE_SKIP_WIFI:-0}" != 1 ] && [ ! -d /sys/class/net/wlan0 ]; then
+	echo "start: bringing Wi-Fi up first - the connsys MCU boots on Wi-Fi, not on GPS"
+	modprobe wmt_drv >/dev/null 2>&1 || true
+	modprobe wlan_gen4m >/dev/null 2>&1 || true
+	if [ -w /dev/wmtWifi ]; then
+		printf 1 > /dev/wmtWifi 2>/dev/null || true
+	fi
+	i=0
+	while [ $i -lt 100 ]; do
+		[ -d /sys/class/net/wlan0 ] && break
+		i=$((i + 1))
+		sleep 0.1
+	done
+	if [ -d /sys/class/net/wlan0 ]; then
+		echo "start: wlan0 is up, the connsys is booted"
+	else
+		echo "start: wlan0 did not appear; the GPS function will probably fail" >&2
+		echo "       (bring Wi-Fi up with conn-up.sh wifi, then run start.sh again)" >&2
+	fi
+fi
+
 mkdir -p "$STATE"
 stamp=$(date +%Y%m%d-%H%M%S)
 MNLD_LOG=$STATE/mnld-$stamp.log
