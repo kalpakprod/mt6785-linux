@@ -519,6 +519,9 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_LK_DRAM_SIZE		0x59968
 /* the vendor's reboot handshake word: cfg + 0x64, ready-to-reboot = 0x34 (scp_reg.h:44-46) */
 #define MT6785_SCP_GPR_CM4_A_REBOOT	0x64
+/* the AP->SCP doorbell and a scratch word the loader polls (vendor scp_reg.h:19-24, :44) */
+#define MT6785_SCP_GIPC_IN		0x28
+#define MT6785_SCP_GENERAL_REG6		0x68
 #define MT6785_SCP_CM4_READY_TO_REBOOT	0x34
 #define MT6785_SCP_IPI_BUF_OFS		0x5c0
 #define MT6785_SCP_IPI_BUF_DATA_OFS	16
@@ -548,6 +551,23 @@ struct mt6785_scp_region_info {
 	u32 ap_params_start;
 };
 
+/*
+ * What the firmware's early init could be waiting for, and the region information it reads.
+ *
+ * comb24: the firmware runs - it reprograms its own clock mux (CK_CFG_0 select 0 -> 2) and
+ * rewrites TCM 0 (0x538 -> 0) - and then never sends the ready IPI and never answers the awake
+ * request. Its clock init is the read-modify-write sequence on 0xA000C700 / 0xA000C708 at
+ * image offsets 0x27500-0x275ae (the SCP's view through its 0xA0000000 window), followed by a
+ * write to TCM 0x574fc; what it polls after that is what this prints.
+ *
+ * The candidates are the CM4's own doorbells and handshake words (vendor scp_reg.h): cfg+0x1c
+ * SCP_A_TO_HOST, cfg+0x20 SCP_TO_SPM_REG, cfg+0x28 GIPC_IN, cfg+0x64 GPR_CM4_A_REBOOT,
+ * cfg+0x68 GENERAL_REG6 (the loader itself polls this one), cfg+0x50 GENERAL_REG0 (our probe
+ * word). Each is read twice, two seconds apart, so a word that only ever changes once names a
+ * handshake that completed, and a word that stays put names the wait.
+ */
+static void mt6785_scp_wait_probe(struct mtk_scp *scp);
+static void mt6785_scp_region_info_dump(struct mtk_scp *scp);
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static void mt6785_scp_mpu_probe(struct mtk_scp *scp);
 static void mt6785_scp_dram_probe(struct mtk_scp *scp);
@@ -1499,6 +1519,7 @@ static int scp_start(struct rproc *rproc)
 		mt6785_scp_log_wdt_sleep(scp, "at the timeout");
 		mt6785_scp_dram_probe_check(scp, "at the timeout");
 		mt6785_scp_clock_state(scp, "at the timeout");
+		mt6785_scp_wait_probe(scp);
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
 		mt6785_scp_awake(scp, false);
@@ -2795,6 +2816,48 @@ static void mt6785_scp_clock_state(struct mtk_scp *scp, const char *when)
 			 ((cfg0 >> 16) & 0x7) == i + 1 ? "  <- the mux selects this one" : "");
 	}
 	dev_info(scp->dev, "%s: the mux rate itself is %lu Hz\n", when, clk_get_rate(scp->clk));
+}
+
+/* the 32 words of region information the firmware reads from TCM 0x400, and their meaning */
+static void mt6785_scp_region_info_dump(struct mtk_scp *scp)
+{
+	u32 w[14];
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(w); i++)
+		w[i] = readl(scp->sram_base + MT6785_SCP_REGION_INFO_OFFSET + i * 4);
+
+	dev_err(scp->dev, "region info in the TCM: loader %#x+%#x, firmware %#x+%#x, dram %#x+%#x, backup %#x, struct %#x\n",
+		w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+	dev_err(scp->dev, "region info in the TCM: log_uart %#x, task_ctx %#x, l1c %#x/%#x, scpctl %#x, params %#x\n",
+		w[8], w[9], w[10], w[11], w[12], w[13]);
+}
+
+static void mt6785_scp_wait_probe(struct mtk_scp *scp)
+{
+	static const struct { u32 ofs; const char *name; } word[] = {
+		{ MT8183_SCP_TO_HOST, "to_host" },
+		{ MT6785_SCP_TO_SPM_REG, "to_spm" },
+		{ MT6785_SCP_GIPC_IN, "gipc_in" },
+		{ MT6785_SCP_GPR_CM4_A_REBOOT, "gpr_reboot" },
+		{ MT6785_SCP_GENERAL_REG6, "general6" },
+		{ MT6785_SCP_PROBE_REG, "probe" },
+	};
+	u32 first[ARRAY_SIZE(word)], second[ARRAY_SIZE(word)];
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(word); i++)
+		first[i] = readl(scp->cluster->reg_base + word[i].ofs);
+	msleep(2000);
+	for (i = 0; i < ARRAY_SIZE(word); i++)
+		second[i] = readl(scp->cluster->reg_base + word[i].ofs);
+
+	for (i = 0; i < ARRAY_SIZE(word); i++)
+		dev_err(scp->dev, "wait probe: %s (cfg+%#x) %#x -> %#x%s\n",
+			word[i].name, word[i].ofs, first[i], second[i],
+			first[i] == second[i] ? "  (unchanged)" : "  (the firmware moved it)");
+
+	mt6785_scp_region_info_dump(scp);
 }
 
 static void mt6785_scp_log_ring_probe(struct mtk_scp *scp, const char *when)
