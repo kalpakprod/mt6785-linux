@@ -553,6 +553,8 @@ static void mt6785_scp_apply_poke(struct mtk_scp *scp)
 		if (end)
 			*end = '\0';
 		colon = strchr(p, ':');
+		if (colon)
+			*colon = '\0';
 		if (!colon || kstrtoul(p, 16, &addr) || kstrtoul(colon + 1, 16, &val)) {
 			dev_err(scp->dev, "ulposc_poke: '%s' is not addr:val in hex, skipped\n", p);
 			goto next;
