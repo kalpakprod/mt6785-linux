@@ -99,6 +99,10 @@ ccflags-y += -I$(srctree)/net
 
 # WMT bridge: pull the Stage-1 wmt_drv export headers (wmt_exp.h, stp_exp.h ...)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/include
+# nvdata_mac.h: the factory/override Wi-Fi MAC and Bluetooth address (its
+# getters are static inline no-ops when CONFIG_MTK_NVDATA_MAC is off, so this
+# path is harmless in a build without the module).
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/connectivity/common
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/connectivity/common/common_main/linux/include
 
 # Compat shim: shared with Stage-1, force-included into every gen4m TU

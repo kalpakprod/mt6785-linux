@@ -74,6 +74,7 @@
  */
 #include "gl_os.h"
 #include "gl_kal.h"
+#include "nvdata_mac.h"
 #include "gl_wext.h"
 #include "precomp.h"
 #include <stdarg.h>
@@ -87,6 +88,7 @@
 #endif
 
 /* for rps */
+#include <linux/etherdevice.h>
 #include <linux/netdevice.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
@@ -4562,6 +4564,24 @@ u_int8_t kalRetrieveNetworkAddress(IN struct GLUE_INFO *prGlueInfo,
 		}
 		kalMemCopy(prMacAddr, prGlueInfo->rRegInfo.aucMacAddr,
 			   PARAM_MAC_ADDR_LEN * sizeof(uint8_t));
+
+		/*
+		 * This port: the nvram blob normally holds no address, because
+		 * pushing it in is a job Android's Wi-Fi HAL does through a proc
+		 * entry and nobody does it here (the record on this phone is
+		 * 00:00:00:00:00:00). wlanUpdateNetworkAddress() then falls back to
+		 * a per-boot address built from the kernel timer
+		 * ("00:08:22" + kalGetTimeTick()), which changes on every boot.
+		 * Ask the nvdata driver for a persistent address first: the factory
+		 * record if this phone has one, else the owner's one-line override
+		 * (/lib/firmware/rosemary/wifi_mac). When neither exists, the old
+		 * behaviour stands.
+		 */
+		if (!is_valid_ether_addr(prMacAddr) &&
+		    mtk_nvdata_get_wifi_mac(prMacAddr))
+			DBGLOG(INIT, INFO,
+			       "MAC address from nvdata: " MACSTR,
+			       MAC2STR(prMacAddr));
 #endif
 		return TRUE;
 #endif
