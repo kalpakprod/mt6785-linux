@@ -2,4 +2,215 @@
 /*
  * Poco M5s (rosemary): board nodes of the connectivity area (poco-m5s/plan-full-phone.md).
  * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ *
+ * Hardware sources, all of them the phone's own live stock device tree
+ * (poco-m5s/device-dump-2026-11-12/device-tree.dts):
+ *   consys@18002000   line 4837   reg windows + interrupts + pinctrl names
+ *   btif@1100c000     line 4829   reg windows + interrupts + clocks
+ *   wifi@18000000     line 5876   1 MiB CSR window + IRQ 322 + memory-region
+ *   gpslna@0/1/2      line 1697   the GPS LNA pin, pinmux 0x9b00 (GPIO 155)
+ *   consys-reserve-memory line 754  4 MiB, 16 MiB aligned, 0x40000000+
+ *   wifi-reserve-memory  line 763  3 MiB shared-dma-pool
  */
+
+/*
+ * Reserved memory the conn MCU and the Wi-Fi HIF are given.
+ *
+ * The register windows, the interrupt numbers and the pinmux value below are
+ * copied from the live stock DT; the reserved-memory nodes are copied exactly
+ * as well, with the same names, compatible strings, sizes, alignments and
+ * alloc-ranges. The two regions are the loader's own dynamic reservations: it
+ * picks the addresses inside the given range, which is why they carry
+ * alloc-ranges and no reg. The stock boot put the consys region at 0xab000000
+ * and the Wi-Fi pool at 0xbc000000.
+ *
+ * NOTE for the lead: the rest of this port keeps /reserved-memory empty on
+ * purpose (the loader hangs when the kernel describes a region that overlaps
+ * one of its own). These two are the exception the connectivity driver needs:
+ * the conn MCU finds its firmware by the *name* of the region and the gen4m
+ * HIF expects the shared-dma-pool. They must not overlap any mblock-* region
+ * the bootloader reports.
+ */
+&reserved_memory {
+	consys_reserved: consys-reserve-memory {
+		compatible = "mediatek,consys-reserve-memory";
+		no-map;
+		size = <0 0x400000>;		/* 4 MiB */
+		alignment = <0 0x1000000>;	/* 16 MiB */
+		alloc-ranges = <0 0x40000000 0 0x80000000>;
+	};
+
+	wifi_mem: wifi-reserve-memory {
+		compatible = "shared-dma-pool";
+		no-map;
+		size = <0 0x300000>;		/* 3 MiB */
+		alignment = <0 0x1000000>;	/* 16 MiB */
+		alloc-ranges = <0 0x40000000 0 0x80000000>;
+	};
+};
+
+/*
+ * CONNSYS: the in-SoC connectivity subsystem (IC E1) that hosts the conn MCU.
+ *
+ * reg order is load-bearing: the vendor WMT platform code iomaps these windows
+ * by numeric index (consys_read_reg_from_dts, common_main/platform/mt6785.c),
+ * so the list must stay in the stock order.
+ *
+ * interrupts are in stock order too: BGF_EINT (the MCU-to-AP message line WMT
+ * waits on), WDT_EINT, conn2ap_sw_irq.
+ *
+ * clocks: only the CCIF4 AP gate. Stock also lists "conn", which on mainline is
+ * the conn power domain described by power-domains.
+ */
+&{/soc} {
+	consys@18002000 {
+		compatible = "mediatek,mt6785-consys";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		reg = <0 0x18002000 0 0x1000>,	/* 0  CONN_MCU_CONFIG_BASE   */
+		      <0 0x10007000 0 0x0100>,	/* 1  TOP_RGU_BASE           */
+		      <0 0x10001000 0 0x1000>,	/* 2  INFRACFG_AO_BASE       */
+		      <0 0x10006000 0 0x1000>,	/* 3  SPM_BASE               */
+		      <0 0x18007000 0 0x1000>,	/* 4  CONN_HIF_ON_BASE       */
+		      <0 0x180b1000 0 0x1000>,	/* 5  CONN_TOP_MISC_OFF_BASE */
+		      <0 0x180a3000 0 0x1000>,	/* 6  CONN_MCU_CFG_ON_BASE   */
+		      <0 0x180a5000 0 0x0800>,	/* 7  CONN_MCU_CIRQ_BASE     */
+		      <0 0x180c1000 0 0x1000>,	/* 8  CONN_TOP_MISC_ON_BASE  */
+		      <0 0x18004000 0 0x1000>,	/* 9  CONN_HIF_PDMA_BASE     */
+		      <0 0x1024c000 0 0x0040>,	/* 10 AP2MD_PCCIF4_BASE      */
+		      <0 0x10003000 0 0x1000>;	/* 11 INFRA_AO_PERICFG_BASE  */
+
+		interrupts = <GIC_SPI 321 IRQ_TYPE_LEVEL_LOW>,	/* BGF_EINT      */
+			     <GIC_SPI 78  IRQ_TYPE_LEVEL_LOW>,	/* WDT_EINT      */
+			     <GIC_SPI 323 IRQ_TYPE_EDGE_RISING>;/* conn2ap_sw_irq */
+
+		clocks = <&infracfg CLK_INFRA_CCIF4_AP>;
+		clock-names = "ccif";
+
+		power-domains = <&spm MT6785_POWER_DOMAIN_CONN>;
+		memory-region = <&consys_reserved>;
+
+		/* MT6359 regmap, used for the A-die LDO low-power setup and for
+		 * reading (never writing) the conn 26 MHz clock buffer state. */
+		pmic = <&pmic>;
+
+		/* A-die analog rails. Stock drives these from vendor code
+		 * through a global regmap; on mainline the driver asks for them
+		 * as regulator supplies, which is why they appear here for the
+		 * first time. VCN18 1.8 V, VCN33_1 3.3 V for the RF/PLL, and
+		 * VCN33_2 2.8 V for the A-die. */
+		vcn18-supply = <&mt6359_vcn18_ldo_reg>;
+		vcn33_1_wifi-supply = <&mt6359_vcn33_1_ldo_reg>;
+		vcn33_2_wifi-supply = <&mt6359_vcn33_2_ldo_reg>;
+
+		/* GPS external LNA: one pin driven through four named states. */
+		pinctrl-names = "default", "gps_lna_state_init",
+				"gps_lna_state_oh", "gps_lna_state_ol";
+		pinctrl-0 = <&consys_default>;
+		pinctrl-1 = <&gpslna_0>;
+		pinctrl-2 = <&gpslna_1>;
+		pinctrl-3 = <&gpslna_2>;
+
+		status = "okay";
+	};
+};
+
+/*
+ * gen4m (Wi-Fi). A platform device of its own, not a child of consys: the
+ * driver's AXI HIF binds "mediatek,wifi" and takes the 1 MiB CSR window, the
+ * WF_HIF interrupt and the 3 MiB shared-dma-pool from here.
+ */
+&{/soc} {
+	wifi@18000000 {
+		compatible = "mediatek,wifi";
+		reg = <0 0x18000000 0 0x100000>;
+		interrupts = <GIC_SPI 322 IRQ_TYPE_LEVEL_LOW>;
+		memory-region = <&wifi_mem>;
+		power-domains = <&spm MT6785_POWER_DOMAIN_CONN>;
+		status = "okay";
+	};
+};
+
+/*
+ * BTIF: the transport the WMT/STP control channel and the Bluetooth H4 data
+ * path run over. Three register windows (block, TX DMA descriptor, RX DMA
+ * descriptor) and three interrupts, in stock order.
+ */
+&{/soc} {
+	btif: btif@1100c000 {
+		compatible = "mediatek,btif";
+		reg = <0 0x1100c000 0 0x1000>,	/* btif */
+		      <0 0x11000b80 0 0x80>,	/* btif tx dma */
+		      <0 0x11000c00 0 0x80>;	/* btif rx dma */
+		interrupts = <GIC_SPI 138 IRQ_TYPE_LEVEL_LOW>,	/* btif */
+			     <GIC_SPI 155 IRQ_TYPE_LEVEL_LOW>,	/* tx dma */
+			     <GIC_SPI 154 IRQ_TYPE_LEVEL_LOW>;	/* rx dma */
+		clocks = <&infracfg CLK_INFRA_BTIF>,
+			 <&infracfg CLK_INFRA_AP_DMA>;
+		clock-names = "btifc", "apdmac";
+		status = "okay";
+	};
+};
+
+/*
+ * GPS LNA pin. One pin, pinmux 0x9b00 (function 0 = plain GPIO 155); the three
+ * states differ only in drive and output level, exactly as in the stock DT.
+ * consys_default is empty in stock too, but it must exist because the consys
+ * node above names it as pinctrl-0.
+ */
+&pio {
+	consys_default: consys-default-pins {
+	};
+
+	gpslna_0: gpslna-0-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO155__FUNC_GPIO155>;
+			bias-disable;
+			output-low;
+		};
+	};
+
+	gpslna_1: gpslna-1-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO155__FUNC_GPIO155>;
+			output-high;
+		};
+	};
+
+	gpslna_2: gpslna-2-pins {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO155__FUNC_GPIO155>;
+			output-low;
+		};
+	};
+};
+
+/*
+ * The two bridges that sit on top of the WMT/STP stack. Neither has a register
+ * window of its own: both talk to the conn MCU through the BTIF transport
+ * described above, and both are children of /soc so that of_platform_populate()
+ * creates a platform_device for each.
+ *
+ *   btmtkbtif  carries HCI as H4 inside STP frames of type 0.
+ *   stpgps     carries the GNSS data path as STP frames of type 2.
+ *
+ * They live at the top level rather than under the consys node: they touch no
+ * consys register, and the driver of each asks the WMT core for its channel.
+ * They are not children of /soc either, because that node is a simple-bus and
+ * a child of it without a unit address and a reg is rejected by the schema.
+ * of_platform_populate() walks the whole tree, so a platform_device is created
+ * for them either way.
+ */
+/ {
+	bt_btif: bluetooth {
+		compatible = "mediatek,mt6785-bt";
+		status = "okay";
+	};
+
+	gps_stp: gnss {
+		compatible = "mediatek,mt6785-stpgps";
+		status = "okay";
+	};
+};

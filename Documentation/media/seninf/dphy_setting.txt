@@ -1,0 +1,146 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000032ed8 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI>:
+   32ed8:      	ldr	x8, [x1, #0x8]
+   32edc:      	add	x9, x0, #0x138
+   32ee0:      	ldr	w10, [x8]
+   32ee4:      	cmp	w10, #0x8
+   32ee8:      	b.hi	0x32f10 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x38>
+   32eec:      	mov	w11, #0x1               // =1
+   32ef0:      	mov	w12, #0x62              // =98
+   32ef4:      	lsl	w11, w11, w10
+   32ef8:      	tst	w11, w12
+   32efc:      	b.ne	0x32fbc <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0xe4>
+   32f00:      	mov	w12, #0x184             // =388
+   32f04:      	tst	w11, w12
+   32f08:      	b.eq	0x32f10 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x38>
+   32f0c:      	add	x9, x0, #0x148
+   32f10:      	ldr	x9, [x9]
+   32f14:      	cbz	x9, 0x32fc8 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0xf0>
+   32f18:      	ldr	w11, [x1, #0x14]
+   32f1c:      	cmp	w10, #0x3
+   32f20:      	ccmp	w11, #0x3, #0x4, ge
+   32f24:      	b.ne	0x32fec <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x114>
+   32f28:      	ldr	w10, [x9, #0x4]
+   32f2c:      	and	w10, w10, #0xfff8ffff
+   32f30:      	str	w10, [x9, #0x4]
+   32f34:      	ldr	w10, [x9, #0x4]
+   32f38:      	and	w10, w10, #0xfffff8ff
+   32f3c:      	orr	w10, w10, #0x100
+   32f40:      	str	w10, [x9, #0x4]
+   32f44:      	ldr	w10, [x9, #0x4]
+   32f48:      	and	w10, w10, #0xfffffff8
+   32f4c:      	orr	w10, w10, #0x2
+   32f50:      	str	w10, [x9, #0x4]
+   32f54:      	ldr	w10, [x9, #0x4]
+   32f58:      	and	w10, w10, #0xffff8fff
+   32f5c:      	orr	w10, w10, #0x3000
+   32f60:      	str	w10, [x9, #0x4]
+   32f64:      	ldr	w10, [x9, #0x4]
+   32f68:      	and	w10, w10, #0xff8fffff
+   32f6c:      	orr	w10, w10, #0x400000
+   32f70:      	str	w10, [x9, #0x4]
+   32f74:      	ldr	w10, [x9]
+   32f78:      	orr	w10, w10, #0x100
+   32f7c:      	str	w10, [x9]
+   32f80:      	ldr	w10, [x9]
+   32f84:      	orr	w10, w10, #0x200
+   32f88:      	str	w10, [x9]
+   32f8c:      	ldr	w10, [x9]
+   32f90:      	orr	w10, w10, #0x400
+   32f94:      	str	w10, [x9]
+   32f98:      	ldr	w10, [x9]
+   32f9c:      	orr	w10, w10, #0x800
+   32fa0:      	str	w10, [x9]
+   32fa4:      	ldr	w10, [x9]
+   32fa8:      	orr	w10, w10, #0x1
+   32fac:      	str	w10, [x9]
+   32fb0:      	ldr	w10, [x9]
+   32fb4:      	and	w10, w10, #0xfffffffd
+   32fb8:      	b	0x330c0 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x1e8>
+   32fbc:      	add	x9, x0, #0x140
+   32fc0:      	ldr	x9, [x9]
+   32fc4:      	cbnz	x9, 0x32f18 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x40>
+   32fc8:      	adrp	x1, 0x21000
+   32fcc:      	adrp	x2, 0x21000
+   32fd0:      	adrp	x3, 0x1a000
+   32fd4:      	add	x1, x1, #0x4e5
+   32fd8:      	add	x2, x2, #0x5ae
+   32fdc:      	add	x3, x3, #0xa88
+   32fe0:      	mov	w4, #0x896              // =2198
+   32fe4:      	mov	w0, #0x6                // =6
+   32fe8:      	b	0xf17d0 <__android_log_print@plt>
+   32fec:      	cmp	w10, #0x7
+   32ff0:      	b.hi	0x33064 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x18c>
+   32ff4:      	mov	w11, #0x1               // =1
+   32ff8:      	mov	w12, #0xa8              // =168
+   32ffc:      	lsl	w10, w11, w10
+   33000:      	tst	w10, w12
+   33004:      	b.eq	0x33064 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x18c>
+   33008:      	ldr	w10, [x9, #0x4]
+   3300c:      	and	w10, w10, #0xfffff8ff
+   33010:      	str	w10, [x9, #0x4]
+   33014:      	ldr	w10, [x9, #0x4]
+   33018:      	and	w10, w10, #0xfffffff8
+   3301c:      	orr	w10, w10, #0x1
+   33020:      	str	w10, [x9, #0x4]
+   33024:      	ldr	w10, [x9, #0x4]
+   33028:      	and	w10, w10, #0xffff8fff
+   3302c:      	orr	w10, w10, #0x2000
+   33030:      	str	w10, [x9, #0x4]
+   33034:      	ldr	w10, [x9]
+   33038:      	orr	w10, w10, #0x100
+   3303c:      	str	w10, [x9]
+   33040:      	ldr	w10, [x9]
+   33044:      	orr	w10, w10, #0x1
+   33048:      	str	w10, [x9]
+   3304c:      	ldr	w10, [x1, #0x14]
+   33050:      	cmp	w10, #0x1
+   33054:      	b.ne	0x330c4 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x1ec>
+   33058:      	ldr	w10, [x9]
+   3305c:      	orr	w10, w10, #0x200
+   33060:      	b	0x330c0 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x1e8>
+   33064:      	ldr	w10, [x9, #0x4]
+   33068:      	mov	w11, #0x5               // =5
+   3306c:      	and	w10, w10, #0xfff8ffff
+   33070:      	orr	w10, w10, #0x30000
+   33074:      	str	w10, [x9, #0x4]
+   33078:      	ldr	w10, [x9, #0x4]
+   3307c:      	and	w10, w10, #0xffffff8f
+   33080:      	orr	w10, w10, #0x40
+   33084:      	str	w10, [x9, #0x4]
+   33088:      	ldr	w10, [x9, #0x4]
+   3308c:      	bfi	w10, w11, #20, #3
+   33090:      	str	w10, [x9, #0x4]
+   33094:      	ldr	w10, [x9]
+   33098:      	orr	w10, w10, #0x400
+   3309c:      	str	w10, [x9]
+   330a0:      	ldr	w10, [x9]
+   330a4:      	orr	w10, w10, #0x2
+   330a8:      	str	w10, [x9]
+   330ac:      	ldr	w10, [x1, #0x14]
+   330b0:      	cmp	w10, #0x1
+   330b4:      	b.ne	0x330c4 <_ZN12SeninfDrvImp22hal_csirx_dphy_settingEP15SENINF_CSI_MIPI+0x1ec>
+   330b8:      	ldr	w10, [x9]
+   330bc:      	orr	w10, w10, #0x800
+   330c0:      	str	w10, [x9]
+   330c4:      	ldr	w10, [x9, #0x4]
+   330c8:      	adrp	x1, 0x21000
+   330cc:      	adrp	x2, 0x14000
+   330d0:      	adrp	x3, 0x1a000
+   330d4:      	add	x1, x1, #0x4e5
+   330d8:      	add	x2, x2, #0x2fc
+   330dc:      	add	x3, x3, #0xa88
+   330e0:      	mov	w0, #0x3                // =3
+   330e4:      	orr	w10, w10, #0x80000000
+   330e8:      	str	w10, [x9, #0x4]
+   330ec:      	ldr	w8, [x8]
+   330f0:      	ldr	w5, [x9, #0x4]
+   330f4:      	ldr	w6, [x9]
+   330f8:      	cmp	w8, #0x3
+   330fc:      	cset	w4, lt
+   33100:      	b	0xf17d0 <__android_log_print@plt>
+   33104:      	udf	#0x0

@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Vendor WMT/connsys (wmt_drv) forward-port for begonia (MT6785).
+#
+
+config MTK_WMT_DRV
+	tristate "MediaTek WMT/connsys core driver (wmt_drv, vendor forward-port)"
+	default MTK_WMT_FWPORT
+	help
+	  Vendor MediaTek WMT/STP/connsys bring-up driver (wmt_drv)
+	  forward-ported from the 4.14 begonia vendor kernel. Drives the
+	  connsys platform power/clk/EMI sequence and the conn-MCU
+	  bring-up handshake on MT6785 (Helio G90T).
+
+config MTK_WLAN_GEN4M
+	tristate "MediaTek gen4m fullmac WLAN driver (wlan0, vendor forward-port)"
+	depends on MTK_WMT_DRV
+	depends on CFG80211
+	default MTK_WMT_FWPORT
+	help
+	  Vendor MediaTek gen4m fullmac (cfg80211) WLAN driver, forward-ported
+	  from the 4.14 begonia vendor kernel. Registers wlan0 and sits on top
+	  of the WMT/connsys (wmt_drv) bring-up stack. Scoped to the begonia
+	  config subset: CONNAC (connac1.0) AXI-HIF, chip 6785, WIFI_IP_SET=2.
+
+config MTK_NVDATA_MAC
+	tristate "MediaTek MT6785 factory addresses from a copied nvdata tree"
+	help
+	  Read the Wi-Fi MAC and the Bluetooth address from a read-only copy of
+	  the phone's nvdata partition, placed under
+	  /lib/firmware/rosemary/nvdata/APCFG/APRDEB/. The live partition is
+	  never touched: it holds the RF calibration and a wrong write destroys
+	  it. Without the copy the drivers keep their defaults (a random Wi-Fi
+	  MAC and the firmware's own Bluetooth address).

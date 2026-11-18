@@ -1,0 +1,78 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000032078 <_ZN12SeninfDrvImp19hal_csirx_dphy_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE>:
+   32078:      	add	x8, x0, #0x138
+   3207c:      	cmp	w1, #0x8
+   32080:      	b.hi	0x320a8 <_ZN12SeninfDrvImp19hal_csirx_dphy_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x30>
+   32084:      	mov	w9, #0x1                // =1
+   32088:      	mov	w10, #0x62              // =98
+   3208c:      	lsl	w9, w9, w1
+   32090:      	tst	w9, w10
+   32094:      	b.ne	0x32164 <_ZN12SeninfDrvImp19hal_csirx_dphy_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0xec>
+   32098:      	mov	w10, #0x184             // =388
+   3209c:      	tst	w9, w10
+   320a0:      	b.eq	0x320a8 <_ZN12SeninfDrvImp19hal_csirx_dphy_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x30>
+   320a4:      	add	x8, x0, #0x148
+   320a8:      	ldr	x8, [x8]
+   320ac:      	cbz	x8, 0x32170 <_ZN12SeninfDrvImp19hal_csirx_dphy_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0xf8>
+   320b0:      	ldr	w9, [x8, #0x20]
+   320b4:      	and	w9, w9, #0xff00ffff
+   320b8:      	orr	w9, w9, #0x200000
+   320bc:      	str	w9, [x8, #0x20]
+   320c0:      	ldr	w9, [x8, #0x24]
+   320c4:      	and	w9, w9, #0xff00ffff
+   320c8:      	orr	w9, w9, #0x200000
+   320cc:      	str	w9, [x8, #0x24]
+   320d0:      	ldr	w9, [x8, #0x28]
+   320d4:      	and	w9, w9, #0xff00ffff
+   320d8:      	orr	w9, w9, #0x200000
+   320dc:      	str	w9, [x8, #0x28]
+   320e0:      	ldr	w9, [x8, #0x2c]
+   320e4:      	and	w9, w9, #0xff00ffff
+   320e8:      	orr	w9, w9, #0x200000
+   320ec:      	str	w9, [x8, #0x2c]
+   320f0:      	ldr	w9, [x8, #0x20]
+   320f4:      	and	w9, w9, #0xffff00ff
+   320f8:      	orr	w9, w9, #0x400
+   320fc:      	str	w9, [x8, #0x20]
+   32100:      	ldr	w9, [x8, #0x24]
+   32104:      	and	w9, w9, #0xffff00ff
+   32108:      	orr	w9, w9, #0x400
+   3210c:      	str	w9, [x8, #0x24]
+   32110:      	ldr	w9, [x8, #0x28]
+   32114:      	and	w9, w9, #0xffff00ff
+   32118:      	orr	w9, w9, #0x400
+   3211c:      	str	w9, [x8, #0x28]
+   32120:      	ldr	w9, [x8, #0x2c]
+   32124:      	and	w9, w9, #0xffff00ff
+   32128:      	orr	w9, w9, #0x400
+   3212c:      	str	w9, [x8, #0x2c]
+   32130:      	ldr	w9, [x8, #0x20]
+   32134:      	orr	w9, w9, #0x20000000
+   32138:      	str	w9, [x8, #0x20]
+   3213c:      	ldr	w9, [x8, #0x24]
+   32140:      	orr	w9, w9, #0x20000000
+   32144:      	str	w9, [x8, #0x24]
+   32148:      	ldr	w9, [x8, #0x28]
+   3214c:      	orr	w9, w9, #0x20000000
+   32150:      	str	w9, [x8, #0x28]
+   32154:      	ldr	w9, [x8, #0x2c]
+   32158:      	orr	w9, w9, #0x20000000
+   3215c:      	str	w9, [x8, #0x2c]
+   32160:      	ret
+   32164:      	add	x8, x0, #0x140
+   32168:      	ldr	x8, [x8]
+   3216c:      	cbnz	x8, 0x320b0 <_ZN12SeninfDrvImp19hal_csirx_dphy_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x38>
+   32170:      	adrp	x1, 0x21000
+   32174:      	adrp	x2, 0x15000
+   32178:      	adrp	x3, 0x17000
+   3217c:      	add	x1, x1, #0x4e5
+   32180:      	add	x2, x2, #0x379
+   32184:      	add	x3, x3, #0xff4
+   32188:      	mov	w4, #0x676              // =1654
+   3218c:      	mov	w0, #0x6                // =6
+   32190:      	b	0xf17d0 <__android_log_print@plt>
+   32194:      	udf	#0x0

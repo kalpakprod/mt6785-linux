@@ -1,5 +1,232 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the display area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts, so everything here wins
+ * over the status the board file and mt6785.dtsi set.
+ *
+ * Sources for every value: the live device tree
+ * (poco-m5s/device-dump-2026-11-12/device-tree.dts), the vendor LCM driver
+ * drivers/misc/mediatek/lcm/dsi_panel_k7_38_0c_0a_fhdp_video/ in
+ * Youffx/kernel_xiaomi_rosemary @ 634d6ac5d96e, and the loader's own display
+ * log (poco-m5s/evidence/try-force1/pl_lk.txt lines 1215-1700). Each node says
+ * which of them a value comes from.
  */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/*
+ * The panel's two rails are enabled by two GPIOs the vendor LCM toggles; there
+ * is no regulator behind them.
+ *   GPIO 14  - VDDI / 1.8 V,  vendor lcm: #define OLED_1P8_EN  14
+ *   GPIO 127 - AVDD + ELVDD 3 V, vendor lcm: #define AVDD_3V_EN 127
+ * The voltages are the rail names the pin names and the panel's needs imply;
+ * the exact set points live in the panel module, not in a register we drive.
+ */
+/ {
+	panel_vddi_1v8: regulator-panel-vddi {
+		compatible = "regulator-fixed";
+		regulator-name = "panel_vddi_1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&pio 14 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		/* the loader already turned it on: do not power-cycle the panel */
+		regulator-boot-on;
+	};
+
+	panel_avdd_3v0: regulator-panel-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "panel_avdd_3v0";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		gpio = <&pio 127 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		vin-supply = <&panel_vddi_1v8>;
+	};
+};
+
+/*
+ * AMOLED panel dsi_panel_k7_38_0c_0a_fhdp_video: a Samsung S6E8FC0 module,
+ * 1080x2400, video mode with
+ * sync pulses, 4 lanes, RGB888, PLL 549 MHz (1098 Mbps per lane), brightness
+ * over DCS 0x51. Reset is GPIO 44, active low (vendor lcm_reset() drives it
+ * high -> low -> high; the live DT's pinctrl group is lcd_rst_gpio).
+ */
+&dsi0 {
+	status = "okay";
+
+	panel@0 {
+		compatible = "samsung,s6e8fc0-k7-38-0c-0a";
+		reg = <0>;
+
+		reset-gpios = <&pio 44 GPIO_ACTIVE_LOW>;
+
+		vci-supply = <&panel_vddi_1v8>;
+		vdd-supply = <&panel_avdd_3v0>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dsi0_out>;
+			};
+		};
+	};
+};
+
+/* mt6785.dtsi leaves the DSI PHY off; the panel needs it */
+&mipi_tx0 {
+	status = "okay";
+};
+
+/*
+ * The data path this tree builds, in the loader's order:
+ *   ovl0 -> ovl_2l0 -> rdma0 -> color0 -> ccorr0 -> aal0 -> gamma0 -> dsi0
+ * with every colour block bypassed there. Three blocks of the vendor's chain are not
+ * described here as consumers: POSTMASK0 because the loader configures it en:0
+ * (pl_lk.txt line 313), rsz0 because it is a pass-through scaler with no mainline
+ * mt6785 driver, and dither0 because the DRM master never matches it - a described but
+ * never bound device keeps the power controller's sync_state pending and every domain
+ * on, which blocked the modem's power cycle.
+ *
+ * The three blocks that read memory name their SMI larb (mediatek,larb): with
+ * no IOMMU bound to it a larb is not kept resumed by anyone else, and after a
+ * display-domain power cycle its ports come back with translation on
+ * (cezanne's 0025, ported in the soc/drm commit of this area).
+ *   ovl0    - larb0, M4U ports DISP_OVL0 / DISP_OVL0_HDR
+ *   ovl_2l0 - larb1, M4U ports DISP_OVL0_2L / DISP_OVL0_2L_HDR
+ *   rdma0   - larb0, M4U port DISP_RDMA0
+ */
+&ovl0 {
+	status = "okay";
+	mediatek,larb = <&larb0>;
+};
+
+&ovl_2l0 {
+	status = "okay";
+	mediatek,larb = <&larb1>;
+};
+
+&rdma0 {
+	status = "okay";
+	mediatek,larb = <&larb0>;
+	/*
+	 * The driver's MT6785 data asks for 1536 bytes, but the property wins over
+	 * it (mtk_disp_rdma.c:355-362), and mt6785.dtsi carries 5120 - the value
+	 * for another panel. The vendor's golden setting for a video-mode pipe is
+	 * 1536 (common/rdma20/ddp_rdma_ex.c: `if (is_wrot_sram == 0)
+	 * GS_RDMA_FIFO_SIZE = 1536`), which is what the loader's FIFO_CON
+	 * 0x86000000 holds, so the board names it here.
+	 */
+	mediatek,rdma-fifo-size = <1536>;
+};
+
+&color0 { status = "okay"; };
+&ccorr0 { status = "okay"; };
+&aal0 { status = "okay"; };
+&gamma0 { status = "okay"; };
+
+/* mt6785.dtsi already wires gamma0 straight into dsi0; the panel is what the board adds. */
+&dsi0_out {
+	remote-endpoint = <&panel_in>;
+};
+
+&mutex {
+	status = "okay";
+};
+
+/*
+ * I2C0 carries the LCD bias chip and the touch controller. The live DT has it
+ * enabled with both bound (0-003e -> tps65132, 0-0038 -> fts).
+ */
+&i2c0 {
+	status = "okay";
+
+	/*
+	 * LCD bias: TI TPS65132 at 0x3E, the VPOS/VNEG source of the AMOLED's
+	 * ELVDD/ELVSS rails (it is not a backlight driver: an AMOLED has no LED
+	 * string). Address from the live DT ("0-003e tps65132") and the vendor
+	 * LCM code (lcm_i2c.c, LCM_I2C_ADDR 0x3E).
+	 *
+	 * Enable pins are the live DT's pinctrl groups:
+	 *   lcd_bias_enp1_gpio - pinmux 0x1700 - GPIO 23,  VPOS
+	 *   lcd_bias_enn1_gpio - pinmux 0xca00 - GPIO 202, VNEG
+	 *
+	 * vin-supply is deliberately absent: the TPS65132's input rail is not
+	 * recorded in any artifact we have. The binding makes it optional and a
+	 * wrong guess would give no bias and a black screen.
+	 */
+	/*
+	 * Disabled (lead, 15.11 kexec trial): nothing answers at 0x3e on this bus
+	 * (i2cdetect -r on i2c@11007000 finds no device) while the loader's panel
+	 * is lit with both enable pins low (GPIO 23 and 202 read output 0), and the
+	 * live DT has no tps65132 node. This AMOLED does not use the bias chip;
+	 * the node stays for the LCD panel variants the vendor code also serves.
+	 */
+	regulator@3e {
+		compatible = "ti,tps65132";
+		reg = <0x3e>;
+		status = "disabled";
+
+		outp {
+			regulator-name = "lcd_bias_vpos";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <6000000>;
+			enable-gpios = <&pio 23 GPIO_ACTIVE_HIGH>;
+		};
+
+		outn {
+			regulator-name = "lcd_bias_vneg";
+			regulator-min-microvolt = <4000000>;
+			regulator-max-microvolt = <6000000>;
+			enable-gpios = <&pio 202 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	/*
+	 * FocalTech FT3418 touch controller at 0x38, chip id 0x54/0x52 (live
+	 * DT node "touch@0", compatible "focaltech,fts"; dmesg
+	 * "fts_wait_tp_to_valid:TP Ready,Device ID:0x5452").
+	 *   IRQ    - GPIO 1, falling edge (live DT "focaltech,eint-gpio" and
+	 *            the touch node's interrupt type 2 = IRQ_TYPE_EDGE_FALLING)
+	 *   reset  - GPIO 2, active low (live DT "focaltech,reset-gpio"; the
+	 *            vendor's fts_reset_proc() drives it low then high)
+	 *   supply - the live DT's "vtouch-supply" is the PMIC's LDO2 (vtp,
+	 *            3.0 V). That regulator has no label in mt6359.dtsi, so it
+	 *            cannot be named here; the driver takes the rail
+	 *            optionally and it stays as the loader set it up. Written
+	 *            up in the area report.
+	 *
+	 * No pinctrl: the live DT's int_active / reset_active groups set pinmux
+	 * 0x100 and 0x200, which is mode 0 on GPIO 1 and GPIO 2, the state those
+	 * pads reset to.
+	 */
+	touchscreen@38 {
+		compatible = "focaltech,ft3418";
+		reg = <0x38>;
+
+		interrupt-parent = <&pio>;
+		interrupts = <1 IRQ_TYPE_EDGE_FALLING>;
+
+		reset-gpios = <&pio 2 GPIO_ACTIVE_LOW>;
+		vdd-supply = <&mt6360_vtp_ldo_reg>;
+
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2400>;
+	};
+};
+
+/*
+ * Touch supply: MT6360 LDO2, "vtp" in the live DT (mt_pmic_vtp_ldo_reg: ldo2,
+ * phandle 0xe9 = the focaltech node's vtouch-supply). The loader leaves it off
+ * (regulator state "disabled" under Linux, 15.11), so the controller does not
+ * answer until Linux turns it on. Voltage: the vendor FT3518 driver asks
+ * 2.6..3.3 V (FTS_VTG_MIN_UV/MAX_UV, focaltech_core.c); 3.0 V is inside it.
+ */
+&{/soc/i2c@11016000/pmic@34/regulator} {
+	mt6360_vtp_ldo_reg: ldo2 {
+		regulator-name = "vtp";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+	};
+};

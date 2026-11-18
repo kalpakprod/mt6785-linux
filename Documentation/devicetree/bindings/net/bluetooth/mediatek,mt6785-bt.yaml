@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/mediatek,mt6785-bt.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6785 Bluetooth over the CONNSYS BTIF transport
+
+maintainers:
+  - The poco-m5s port <worker@poco.local>
+
+description: |
+  The MT6631 Bluetooth controller is a task on the CONNSYS MCU and has no bus
+  of its own. HCI is carried as H4 inside STP frames of type 0 over the BTIF
+  transport, so this node has no register window and no interrupt - it only
+  tells the driver that the controller exists and should be brought up over
+  the WMT stack.
+
+properties:
+  compatible:
+    const: mediatek,mt6785-bt
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    bluetooth {
+        compatible = "mediatek,mt6785-bt";
+    };

@@ -473,3 +473,18 @@ config BT_INTEL_PCIE
 	  Say Y here to compiler support for Intel Bluetooth PCIe device into
 	  the kernel or say M to compile it as module (btintel_pcie)
 endmenu
+
+config BT_MTKBTIF
+	tristate "MediaTek HCI BTIF driver (MT6785 CONNSYS)"
+	depends on BT
+	depends on MTK_WMT_DRV
+	help
+	  Bluetooth over the MediaTek CONNSYS BTIF transport. On MT6785 the
+	  MT6631 controller is a task on the conn MCU and is reached through the
+	  WMT/STP stack (wmt_drv) over BTIF, carrying HCI as H4 inside STP
+	  frames of type 0.
+
+	  This driver is required for Bluetooth on the Poco M5s and on other
+	  MT6785 phones whose Bluetooth lives behind CONNSYS.
+
+	  Say M here to build it as the btmtkbtif module.

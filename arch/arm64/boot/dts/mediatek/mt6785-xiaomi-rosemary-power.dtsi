@@ -24,18 +24,6 @@
 				       <2920000 0>;
 	};
 
-	/*
-	 * Battery voltage and current until the MT6359 coulomb counter lands: the MT6360 ADC's VBAT and
-	 * IBAT channels (drivers/iio/adc/mt6360-adc.c enum: VBAT = 4, IBAT = 6), read on the phone
-	 * 15.11.2026 as 4.376 V and 0 A with the charger reporting Full.
-	 */
-	fuel-gauge {
-		compatible = "adc-battery";
-		io-channels = <&{/soc/i2c@11016000/pmic@34/adc} 4>, <&{/soc/i2c@11016000/pmic@34/adc} 6>;
-		io-channel-names = "voltage", "current";
-		power-supplies = <&{/soc/i2c@11016000/pmic@34/charger}>;
-		monitored-battery = <&battery>;
-	};
 };
 
 /*
@@ -67,6 +55,17 @@
 		regulator-min-microvolt = <4425000>;
 		regulator-max-microvolt = <5825000>;
 	};
+};
+
+/*
+ * The gauge takes the battery voltage from the same converter the generic
+ * adc-battery reads: the MT6360's ADC, channel 4 ("voltage" there). The MT6359's own
+ * ADC has the same channel numbering but different channels, and reading channel 4
+ * of it gave a constant 9.153 V.
+ */
+&{/soc/pwrap@1000d000/pmic/gauge} {
+	io-channels = <&{/soc/i2c@11016000/pmic@34/adc} 4>, <&pmic_adc 1>;
+	io-channel-names = "vbat", "ntc";
 };
 
 &{/soc/i2c@11016000/pmic@34} {

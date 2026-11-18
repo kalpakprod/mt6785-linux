@@ -15,6 +15,45 @@
 			#io-channel-cells = <1>;
 		};
 
+		/*
+		 * The PMIC's 26 MHz clock buffer outputs: SOC, WCN, NFC, CEL and EXT.
+		 * Only the NFC one is writable (through the DCXO CW00 set/clear pair,
+		 * the way the vendor's mtk_clkbuf_hw.c does it); the other four are
+		 * read-only so the modem, Wi-Fi/BT and UFS keep whatever the loader gave
+		 * them. See drivers/clk/mediatek/clk-mt6359-clkbuf.c.
+		 */
+		clkbuf: clock-buffer {
+			compatible = "mediatek,mt6359-clkbuf";
+			#clock-cells = <1>;
+			clock-frequency = <26000000>;
+		};
+
+
+		/*
+		 * The coulomb-counting fuel gauge. The sense resistor and the full charge
+		 * are board values: 50 mOhm nominal and 5 Ah are what the vendor profile
+		 * for this battery reports; the ADC channels come from the PMIC's own
+		 * converter, the same one the generic adc-battery reads today.
+		 */
+		gauge {
+			compatible = "mediatek,mt6359-gauge";
+			/* Rosemary's battery profile, the simple-battery node of the board
+			 * DT: the gauge turns its OCV table into a capacity at boot. */
+			monitored-battery = <&battery>;
+			/* The battery NTC: MT6359 AUXADC BAT_TEMP, channel index 1
+			 * (MT6359_AUXADC_BAT_TEMP), the channel that fell with temperature
+			 * in the conn26 measurement. */
+			io-channels = <&pmic_adc 1>;
+			io-channel-names = "ntc";
+			mediatek,r-fg-value = <5>;
+			/* The battery voltage channel is set by the board: it is the MT6360
+			 * ADC channel the generic adc-battery already reads (channel 4 in
+			 * mt6785-xiaomi-rosemary-power.dtsi), not the MT6359's own converter -
+			 * reading channel 4 of that one produced a constant 9.153 V in
+			 * conn22, i.e. a different converter with different channels. */
+			mediatek,charge-full-microamp-hours = <5000000>;
+		};
+
 		mt6359codec: audio-codec {
 			compatible = "mediatek,mt6359-codec";
 		};

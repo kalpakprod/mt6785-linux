@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Poco M5s (rosemary): board nodes of the sensors area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * The sensors of this phone have no nodes of their own here: all five sit behind
+ * the SCP on its private I2C buses, so the nodes that matter are the SCP and its
+ * sensor hub, and they live in mt6785-xiaomi-rosemary-scp.dtsi (the SCP area's
+ * file, which also carries the sensor ring's reserved memory).  This file stays
+ * as the area's anchor for anything that does turn up on an AP bus.
  */

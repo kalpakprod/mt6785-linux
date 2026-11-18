@@ -1,0 +1,18 @@
+[Unit]
+Description=MT6785 GNSS NMEA bridge (/dev/stpgps to a pty for gpsd)
+Documentation=file:/usr/local/share/stpgps-bridge/README.md
+# The STP device only exists once the WMT driver has bound and the chip is up.
+After=local-fs.target
+
+[Service]
+Type=simple
+# RuntimeDirectory gives /run/stpgps with the right owner; the bridge then
+# publishes the pty slave there as a stable path for gpsd.
+RuntimeDirectory=stpgps
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/bin/stpgps-bridge --dev /dev/stpgps --pty-link /run/stpgps/nmea
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

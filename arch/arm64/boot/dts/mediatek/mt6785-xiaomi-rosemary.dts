@@ -179,9 +179,19 @@
 	proc-supply = <&mt6359_vproc2_buck_reg>;
 };
 
+/*
+ * The MT6785 GPU is a Mali-G76 MC4 behind four MFG_CORE power domains and the
+ * MFG_BG3D clock from mfgcfg; "mediatek,mt6785-mali" in the SoC dtsi carries the
+ * four domain names panfrost needs.
+ *
+ * The core rail is MT6359's VGPU11 buck: the vendor's MT6785 gpufreq driver takes
+ * exactly two regulators, regulator_get(dev, "vgpu11") for vgpu and
+ * regulator_get(dev, "vpu") for vsram_gpu (mtk_gpufreq_core.c:3188 and :3197), so
+ * vgpu11 is the GPU itself and the vpu buck is its SRAM rail - which is why
+ * &mfg above is supplied by vpu and &mfg_async by vgpu11.
+ */
 &gpu {
 	mali-supply = <&mt6359_vgpu11_buck_reg>;
-	status = "disabled";
 };
 
 &mfg {
@@ -395,6 +405,14 @@
 	status = "okay";
 
 	maximum-speed = "high-speed";
+	/*
+	 * Dual role, stated explicitly. mtu3 would pick OTG on its own when the
+	 * property is absent (drivers/usb/mtu3/mtu3_plat.c:277-279), and
+	 * ssusb_set_mode() ignores every role change unless dr_mode is OTG
+	 * (mtu3_dr.c:179), so this line is what makes the Type-C role switch below
+	 * actually do anything.
+	 */
+	dr_mode = "otg";
 	usb-role-switch;
 	role-switch-default-mode = "peripheral";
 	vusb33-supply = <&mt6359_vusb_ldo_reg>;
@@ -629,6 +647,7 @@
 #include "mt6785-xiaomi-rosemary-audio.dtsi"
 #include "mt6785-xiaomi-rosemary-scp.dtsi"
 #include "mt6785-xiaomi-rosemary-sensors.dtsi"
+#include "mt6785-xiaomi-rosemary-nfc.dtsi"
 #include "mt6785-xiaomi-rosemary-modem.dtsi"
 #include "mt6785-xiaomi-rosemary-camera.dtsi"
 #include "mt6785-xiaomi-rosemary-fingerprint.dtsi"

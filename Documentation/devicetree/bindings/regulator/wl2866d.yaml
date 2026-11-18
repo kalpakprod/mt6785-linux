@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/wl2866d.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Will Semiconductor WL2866D four-output LDO controller
+
+maintainers:
+  - poco-display-worker <worker@poco.local>
+
+description: |
+  The WL2866D is an I2C-controlled four-output LDO used to feed camera sensor
+  supplies on several phones. Outputs 0 and 1 cover 0.6-2.13 V in 6 mV steps,
+  outputs 2 and 3 cover 1.2-4.3875 V in 12.5 mV steps, and one GPIO enables the
+  part as a whole.
+
+properties:
+  compatible:
+    const: xiaomi,wl2866d
+
+  reg:
+    maxItems: 1
+
+  en-gpios:
+    description: Enable GPIO of the controller, active low on the boards seen so far.
+    maxItems: 1
+
+  regulators:
+    type: object
+    description: The four outputs, named by the board's supply names.
+    additionalProperties: false
+
+    patternProperties:
+      "^dvdd[12]$":
+        type: object
+        $ref: regulator.yaml#
+        unevaluatedProperties: false
+
+      "^avdd[12]$":
+        type: object
+        $ref: regulator.yaml#
+        unevaluatedProperties: false
+
+required:
+  - compatible
+  - reg
+  - regulators
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        regulator@28 {
+            compatible = "xiaomi,wl2866d";
+            reg = <0x28>;
+
+            regulators {
+                dvdd1 {
+                    regulator-name = "wl2866d_dvdd1";
+                    regulator-min-microvolt = <600000>;
+                    regulator-max-microvolt = <2130000>;
+                    regulator-boot-on;
+                };
+
+                dvdd2 {
+                    regulator-name = "wl2866d_dvdd2";
+                    regulator-min-microvolt = <600000>;
+                    regulator-max-microvolt = <2130000>;
+                };
+
+                avdd1 {
+                    regulator-name = "wl2866d_avdd1";
+                    regulator-min-microvolt = <1200000>;
+                    regulator-max-microvolt = <4387500>;
+                };
+
+                avdd2 {
+                    regulator-name = "wl2866d_avdd2";
+                    regulator-min-microvolt = <1200000>;
+                    regulator-max-microvolt = <4387500>;
+                };
+            };
+        };
+    };
+...

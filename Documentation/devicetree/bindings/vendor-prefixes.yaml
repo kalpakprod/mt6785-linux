@@ -1093,6 +1093,8 @@ patternProperties:
     description: MicroSys Electronics GmbH
   "^microtips,.*":
     description: Microtips Technology USA
+  "^microtrust,.*":
+    description: Microtrust Incorporated
   "^mikroe,.*":
     description: MikroElektronika d.o.o.
   "^mikrotik,.*":

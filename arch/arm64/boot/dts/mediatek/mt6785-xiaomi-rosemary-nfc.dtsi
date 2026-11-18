@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Xiaomi POCO M5s — NFC controller (ST21NFCD)
+ *
+ * Provenance:
+ *   - bus and address: the vendor board file, rosemary/cust.dtsi:105-109 -
+ *     i2c3 at 0x08, 400 kHz, open-drain - and the live device tree of the phone
+ *     (poco-m5s/device-dump-2026-11-12/device-tree.dts:4105-4110);
+ *   - reset GPIO32 and interrupt GPIO31: the vendor's nfc-gpio-v2 node
+ *     (device-tree.dts:7604-7610: gpio-rst = <&pio 32>, gpio-irq = <&pio 31>) and
+ *     its EINT node (device-tree.dts:7613-7620, and rosemary/cust.dtsi:305-309:
+ *     interrupt-parent = pio, IRQ_TYPE_LEVEL_HIGH). The vendor DT has no pinctrl
+ *     state for either line: both stay plain GPIOs, so this node has none either.
+ *   - the reference clock: the MT6359's XO_NFC buffer (see the comment in
+ *     clk-mt6359-clkbuf.c). The vendor drives it through the PMIC's DCXO CW00
+ *     set/clear pair, not through the vote field - clkbuf_v1/mt6785/
+ *     mtk_clkbuf_hw.c:402-437.
+ *   - the chip itself: the vendor HAL is nfc_nci.st21nfc (libnfc-hal-st.conf from
+ *     the vendor image) with firmware st21nfc_fw7.bin, and its strings show the
+ *     NCI loader/router handshake - the whole argument is in
+ *     tools/nfc-stnfc/README.md.
+ *
+ * The eSE and UICC flags are deliberately absent: the vendor HAL's
+ * OFF_HOST_ESE_PIPE_ID hints at an eSE, but nothing in the dumps proves it, and a
+ * wrong flag changes the SE routing. They are a measurement on the phone, not an
+ * assumption in the DT.
+ */
+
+#include <dt-bindings/clock/mediatek,mt6359-clkbuf.h>
+
+&i2c3 {
+	status = "okay";
+
+	nfc: nfc@8 {
+		compatible = "st,st21nfcd-i2c";
+		reg = <0x08>;
+
+		interrupt-parent = <&pio>;
+		interrupts = <31 IRQ_TYPE_LEVEL_HIGH>;
+
+		reset-gpios = <&pio 32 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * The reference clock, taken for the life of the device by st-nci
+		 * (devm_clk_get_optional_enabled), which is what the vendor does: its
+		 * HAL keeps the buffer forced on.
+		 *
+		 * The provider reproduces the loader's working state bit for bit. The
+		 * PMIC's DCXO_CW00 (0x788) reads 0x4f1d on this phone (lead note 24
+		 * evidence), which decodes with the fields in the vendor header as
+		 * EXTBUF3_MODE (bits 7:6) = 0 and EXTBUF3_EN_M (bit 8) = 1 - exactly what
+		 * enable() writes: mode cleared, EN_M set, the vendor's FORCE_ON path.
+		 */
+		clocks = <&clkbuf MT6359_CLKBUF_XO_NFC>;
+
+
+		status = "okay";
+	};
+};
