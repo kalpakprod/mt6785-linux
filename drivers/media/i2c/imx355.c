@@ -879,7 +879,48 @@ static int imx355_start_streaming(struct imx355 *imx355)
 	cci_write(imx355->regmap, IMX355_REG_MODE_SELECT, IMX355_MODE_STREAMING,
 		  &ret);
 
+	/* The registers the receiver on the other end depends on, read back. */
+	imx355_diag_mipi(imx355);
+
 	return ret;
+}
+
+/*
+ * What the sensor answers once it has been told to stream, printed next to the values the vendor
+ * driver for this module writes for its own preview mode
+ * (poco-m5s/research/native/5-cameras/tables/imx355ofilm_tables.h:35-52: 0x0112 and 0x0113 are
+ * 0x0a, 0x0114 is 0x03 for four lanes, 0x0820 is 0x07e0 = 2016 Mb/s, 0x0301 0x05, 0x0303 0x01,
+ * 0x0305 0x02, 0x030d 0x04, 0x030e 0x0054, VTS 0x0e4c, HTS 0x072c). A sensor whose MIPI or PLL
+ * registers are not what this module needs transmits nothing a receiver can lock to, and until
+ * now nothing ever read them back: the trial only knew that s_stream() returned 0.
+ */
+static void imx355_diag_mipi(struct imx355 *imx355)
+{
+	u64 mode = 0, r112 = 0, r113 = 0, r114 = 0, r820 = 0;
+	u64 r301 = 0, r303 = 0, r305 = 0, r30d = 0, r30e = 0, vts = 0, hts = 0;
+
+	cci_read(imx355->regmap, CCI_REG8(0x0100), &mode, NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0112), &r112, NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0113), &r113, NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0114), &r114, NULL);
+	cci_read(imx355->regmap, CCI_REG16(0x0820), &r820, NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0301), &r301, NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0303), &r303, NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x0305), &r305, NULL);
+	cci_read(imx355->regmap, CCI_REG8(0x030d), &r30d, NULL);
+	cci_read(imx355->regmap, CCI_REG16(0x030e), &r30e, NULL);
+	cci_read(imx355->regmap, CCI_REG16(0x0340), &vts, NULL);
+	cci_read(imx355->regmap, CCI_REG16(0x0342), &hts, NULL);
+
+	dev_info(imx355->dev,
+		 "DIAG mipi: 0x0100 0x%02llx, 0x0112 0x%02llx (vendor 0x0a), 0x0113 0x%02llx (0x0a), 0x0114 0x%02llx (0x03 = 4 lanes)\n",
+		 mode, r112, r113, r114);
+	dev_info(imx355->dev,
+		 "DIAG mipi: 0x0820 0x%04llx (vendor 0x07e0), 0x0301 0x%02llx (0x05), 0x0303 0x%02llx (0x01), 0x0305 0x%02llx (0x02), 0x030d 0x%02llx (0x04), 0x030e 0x%04llx (0x0054)\n",
+		 r820, r301, r303, r305, r30d, r30e);
+	dev_info(imx355->dev,
+		 "DIAG mipi: VTS 0x%04llx (vendor 0x0e4c), HTS 0x%04llx (0x072c)\n",
+		 vts, hts);
 }
 
 /* Stop streaming */
