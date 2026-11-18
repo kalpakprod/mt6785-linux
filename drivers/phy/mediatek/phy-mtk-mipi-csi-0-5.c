@@ -433,6 +433,62 @@ static void mtk_mipi_phy_stock_analog(struct device *dev, void __iomem *base,
 	}
 }
 
+/*
+ * Lane-role permutations as runtime parameters, so one boot can walk them.
+ *
+ * The analog block names three lanes per half (phy-mtk-mipi-csi-0-5-rx-reg.h:18-27:
+ * RG_CSIXA_DPHY_L0/L1/L2_CKMODE_EN = bits 5/8/11 and their CKSEL bits 6/9/12 of register 0x00), and
+ * *which* of them carries the clock of a four-lane link is the one thing no source states for this
+ * board. phy.clock_lane picks it: 0..2 = A half L0..L2, 3..5 = B half L0..L2, -1 = the driver's own
+ * choice. phy.polarity=1 swaps the two equaliser sub-fields of each lane register (0x18/0x1c/0x20,
+ * GENMASK(5,4)/(7,6) against GENMASK(21,20)/(23,22)) - the only per-lane order bit the header names.
+ * Both are read at every power-on, i.e. at every stream start.
+ */
+static int clock_lane = -1;
+module_param(clock_lane, int, 0644);
+MODULE_PARM_DESC(clock_lane,
+		 "lane carrying the clock: 0..2 = A L0..L2, 3..5 = B L0..L2, -1 = as written");
+
+static bool polarity;
+module_param(polarity, bool, 0644);
+MODULE_PARM_DESC(polarity, "swap the per-lane equaliser sub-fields in 0x18/0x1c/0x20");
+
+static void mtk_mipi_phy_lane_roles(struct device *dev, void __iomem *base)
+{
+	static const u32 ckmode[3] = { BIT(5), BIT(8), BIT(11) };
+	static const u32 cksel[3] = { BIT(6), BIT(9), BIT(12) };
+	unsigned int half, lane;
+
+	for (half = 0; half < 2; half++) {
+		void __iomem *h = base + half * CSIXB_OFFSET;
+		u32 a0 = readl(h + 0x00);
+
+		if (clock_lane >= 0 && clock_lane <= 5) {
+			for (lane = 0; lane < 3; lane++)
+				a0 &= ~(ckmode[lane] | cksel[lane]);
+			if (half == (unsigned int)(clock_lane / 3))
+				a0 |= ckmode[clock_lane % 3] | cksel[clock_lane % 3];
+			writel(a0, h + 0x00);
+		}
+
+		if (polarity) {
+			for (lane = 0; lane < 3; lane++) {
+				u32 v = readl(h + 0x18 + 4 * lane);
+				u32 lo = (v >> 4) & 0xf;
+				u32 hi = (v >> 20) & 0xf;
+
+				v &= ~((0xfu << 4) | (0xfu << 20));
+				v |= (hi << 4) | (lo << 20);
+				writel(v, h + 0x18 + 4 * lane);
+			}
+		}
+	}
+
+	dev_info(dev, "lane roles: clock_lane %d, polarity swap %d, 0x00 A %08x B %08x\n",
+		 clock_lane, polarity, readl(base + 0x00),
+		 readl(base + CSIXB_OFFSET + 0x00));
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
@@ -556,6 +612,8 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 		dev_info(&phy->dev, "clock mode enabled on every lane\n");
 	}
 
+	/* The lane-role permutations a trial asks for, then the state as it stands. */
+	mtk_mipi_phy_lane_roles(&phy->dev, base);
 	mtk_mipi_phy_decode(&phy->dev, base, "enables");
 
 	/* The stock dump's analog words over ours, when a trial asks for it. */
