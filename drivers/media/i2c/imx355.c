@@ -86,6 +86,11 @@
  */
 static int test_pattern = -1;
 module_param(test_pattern, int, 0644);
+
+/* Read the sensor's frame counter at stream on: on by default, off by imx355.diag_frames=0. */
+static bool diag_frames = true;
+module_param(diag_frames, bool, 0644);
+MODULE_PARM_DESC(diag_frames, "read the frame counter 0x0005 six times at stream on");
 MODULE_PARM_DESC(test_pattern,
 		 "force the sensor test pattern at stream on: -1 = leave the control alone, 0..4 = force");
 #define IMX355_TEST_PATTERN_DISABLED		0
@@ -912,6 +917,33 @@ static int imx355_start_streaming(struct imx355 *imx355)
 
 	/* The registers the receiver on the other end depends on, read back. */
 	imx355_diag_mipi(imx355);
+
+	/*
+	 * Whether the sensor generates frames at all, which decides the side of the fault.
+	 * 0x0005 is the frame counter of this Sony family (the in-tree imx111 driver
+	 * names the same register IMX111_FRAME_COUNTER, imx111.c:31). Read six
+	 * times 100 ms apart: a run that increments means the sensor produces frames
+	 * and the fault is on the wires or in the receiver; a stuck value means the
+	 * sensor never started (no PLL lock, wrong clock, incomplete streaming).
+	 */
+	if (diag_frames) {
+		u64 f[6] = { 0 };
+		unsigned int i, moved = 0;
+
+		for (i = 0; i < ARRAY_SIZE(f); i++) {
+			cci_read(imx355->regmap, CCI_REG8(0x0005), &f[i], NULL);
+			if (i && f[i] != f[i - 1])
+				moved++;
+			if (i + 1 < ARRAY_SIZE(f))
+				msleep(100);
+		}
+
+		dev_info(imx355->dev,
+			 "DIAG frames: 0x0005 %02llx %02llx %02llx %02llx %02llx %02llx (%s)\n",
+			 f[0], f[1], f[2], f[3], f[4], f[5],
+			 moved ? "counting: the sensor produces frames" :
+				 "stuck: the sensor never started");
+	}
 
 	return ret;
 }
