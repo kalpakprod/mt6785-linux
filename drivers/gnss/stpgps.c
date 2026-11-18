@@ -34,6 +34,7 @@
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/poll.h>
 #include <linux/skbuff.h>
 #include <linux/types.h>
@@ -98,6 +99,17 @@
 /* One STP frame holds one NMEA sentence or one PMTK command. */
 #define STPGPS_FRAME_SIZE	1024
 
+/*
+ * The vendor driver tracks the chip's reset from the WMT notification
+ * (gps_cdev_rst_cb) and reports it through COMBO_IOC_WMT_STATUS as -888 while
+ * the chip is resetting and -889 once it came back, so the daemon knows it has
+ * to start a new session instead of waiting for answers that will never come
+ * (stp_chrdev_gps.c, GPS_unlocked_ioctl case COMBO_IOC_WMT_STATUS).
+ */
+#define STPGPS_RST_NONE		0
+#define STPGPS_RST_START	1
+#define STPGPS_RST_DONE		2
+
 struct stpgps {
 	struct miscdevice gps_misc;
 	struct miscdevice emi_misc;
@@ -121,6 +133,24 @@ struct stpgps {
 
 	/* RX queue: one STP frame per entry. */
 	struct list_head rx_list;
+
+	/* Chip reset, as reported by WMT: STPGPS_RST_*. */
+	unsigned int rst_state;
+
+	/*
+	 * What the channel carried in this session. The daemon uploads the GNSS DSP
+	 * image and its command stream before the chip answers anything, so these
+	 * numbers are the evidence that the upload happened at all: on the same SoC
+	 * the working session measured 39721 B out before the first NMEA byte in.
+	 */
+	u64 tx_bytes;
+	u64 rx_bytes;
+	unsigned int tx_frames;
+	unsigned int rx_frames;
+
+	/* GPS wake lock, COMBO_IOC_TAKE/GIVE_GPS_WAKELOCK and open/close. */
+	struct wakeup_source *ws;
+	bool ws_held;
 
 	/*
 	 * STP hands frames over in its own RX thread, which must not sleep in a
@@ -148,6 +178,58 @@ static void stpgps_rx_cb(void)
 		schedule_work(&gps->rx_work);
 }
 
+/* The GPS wake lock, held while the daemon runs a session. */
+static void stpgps_hold_wake_lock(struct stpgps *gps, bool hold)
+{
+	if (hold && !gps->ws_held) {
+		__pm_stay_awake(gps->ws);
+		gps->ws_held = true;
+	} else if (!hold && gps->ws_held) {
+		__pm_relax(gps->ws);
+		gps->ws_held = false;
+	}
+}
+
+/*
+ * WMT tells us when the conn MCU resets the GPS task, and the vendor daemon
+ * watches for exactly this: after a reset neither PMTK nor NMEA will arrive on
+ * the old session, so it has to close and open again. Without this the daemon
+ * waited forever.
+ */
+static void stpgps_wmt_cb(ENUM_WMTDRV_TYPE_T src, ENUM_WMTDRV_TYPE_T dst,
+			  ENUM_WMTMSG_TYPE_T type, void *buf, unsigned int sz)
+{
+	struct stpgps *gps = READ_ONCE(stpgps_dev);
+	ENUM_WMTRSTMSG_TYPE_T msg;
+
+	if (!gps || !buf || sz < sizeof(msg))
+		return;
+	memcpy(&msg, buf, sizeof(msg));
+
+	if (src != WMTDRV_TYPE_WMT || dst != WMTDRV_TYPE_GPS ||
+	    type != WMTMSG_TYPE_RESET)
+		return;
+
+	switch (msg) {
+	case WMTRSTMSG_RESET_START:
+		gps->rst_state = STPGPS_RST_START;
+		break;
+	case WMTRSTMSG_RESET_END:
+	case WMTRSTMSG_RESET_END_FAIL:
+		gps->rst_state = STPGPS_RST_DONE;
+		break;
+	default:
+		return;
+	}
+
+	dev_info(gps->gps_misc.this_device, "conn MCU reported a GPS task reset (%s)\n",
+		 gps->rst_state == STPGPS_RST_START ? "start" : "end");
+
+	/* Wake the daemon's status poll and the ioctl that waits for a reset. */
+	wake_up_interruptible(&gps->read_wait);
+	wake_up_interruptible(&gps->close_wait);
+}
+
 /* Takes the frames STP holds for the GNSS task and puts them on our queue. */
 static int stpgps_drain(struct stpgps *gps)
 {
@@ -171,6 +253,8 @@ static int stpgps_drain(struct stpgps *gps)
 		skb_put(skb, cnt);
 		mutex_lock(&gps->lock);
 		list_add_tail(&skb->list, &gps->rx_list);
+		gps->rx_bytes += cnt;
+		gps->rx_frames++;
 		mutex_unlock(&gps->lock);
 		total += cnt;
 	}
@@ -228,7 +312,12 @@ static int stpgps_open(struct inode *inode, struct file *file)
 	}
 
 	gps->gps_on = true;
+	gps->rst_state = STPGPS_RST_NONE;
 	file->private_data = gps;
+
+	/* A reset of the GPS task ends the session: the daemon has to know. */
+	mtk_wcn_wmt_msgcb_reg(WMTDRV_TYPE_GPS, stpgps_wmt_cb);
+	stpgps_hold_wake_lock(gps, true);
 
 	/*
 	 * The vendor's GPS_open() refuses to proceed unless the STP transport is
@@ -238,6 +327,8 @@ static int stpgps_open(struct inode *inode, struct file *file)
 	 * show for it. Closing again restores the function state.
 	 */
 	if (!mtk_wcn_stp_is_ready()) {
+		mtk_wcn_wmt_msgcb_reg(WMTDRV_TYPE_GPS, NULL);
+		stpgps_hold_wake_lock(gps, false);
 		mtk_wcn_wmt_func_off(WMTDRV_TYPE_GPS);
 		gps->gps_on = false;
 		gps->opened = false;
@@ -259,9 +350,31 @@ static int stpgps_release(struct inode *inode, struct file *file)
 		mtk_wcn_wmt_func_off(WMTDRV_TYPE_GPS);
 		gps->gps_on = false;
 	}
+	mtk_wcn_wmt_msgcb_reg(WMTDRV_TYPE_GPS, NULL);
+	stpgps_hold_wake_lock(gps, false);
+
+	/*
+	 * The session's traffic, in one line, because it is the only honest
+	 * measurement of whether the host uploaded anything: a silent channel
+	 * reports no traffic at all, a working one tens of kilobytes out before the
+	 * first NMEA byte (39721 B measured on the same SoC by the begonia port).
+	 * A quiet channel stays at dev_dbg, so that a reader which reopens on every
+	 * silence timeout does not fill the log.
+	 */
+	if (gps->tx_bytes || gps->rx_bytes)
+		dev_info(gps->gps_misc.this_device,
+			 "GNSS channel closed: tx %llu B in %u frames, rx %llu B in %u frames\n",
+			 gps->tx_bytes, gps->tx_frames, gps->rx_bytes, gps->rx_frames);
+	else
+		dev_dbg(gps->gps_misc.this_device,
+			"GNSS channel closed with no traffic\n");
 
 	mutex_lock(&gps->lock);
 	gps->opened = false;
+	gps->tx_bytes = 0;
+	gps->rx_bytes = 0;
+	gps->tx_frames = 0;
+	gps->rx_frames = 0;
 	mutex_unlock(&gps->lock);
 
 	/*
@@ -345,7 +458,28 @@ static ssize_t stpgps_write(struct file *file, const char __user *buf,
 	err = mtk_wcn_stp_send_data(kbuf, count, GPS_TASK_INDX);
 	kfree(kbuf);
 
-	return err < 0 ? err : count;
+	if (err < 0)
+		return err;
+
+	/*
+	 * Return what STP actually took, not what was asked for: the daemon uploads
+	 * the DSP image in 512-byte frames and has to know when the window was full
+	 * instead of believing the whole frame went out. The vendor's GPS_write()
+	 * answers -ENOSPC for exactly that case, and 0 is the only value here that
+	 * means "nothing accepted".
+	 */
+	if (err == 0) {
+		dev_dbg(gps->gps_misc.this_device,
+			"TX window full, %zu bytes refused\n", count);
+		return -ENOSPC;
+	}
+
+	mutex_lock(&gps->lock);
+	gps->tx_bytes += err;
+	gps->tx_frames++;
+	mutex_unlock(&gps->lock);
+
+	return err;
 }
 
 static __poll_t stpgps_poll(struct file *file, poll_table *wait)
@@ -392,27 +526,70 @@ static long stpgps_ioctl(struct file *file, unsigned int cmd,
 			-EFAULT : 0;
 
 	case COMBO_IOC_GPS_LISTEN_RST_EVT:
-		/* The vendor daemon blocks here until the channel goes away. */
-		return wait_event_interruptible(gps->close_wait, !gps->opened);
+		/*
+		 * The vendor daemon blocks here until the channel goes away or the
+		 * chip resets the GPS task - a reset means the session is over too.
+		 */
+		return wait_event_interruptible(gps->close_wait,
+						!gps->opened ||
+						gps->rst_state != STPGPS_RST_NONE);
+
+	case COMBO_IOC_D1_EFUSE_GET:
+		/*
+		 * The vendor's MT6785 build has no branch for this read and logs
+		 * "Read Efuse not supported in this platform", leaving the answer at
+		 * 0. Answering -EFAULT here made the daemon see a failure where the
+		 * vendor sees none.
+		 */
+		dev_dbg(gps->gps_misc.this_device,
+			"D1 efuse not readable on MT6785, as the vendor driver says\n");
+		return 0;
+
+	case COMBO_IOC_RTC_FLAG:
+		/* rtc_GPS_low_power_detected(): the vendor answers 0 (not low). */
+		return 0;
+
+	case COMBO_IOC_CO_CLOCK_FLAG:
+		return mtk_wcn_wmt_co_clock_flag_get();
+
+	case COMBO_IOC_TRIGGER_WMT_ASSERT:
+		if (mtk_wcn_wmt_assert(WMTDRV_TYPE_GPS, (UINT32)arg) ==
+		    MTK_WCN_BOOL_TRUE)
+			return 0;
+		dev_warn(gps->gps_misc.this_device,
+			 "host-triggered FW assert failed\n");
+		return -EBUSY;
+
+	case COMBO_IOC_WMT_STATUS:
+		/* -888 resetting, -889 reset finished, 0 normal (vendor values). */
+		if (gps->rst_state == STPGPS_RST_START)
+			return -888;
+		if (gps->rst_state == STPGPS_RST_DONE)
+			return -889;
+		return 0;
+
+	case COMBO_IOC_TAKE_GPS_WAKELOCK:
+		stpgps_hold_wake_lock(gps, true);
+		return gps->ws_held ? 0 : -EAGAIN;
+
+	case COMBO_IOC_GIVE_GPS_WAKELOCK:
+		stpgps_hold_wake_lock(gps, false);
+		return gps->ws_held ? -EAGAIN : 0;
 
 	case 0:			/* enable/disable STP: WMT owns that */
 	case 1:			/* raw data from GPS dev */
 	case COMBO_IOC_GPS_HWVER:
-	case COMBO_IOC_D1_EFUSE_GET:
-	case COMBO_IOC_RTC_FLAG:
-	case COMBO_IOC_CO_CLOCK_FLAG:
-	case COMBO_IOC_TRIGGER_WMT_ASSERT:
-	case COMBO_IOC_WMT_STATUS:
-	case COMBO_IOC_TAKE_GPS_WAKELOCK:
-	case COMBO_IOC_GIVE_GPS_WAKELOCK:
 	case COMBO_IOC_GPS_FWCTL:
 	case COMBO_IOC_GPS_HW_SUSPEND:
 	case COMBO_IOC_GPS_HW_RESUME:
 	case COMBO_IOC_GPS_GET_MD_STATUS:
 		/*
-		 * The vendor driver answers -EINVAL for the first two and
-		 * -EFAULT for the unimplemented rest; none of them is on the
-		 * path to NMEA output.
+		 * 0 and 1: the daemon must not drive STP itself (-EINVAL).
+		 * 6 (raw hw version): compiled out on this platform (-EFAULT).
+		 * 17/18/19 (fwctl, hw suspend/resume): not used by the daemon on this
+		 * SoC, and the vendor answers -EFAULT for the unimplemented rest.
+		 * 21 (MD status): the vendor needs a physical MD2GPS register address,
+		 * has none on MT6785 and answers -EFAULT.
 		 */
 		return (cmd == 0 || cmd == 1) ? -EINVAL : -EFAULT;
 
@@ -595,6 +772,14 @@ static int stpgps_probe(struct platform_device *pdev)
 		}
 	}
 
+	/*
+	 * The daemon's GPS wake lock. Registered here, after every early return of
+	 * this probe, so a failed probe cannot leave a wakeup source behind.
+	 */
+	gps->ws = wakeup_source_register(&pdev->dev, "stpgps");
+	if (!gps->ws)
+		return -ENOMEM;
+
 	gps->gps_misc.minor = MISC_DYNAMIC_MINOR;
 	gps->gps_misc.name = STPGPS_DEV_NAME;
 	gps->gps_misc.fops = &stpgps_fops;
@@ -641,6 +826,7 @@ err_unreg_emi:
 err_unreg_gps:
 	misc_deregister(&gps->gps_misc);
 err_free:
+	wakeup_source_unregister(gps->ws);
 	iounmap(gps->emi_buf);
 
 	return err;
@@ -658,6 +844,8 @@ static void stpgps_remove(struct platform_device *pdev)
 	WRITE_ONCE(stpgps_dev, NULL);
 	mtk_wcn_stp_register_event_cb(GPS_TASK_INDX, NULL);
 	cancel_work_sync(&gps->rx_work);
+	stpgps_hold_wake_lock(gps, false);
+	wakeup_source_unregister(gps->ws);
 
 	WRITE_ONCE(gps->shutting_down, true);
 	wake_up_interruptible(&gps->read_wait);
