@@ -111,6 +111,16 @@ module_param(mipi_sel_force, int, 0644);
  * says MAIN2 (the IMX355) is on port 2, and three trials have taken that as given along with the
  * switch levels; if the board really routes it elsewhere, one scan says which instance counts.
  */
+/*
+ * When a stream produces no packet, try the other sensor on this receiver once, by itself, with the
+ * switch at that sensor's level - the one combination no trial has run yet. On by default here because
+ * the question it answers (is any sensor on this port alive?) blocks everything else.
+ */
+static bool probe_sensors = true;
+module_param(probe_sensors, bool, 0644);
+MODULE_PARM_DESC(probe_sensors,
+		 "if a stream sees no packet after 500 ms, start the other sensor on this receiver once");
+
 static bool scan_ports;
 module_param(scan_ports, bool, 0644);
 MODULE_PARM_DESC(scan_ports,
@@ -331,6 +341,61 @@ static u32 mtk_seninf_top_offset(unsigned int idx)
 	return 0x68;
 }
 
+/*
+ * The other sensor on this receiver, with the switch at its own level, started by the kernel because no
+ * packet came from the first one. The board puts the front OV13B10 and the rear IMX355 on the same CSI
+ * port through the MIPI switch, and both are linked to this subdev (sink pads 0 and 1); until now only
+ * one of the two has ever been streamed on this port. Runs once, from the 500 ms work, and leaves the
+ * switch and the sensors as it found them.
+ */
+static void mtk_seninf_probe_other_sensor(struct mtk_seninf *seninf)
+{
+	unsigned int cur_pad = sensor_pad < 0 ? 0 : sensor_pad;
+	unsigned int other_pad = cur_pad ? 0 : 1;
+	struct media_pad *cur, *other;
+	struct v4l2_subdev *cur_src, *other_src;
+	void __iomem *in = seninf_inst(seninf);
+	u32 level = 0, keep;
+
+	cur = media_pad_remote_pad_unique(&seninf->sd.entity.pads[cur_pad]);
+	other = media_pad_remote_pad_unique(&seninf->sd.entity.pads[other_pad]);
+	if (IS_ERR(cur) || IS_ERR(other))
+		return;
+
+	cur_src = media_entity_to_v4l2_subdev(cur->entity);
+	other_src = media_entity_to_v4l2_subdev(other->entity);
+
+	if (other_src->dev && other_src->dev->of_node)
+		of_property_read_u32(other_src->dev->of_node, "mipi-sel-level", &level);
+	if (mipi_sel_force >= 0)
+		level = mipi_sel_force;
+
+	keep = seninf->mipi_sel ? gpiod_get_value_cansleep(seninf->mipi_sel) : 0;
+	dev_info(seninf->dev, "probe: stopping %s, switch %u -> %u, starting %s on pad %u\n",
+		 cur_src->name, keep, level, other_src->name, other_pad);
+
+	dev_info(seninf->dev, "probe: %s stop %d\n", cur_src->name,
+		 v4l2_subdev_call(cur_src, video, s_stream, 0));
+	if (seninf->mipi_sel)
+		gpiod_set_value_cansleep(seninf->mipi_sel, level);
+	dev_info(seninf->dev, "probe: %s start %d\n", other_src->name,
+		 v4l2_subdev_call(other_src, video, s_stream, 1));
+
+	msleep(300);
+	dev_info(seninf->dev, "probe: after 300 ms with %s: pkt %u irq 0x%08x int 0x%08x fsm 0x%08x\n",
+		 other_src->name, readl(in + SENINF_CSI2_PACKET_CNT),
+		 readl(in + SENINF_CSI2_IRQ_STATUS), readl(in + SENINF_CSI2_INT_STATUS),
+		 readl(in + SENINF_CSI2_LNRD_FSM));
+
+	/* Put everything back the way the stream found it. */
+	v4l2_subdev_call(other_src, video, s_stream, 0);
+	if (seninf->mipi_sel) {
+		gpiod_set_value_cansleep(seninf->mipi_sel, keep);
+		dev_info(seninf->dev, "probe: switch back to %u, %s restarted %d\n", keep,
+			 cur_src->name, v4l2_subdev_call(cur_src, video, s_stream, 1));
+	}
+}
+
 static void mtk_seninf_late_counters(struct work_struct *work)
 {
 	struct mtk_seninf *seninf =
@@ -436,6 +501,9 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 			 readl(in + SENINF_CSI2_INT_STATUS),
 			 readl(in + SENINF_CSI2_LNRD_FSM));
 	}
+
+	if (probe_sensors)
+		mtk_seninf_probe_other_sensor(seninf);
 
 }
 
