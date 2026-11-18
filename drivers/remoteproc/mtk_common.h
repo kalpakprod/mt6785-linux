@@ -120,6 +120,33 @@
  * idle model the SCP maps to) is not spelled out in any source we hold. See scp_start()'s comment.
  */
 #define MT6785_SPM_SCP_SRC_REQ		(BIT(4) | BIT(3) | BIT(1))
+/*
+ * The EMI MPU, which the vendor programs through the secure monitor and this driver reads and
+ * re-applies with LK's own words (see mt6785_scp_mpu_probe()).
+ *
+ *  - the call id and its sub-commands: vendor include/linux/soc/mediatek/mtk_sip_svc.h:158-160
+ *    (MTK_SIP_EMIMPU_CONTROL) and include/memory/mediatek/emi.h:25-33;
+ *  - the call shape: emi/submodule/mpu_v1.c:70-78 for a read, :222-223 for a write, which packs
+ *    the region number into bits 24-31 of the start argument and the domain group into bits
+ *    24-31 of the end argument;
+ *  - the geometry: emi/mt6785/mt_emi_api.h:10-18 - 16 domains, 32 regions, addresses shifted by
+ *    EMI_MPU_ALIGN_BITS 16, DRAM_OFFSET 0x40000000.
+ */
+#define MT6785_EMIMPU_CONTROL		MTK_SIP_SMC_CMD(0x50b)
+#define MT6785_EMIMPU_SET		0
+#define MT6785_EMIMPU_CLEAR		1
+#define MT6785_EMIMPU_READ		2
+#define MT6785_EMIMPU_READ_SA		0
+#define MT6785_EMIMPU_READ_EA		1
+#define MT6785_EMIMPU_READ_APC		2
+#define MT6785_EMIMPU_ALIGN_BITS	16
+/* LK's own programming of the SCP's window: region, range and both permission words */
+#define MT6785_EMIMPU_SCP_REGION	6
+#define MT6785_EMIMPU_SCP_START		0x9fc00000
+#define MT6785_EMIMPU_SCP_END		0x9fefffff
+#define MT6785_EMIMPU_SCP_APC0		0xb6d16c
+#define MT6785_EMIMPU_SCP_APC1		0xb6db6d
+/* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
 /* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
 #define MT6785_TOP_CK_CFG_6		0x80
 /* the SCP's own mux: select bits 16-18, power-down bit 23 (clk-mt6785-top.c:473) */

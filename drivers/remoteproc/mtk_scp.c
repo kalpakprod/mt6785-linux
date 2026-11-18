@@ -3,6 +3,8 @@
 // Copyright (c) 2019 MediaTek Inc.
 
 #include <asm/barrier.h>
+#include <linux/arm-smccc.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
 #include <linux/clk.h>
 #include <linux/crc32.h>
 #include <linux/dma-mapping.h>
@@ -542,6 +544,7 @@ struct mt6785_scp_region_info {
 };
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
+static void mt6785_scp_mpu_probe(struct mtk_scp *scp);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_set(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
@@ -644,6 +647,8 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	ret = mt6785_scp_clocks_on(scp);
 	if (ret)
 		return ret;
+
+	mt6785_scp_mpu_probe(scp);
 
 	/*
 	 * The SCP's bus protection, around the bring-up this driver performs itself:
@@ -3306,6 +3311,74 @@ static int mt6785_scp_check_windows(struct mtk_scp *scp)
 	}
 
 	return 0;
+}
+
+/*
+ * The EMI MPU's view of the SCP's DRAM window, read through the secure monitor, and LK's own
+ * permission words put back over it.
+ *
+ * Why this matters: the firmware's first act after the loader copy is to read its own DRAM
+ * (ap_dram_start, 0x9fd00000) and its log ring; if the MPU forbids the SCP's domain there, the
+ * core stalls on that first access and never reaches its ready IPI, which is what this phone
+ * shows. The reference is LK's own programming of exactly this window, printed by LK itself:
+ *
+ *   LK emi_mpu_set_protection start:9fc00000 end:9fefffff region=6
+ *      apc1=b6db6d apc0=b6d16c      (pl_lk.txt:1915)
+ *
+ * and decoded with the 16-domain layout of emi/submodule/mpu_v1.h:43-57 it allows the AP reads
+ * (d0 = 4), the SCP domain (d3 = 0) and three further domains (d8-d10 = 0) while forbidding the
+ * rest - i.e. the reference already lets the SCP reach its window.
+ *
+ * So nothing is invented here: the region is read back and compared with those exact numbers,
+ * and then set again to the same values (the vendor's own call shape, mpu_v1.c:222-223). If the
+ * secure monitor does not implement the call, its return value says so and the boot continues.
+ */
+static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
+{
+	struct arm_smccc_res res;
+	const u32 lk_apc[2] = { MT6785_EMIMPU_SCP_APC0, MT6785_EMIMPU_SCP_APC1 };
+	u32 sa, ea, apc[2];
+	int g;
+
+	arm_smccc_smc(MT6785_EMIMPU_CONTROL, MT6785_EMIMPU_READ,
+		      MT6785_EMIMPU_READ_SA, MT6785_EMIMPU_SCP_REGION, 0, 0, 0, 0, &res);
+	sa = res.a0;
+	arm_smccc_smc(MT6785_EMIMPU_CONTROL, MT6785_EMIMPU_READ,
+		      MT6785_EMIMPU_READ_EA, MT6785_EMIMPU_SCP_REGION, 0, 0, 0, 0, &res);
+	ea = res.a0;
+	for (g = 0; g < ARRAY_SIZE(apc); g++) {
+		arm_smccc_smc(MT6785_EMIMPU_CONTROL, MT6785_EMIMPU_READ,
+			      MT6785_EMIMPU_READ_APC, MT6785_EMIMPU_SCP_REGION, g,
+			      0, 0, 0, &res);
+		apc[g] = res.a0;
+	}
+
+	dev_info(scp->dev, "EMI MPU region %u now: raw start %#x end %#x apc0 %#x apc1 %#x (LK's: %#x %#x, apc0 %#x apc1 %#x)\n",
+		 MT6785_EMIMPU_SCP_REGION, sa, ea, apc[0], apc[1],
+		 MT6785_EMIMPU_SCP_START >> MT6785_EMIMPU_ALIGN_BITS,
+		 MT6785_EMIMPU_SCP_END >> MT6785_EMIMPU_ALIGN_BITS,
+		 lk_apc[0], lk_apc[1]);
+	dev_info(scp->dev, "EMI MPU region %u: d0 %u, d3 %u, d8 %u, d9 %u, d10 %u (0 = allowed, 5 = forbidden)\n",
+		 MT6785_EMIMPU_SCP_REGION, (apc[0] >> 0) & 0x7, (apc[0] >> 9) & 0x7,
+		 (apc[1] >> 0) & 0x7, (apc[1] >> 3) & 0x7, (apc[1] >> 6) & 0x7);
+
+	if (apc[0] == lk_apc[0] && apc[1] == lk_apc[1] &&
+	    sa == (MT6785_EMIMPU_SCP_START >> MT6785_EMIMPU_ALIGN_BITS) &&
+	    ea == (MT6785_EMIMPU_SCP_END >> MT6785_EMIMPU_ALIGN_BITS))
+		dev_info(scp->dev, "EMI MPU region %u still holds LK's own words: the SCP's domain is allowed\n",
+			 MT6785_EMIMPU_SCP_REGION);
+
+	/* put the reference back: one call per domain group, group 1 first, as the vendor does */
+	for (g = ARRAY_SIZE(apc) - 1; g >= 0; g--) {
+		arm_smccc_smc(MT6785_EMIMPU_CONTROL, MT6785_EMIMPU_SET,
+			      (MT6785_EMIMPU_SCP_REGION << 24) |
+			      (MT6785_EMIMPU_SCP_START >> MT6785_EMIMPU_ALIGN_BITS),
+			      (g << 24) |
+			      (MT6785_EMIMPU_SCP_END >> MT6785_EMIMPU_ALIGN_BITS),
+			      lk_apc[g], 0, 0, 0, &res);
+		dev_info(scp->dev, "EMI MPU set region %u group %d to %#x: returned %ld\n",
+			 MT6785_EMIMPU_SCP_REGION, g, lk_apc[g], (long)res.a0);
+	}
 }
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
