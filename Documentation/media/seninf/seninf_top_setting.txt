@@ -1,0 +1,110 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+00000000000328a0 <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI>:
+   328a0:      	ldr	x9, [x1, #0x8]
+   328a4:      	ldr	w10, [x1, #0x10]
+   328a8:      	ldr	x8, [x0, #0x38]
+   328ac:      	ldr	w9, [x9]
+   328b0:      	cmp	w10, #0x2
+   328b4:      	b.ne	0x32908 <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0x68>
+   328b8:      	cmp	w9, #0x8
+   328bc:      	b.hi	0x32a3c <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0x19c>
+   328c0:      	adrp	x10, 0x11000
+   328c4:      	mov	w9, w9
+   328c8:      	add	x10, x10, #0xb4d
+   328cc:      	adr	x11, 0x328dc <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0x3c>
+   328d0:      	ldrb	w12, [x10, x9]
+   328d4:      	add	x11, x11, x12, lsl #2
+   328d8:      	br	x11
+   328dc:      	ldr	w9, [x8, #0x60]
+   328e0:      	orr	w9, w9, #0x2
+   328e4:      	str	w9, [x8, #0x60]
+   328e8:      	ldr	w9, [x8, #0x60]
+   328ec:      	and	w9, w9, #0xfffffffe
+   328f0:      	str	w9, [x8, #0x60]
+   328f4:      	ldr	w9, [x8, #0x60]
+   328f8:      	and	w9, w9, #0xfffffcff
+   328fc:      	orr	w9, w9, #0x200
+   32900:      	str	w9, [x8, #0x60]
+   32904:      	ret
+   32908:      	cmp	w9, #0x8
+   3290c:      	b.hi	0x32a3c <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0x19c>
+   32910:      	mov	w10, #0x1               // =1
+   32914:      	mov	w11, #0x19              // =25
+   32918:      	lsl	w9, w10, w9
+   3291c:      	tst	w9, w11
+   32920:      	b.ne	0x3294c <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0xac>
+   32924:      	mov	w10, #0x62              // =98
+   32928:      	tst	w9, w10
+   3292c:      	b.eq	0x32968 <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0xc8>
+   32930:      	ldr	w9, [x8, #0x64]
+   32934:      	and	w9, w9, #0xfffffffd
+   32938:      	str	w9, [x8, #0x64]
+   3293c:      	ldr	w9, [x8, #0x64]
+   32940:      	orr	w9, w9, #0x1
+   32944:      	str	w9, [x8, #0x64]
+   32948:      	ret
+   3294c:      	ldr	w9, [x8, #0x60]
+   32950:      	and	w9, w9, #0xfffffffd
+   32954:      	str	w9, [x8, #0x60]
+   32958:      	ldr	w9, [x8, #0x60]
+   3295c:      	orr	w9, w9, #0x1
+   32960:      	str	w9, [x8, #0x60]
+   32964:      	ret
+   32968:      	ldr	w9, [x8, #0x68]
+   3296c:      	and	w9, w9, #0xfffffffd
+   32970:      	str	w9, [x8, #0x68]
+   32974:      	ldr	w9, [x8, #0x68]
+   32978:      	orr	w9, w9, #0x1
+   3297c:      	b	0x32a38 <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0x198>
+   32980:      	ldr	w9, [x8, #0x64]
+   32984:      	orr	w9, w9, #0x2
+   32988:      	str	w9, [x8, #0x64]
+   3298c:      	ldr	w9, [x8, #0x64]
+   32990:      	and	w9, w9, #0xfffffffe
+   32994:      	str	w9, [x8, #0x64]
+   32998:      	ldr	w9, [x8, #0x64]
+   3299c:      	and	w9, w9, #0xfffffcff
+   329a0:      	orr	w9, w9, #0x200
+   329a4:      	str	w9, [x8, #0x64]
+   329a8:      	ret
+   329ac:      	ldr	w9, [x8, #0x68]
+   329b0:      	orr	w9, w9, #0x2
+   329b4:      	str	w9, [x8, #0x68]
+   329b8:      	ldr	w9, [x8, #0x68]
+   329bc:      	and	w9, w9, #0xfffffffe
+   329c0:      	str	w9, [x8, #0x68]
+   329c4:      	ldr	w9, [x8, #0x68]
+   329c8:      	and	w9, w9, #0xfffffcff
+   329cc:      	orr	w9, w9, #0x200
+   329d0:      	b	0x32a38 <_ZN12SeninfDrvImp28hal_csirx_seninf_top_settingEP15SENINF_CSI_MIPI+0x198>
+   329d4:      	ldr	w9, [x8, #0x60]
+   329d8:      	orr	w9, w9, #0x2
+   329dc:      	str	w9, [x8, #0x60]
+   329e0:      	ldr	w9, [x8, #0x60]
+   329e4:      	and	w9, w9, #0xfffffffe
+   329e8:      	str	w9, [x8, #0x60]
+   329ec:      	ldr	w9, [x8, #0x60]
+   329f0:      	and	w9, w9, #0xfffffcff
+   329f4:      	str	w9, [x8, #0x60]
+   329f8:      	ret
+   329fc:      	ldr	w9, [x8, #0x64]
+   32a00:      	orr	w9, w9, #0x2
+   32a04:      	str	w9, [x8, #0x64]
+   32a08:      	ldr	w9, [x8, #0x64]
+   32a0c:      	and	w9, w9, #0xfffffffe
+   32a10:      	str	w9, [x8, #0x64]
+   32a14:      	ldr	w9, [x8, #0x64]
+   32a18:      	and	w9, w9, #0xfffffcff
+   32a1c:      	str	w9, [x8, #0x64]
+   32a20:      	ret
+   32a24:      	ldr	w9, [x8, #0x68]
+   32a28:      	orr	w9, w9, #0x2
+   32a2c:      	str	w9, [x8, #0x68]
+   32a30:      	ldr	w9, [x8, #0x68]
+   32a34:      	and	w9, w9, #0xfffffffe
+   32a38:      	str	w9, [x8, #0x68]
+   32a3c:      	ret

@@ -1,0 +1,55 @@
+#!/bin/sh
+# rosemary-modem-datalink [NAME] — create the modem's packet-data network
+# interface, the way the kernel's WWAN framework expects it to be created.
+#
+# Why this is needed at all: the driver registers the 22 data links of the modem
+# (ccmni0..ccmni20 plus the LAN link) with the WWAN framework, and the framework
+# deliberately does NOT create a network device on its own — userspace creates one
+# per session with "ip link add ... type wwan", exactly as
+# Documentation/networking/device_drivers/wwan/t7xx.rst:126-139 describes it.
+# ModemManager's mtk-ccmni plugin then looks for a net port of this modem
+# (mm_base_modem_get_best_data_port(modem, MM_PORT_TYPE_NET)) and, when a PDP
+# context comes up, moves that interface to whatever ccmni id the modem reported in
+# "+EIF:" by writing it into /sys/class/net/<name>/md_interface. So one interface is
+# enough: the plugin re-points it at each new context.
+#
+# Without this link ModemManager reports "No valid data port found to launch
+# connection" and no data connection can be made, which is where the port stands.
+#
+# Idempotent: running it again does nothing if the link already exists.
+set -eu
+
+NAME=${1:-ccmni0}
+LINKID=${2:-0}
+
+# Our wwan device: the class device whose platform parent is driven by rosemary-ccci.
+find_wwandev() {
+	for d in /sys/class/wwan/*; do
+		[ -r "$d/device/uevent" ] || continue
+		if grep -qx 'DRIVER=rosemary-ccci' "$d/device/uevent" 2>/dev/null; then
+			basename "$d"
+			return 0
+		fi
+	done
+	return 1
+}
+
+if [ -e "/sys/class/net/$NAME" ]; then
+	# already there: make sure it is one of ours, so a name clash with a real
+	# interface is reported instead of silently ignored
+	[ -e "/sys/class/net/$NAME/md_interface" ] || {
+		echo "$NAME exists and is not a modem data link" >&2
+		exit 1
+	}
+	exit 0
+fi
+
+WWANDEV=$(find_wwandev) || {
+	echo "no rosemary-ccci wwan device (is the driver loaded and the modem probed?)" >&2
+	exit 1
+}
+
+# The kernel's own creation call; "parentdev" is the wwan class device, "linkid" is
+# the modem interface index the driver will map it to (0 is the default bearer).
+ip link add dev "$NAME" parentdev "$WWANDEV" type wwan linkid "$LINKID"
+echo "$NAME created on $WWANDEV, linkid $LINKID"

@@ -157,6 +157,13 @@ struct mtk_smi_larb { /* larb: local arbiter */
 	int				larbid;
 	u32				*mmu;
 	unsigned char			*bank;
+	/*
+	 * No IOMMU bound to this larb: its ports stay in MMU bypass, which is what
+	 * a display pipe handed over by the bootloader, or one fed from CMA, needs.
+	 * mtk_smi_larb_bind() replaces both pointers when an IOMMU does bind.
+	 */
+	u32				no_mmu;
+	unsigned char			no_bank[32];
 };
 
 static int
@@ -280,6 +287,20 @@ static int mtk_smi_larb_config_port_gen2_general(struct device *dev)
 		reg |= BANK_SEL(larb->bank[i]);
 		writel(reg, larb->base + SMI_LARB_NONSEC_CON(i));
 	}
+
+	/*
+	 * With no IOMMU bound there is nothing to translate for, and the ports
+	 * come back with translation on after the domain was power cycled.
+	 */
+	if (larb->mmu == &larb->no_mmu) {
+		for (i = 0; i < 32; i++) {
+			reg = readl_relaxed(larb->base + SMI_LARB_NONSEC_CON(i));
+			if (reg & F_MMU_EN)
+				writel(reg & ~F_MMU_EN,
+				       larb->base + SMI_LARB_NONSEC_CON(i));
+		}
+	}
+
 	return 0;
 }
 
@@ -668,6 +689,7 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 {
 	struct mtk_smi_larb *larb;
 	struct device *dev = &pdev->dev;
+	u32 larbid;
 	int ret;
 
 	larb = devm_kzalloc(dev, sizeof(*larb), GFP_KERNEL);
@@ -685,6 +707,12 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 		return ret;
 
 	larb->smi.dev = dev;
+
+	/* an IOMMU that binds this larb replaces these two */
+	larb->mmu = &larb->no_mmu;
+	larb->bank = larb->no_bank;
+	if (!of_property_read_u32(dev->of_node, "mediatek,larb-id", &larbid))
+		larb->larbid = larbid;
 
 	ret = mtk_smi_device_link_common(dev, &larb->smi_common_dev);
 	if (ret < 0)

@@ -931,6 +931,34 @@ busy:
  * Queue up the execution of genpd_power_off() unless it's already been done
  * before.
  */
+/*
+ * Instrumentation for the one domain the modem port is chasing. It records which
+ * genpd callback runs and who called it (the stack, once), so a power-on that
+ * "succeeds" while the hardware stays off can be attributed to a caller instead of
+ * guessed at. It changes no behaviour.
+ */
+static bool genpd_trace_md_off_stack_done;
+
+static void genpd_trace_md(struct generic_pm_domain *genpd, const char *what)
+{
+	if (!genpd->name || strcmp(genpd->name, "md"))
+		return;
+	pr_info("md-genpd %-18s status=%s stay_on=%d dev_count=%d sd_count=%d\n",
+		what, genpd->status == GENPD_STATE_ON ? "ON" : "OFF",
+		genpd->stay_on, genpd->device_count, atomic_read(&genpd->sd_count));
+	/*
+	 * The stack is taken at the first power-OFF of this domain and only there:
+	 * the question the trial has to answer is who takes the hardware down while
+	 * the driver is not looking, so that is the call worth a backtrace. Taking
+	 * it at power-on as well would bury that one line among the ordinary boot
+	 * sequence.
+	 */
+	if (!strncmp(what, "power_off", 9) && !genpd_trace_md_off_stack_done) {
+		genpd_trace_md_off_stack_done = true;
+		dump_stack();
+	}
+}
+
 static void genpd_queue_power_off_work(struct generic_pm_domain *genpd)
 {
 	queue_work(pm_wq, &genpd->power_off_work);
@@ -951,6 +979,7 @@ static void genpd_queue_power_off_work(struct generic_pm_domain *genpd)
 static void genpd_power_off(struct generic_pm_domain *genpd, bool one_dev_on,
 			    unsigned int depth)
 {
+	genpd_trace_md(genpd, one_dev_on ? "power_off(1dev)" : "power_off");
 	struct pm_domain_data *pdd;
 	struct gpd_link *link;
 	unsigned int not_suspended = 0;
@@ -1037,6 +1066,7 @@ static void genpd_power_off(struct generic_pm_domain *genpd, bool one_dev_on,
  */
 static int genpd_power_on(struct generic_pm_domain *genpd, unsigned int depth)
 {
+	genpd_trace_md(genpd, "power_on");
 	struct gpd_link *link;
 	int ret = 0;
 

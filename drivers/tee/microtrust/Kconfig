@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config MICROTRUST_TEEI
+	tristate "Microtrust SOTER (iSee) TEE client driver"
+	depends on OF
+	depends on DMA_SHARED_BUFFER
+	help
+	  Driver for the normal-world side of Microtrust's SOTER (iSee) secure
+	  OS, as used on MediaTek SoCs. It brings up the shared queues between
+	  the two worlds, keeps a pool of memory the secure world can read, and
+	  exposes the TEE client, the trusted-application file service and the
+	  fingerprint client to user space (/dev/teei_client, /dev/tz_vfs,
+	  /dev/teei_fp and /dev/teei_config).
+
+	  Its own client API is built in, so the kernel's generic TEE subsystem
+	  is not required. This is vendor code carried over from the phone's
+	  GPL kernel: it is not upstreamable and only builds against the
+	  Microtrust secure OS of the matching board.
+
+	  Say M to build it as the module microtrust_teei. The device tree node
+	  it binds to (microtrust,utos) is disabled by default: a wrong secure
+	  world description freezes the phone at boot.

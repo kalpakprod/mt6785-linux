@@ -169,6 +169,8 @@ static const struct syscore_ops wmt_dbg_syscore_ops = {
  * arch/arm/mach-pxa/irq.c:227). The vendor only ever passes the ops
  * through, so a one-element wrapper keeps the same single registration.
  */
+static bool wmt_dbg_syscore_registered;
+
 static struct syscore wmt_dbg_syscore = {
 	.ops = &wmt_dbg_syscore_ops,
 };
@@ -1101,6 +1103,7 @@ INT32 mtk_wcn_consys_hw_init(VOID)
 			WMT_PLAT_PR_INFO("g_probe_called = 0, retry = %d\n", retry);
 		}
 		register_syscore(&wmt_dbg_syscore);
+		wmt_dbg_syscore_registered = true;
 	}
 
 	return iRet;
@@ -1119,7 +1122,13 @@ INT32 mtk_wcn_consys_hw_deinit(VOID)
 #endif
 
 	platform_driver_unregister(&mtk_wmt_dev_drv);
-	unregister_syscore(&wmt_dbg_syscore);
+	/* the unwind of a failed init gets here before hw_init ever registered it: unregistering an entry that was
+	 * never added dereferences its empty list node (comb6 trial, 18.11: the phone panicked in a udev worker)
+	 */
+	if (wmt_dbg_syscore_registered) {
+		unregister_syscore(&wmt_dbg_syscore);
+		wmt_dbg_syscore_registered = false;
+	}
 
 	if (wmt_consys_ic_ops)
 		wmt_consys_ic_ops = NULL;

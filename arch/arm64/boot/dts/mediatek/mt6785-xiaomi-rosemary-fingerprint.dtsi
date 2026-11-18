@@ -1,5 +1,135 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Poco M5s (rosemary): board nodes of the fingerprint area (poco-m5s/plan-full-phone.md).
- * Included at the end of mt6785-xiaomi-rosemary.dts; empty until that area lands.
+ * Poco M5s (rosemary, MT6785): board nodes of the fingerprint area (poco-m5s/plan-full-phone.md).
+ * Included at the end of mt6785-xiaomi-rosemary.dts.
+ *
+ * The sensor is a Goodix capacitive side/power-button sensor (oswego_m family, GF3626ZS1 most
+ * likely), not an under-display optical one: the vendor build.prop says
+ * persist.vendor.fingerprint.type=side and the phone's Goodix TA is built for GF3626ZS1/GF3626HM
+ * with gf_oswego_m_* entry points (poco-m5s/research/native/6-fingerprint.md, section 1).
+ *
+ * The secure world (Microtrust SOTER) drives SPI0 itself; Linux only powers the sensor, resets it,
+ * forwards its interrupt and keeps the SPI controller's clock alive.
  */
+
+/*
+ * VFP, the sensor's own 3.3 V rail: MT6360 LDO1.
+ *
+ * The live stock device tree (poco-m5s/device-dump-2026-11-12/device-tree.dts, i2c5@11016000/
+ * mt6360_ldo_dts/ldo1, label mt_pmic_vfp_ldo_reg) describes it as `regulator-name = "VFP"`,
+ * 1200000..3600000 uV. Both the vendor Goodix driver and the ported one call
+ * regulator_set_voltage(buck, 3300000, 3300000), so the rail is described here as the fixed
+ * 3.3 V it must be: a range would leave the voltage the bootloader happened to leave behind.
+ *
+ * Node name `ldo1` is the name the mainline driver matches (drivers/regulator/mt6360-regulator.c,
+ * MT6360_REGULATOR_DESC("ldo1", ...)). The parent `regulator` node is the one in
+ * mt6785-xiaomi-rosemary.dts, addressed by path because the main dts gives it no label.
+ */
+&{/soc/i2c@11016000/pmic@34/regulator} {
+	mt6360_vfp: ldo1 {
+		regulator-name = "vfp";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-allowed-modes = <MT6360_OPMODE_NORMAL
+					   MT6360_OPMODE_LP>;
+	};
+};
+
+/*
+ * The sensor on SPI0, chip select 0.
+ *
+ * Address, bus and interrupt come from the live stock device tree
+ * (poco-m5s/device-dump-2026-11-12/device-tree.dts): spi0@1100a000 with the sensor as its only
+ * child, and fpsensor_fp_eint { int-gpios = <&pio 5 0>; interrupts = <5 2 5 0>; } = GPIO5, rising
+ * edge. The reset pin is GPIO30, a plain GPIO pulsed low and released (vendor
+ * cust_mt6785_fingerprint.dtsi, fpsensor_fpc_rst_low/_high, and gf_hw_power_enable(),
+ * gf_spi_tee.c:289). The supply is the MT6360 LDO1 "VFP" described above.
+ *
+ * The mainline SPI driver already matches this controller (mediatek,mt6785-spi falls back to
+ * mt6765_compat in drivers/spi/spi-mt65xx.c), so only the child and the enable are needed here.
+ *
+ * Speed: 1 MHz. The vendor node asks 10 MHz, but its normal-world path runs at 1 MHz
+ * (vendor mtk_spi.c spi_ctrdata.high_time = 50) and the secure world does the real transfers, so
+ * this only sets the chip-id read.
+ *
+ * There is deliberately no second fingerprint node: the stock tree also describes an FPC sensor
+ * ("fpc,fpc_spi") on the same bus, but that part is absent on this unit — its driver read chip id 0
+ * and exited (stock dmesg). Describing it would only invite a probe that fights for the same pins.
+ */
+&spi0 {
+	status = "okay";
+
+	fingerprint@0 {
+		compatible = "goodix,gf3626-fp";
+		reg = <0>;
+
+		spi-max-frequency = <1000000>;
+
+		interrupt-parent = <&pio>;
+		interrupts = <5 IRQ_TYPE_EDGE_RISING>;
+
+		reset-gpios = <&pio 30 GPIO_ACTIVE_LOW>;
+
+		vfp-supply = <&mt6360_vfp>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&fingerprint_pins>;
+	};
+};
+
+/*
+ * GPIO30 as a plain GPIO (the driver drives it through the descriptor), and GPIO5 muxed to GPIO and
+ * left an input for the EINT block: mainline's MediaTek pinctrl has no request-time remux, so the
+ * pin has to be in GPIO mode before the interrupt is requested (mtk-eint then switches it to its
+ * own function, pinctrl-mtk-common-v2.c mtk_xt_set_gpio_as_eint()). The sensor drives its interrupt
+ * line push-pull, so no bias is applied.
+ */
+&pio {
+	fingerprint_pins: fingerprint-pins {
+		pins-rst {
+			pinmux = <PINMUX_GPIO30__FUNC_GPIO30>;
+		};
+
+		pins-eint {
+			pinmux = <PINMUX_GPIO5__FUNC_GPIO5>;
+			bias-disable;
+			input-enable;
+		};
+	};
+};
+
+/*
+ * The Microtrust SOTER (iSee) secure world.
+ *
+ * Interrupts from the live stock device tree (poco-m5s/device-dump-2026-11-12/device-tree.dts,
+ * utos { compatible = "microtrust,utos"; interrupts = <0x00 0x5b 0x01 0x00 0x5c 0x01>; }) =
+ * GIC SPI 91 and 92, rising edge. The vendor SoC description of this chip declares the same two
+ * lines (scratch/poco-lunaris-kernel/arch/arm64/boot/dts/mediatek/mt6785.dts, comment "Microtrust
+ * SW IRQ number 91(123) ~ 95(127)"), so they are kernel-side facts, not loader ones. No register
+ * range: the secure world owns its registers, and the client driver registers a handler on the
+ * first line (platform_get_irq(pdev, 0)).
+ *
+ * No reserved-memory node here, on purpose:
+ *  - tee-reserved 0x70000000 (104 MiB), tee_ree_reserved 0x7ea00000 (12 MiB), tee-secmem
+ *    0x7f600000 (2 MiB) and tee-log 0xbfc00000 (128 KiB) are the bootloader's own reservations
+ *    (its mblock-11/13/14/15-* nodes in the live tree); describing them here would duplicate the
+ *    loader's memory map, and an overlapping node hangs the boot (see the reserved-memory comment
+ *    in mt6785-xiaomi-rosemary.dts);
+ *  - soter-shared-mem (8 MiB, 16 MiB aligned, 0x40000000..0x90000000 in the live tree) is not read
+ *    from the device tree by the carried driver either: it asks the secure world for base and size
+ *    (N_GET_RESERVED_MEM_PADDR/_SIZE, drivers/tee/microtrust/tee/soter/core.c:172-232, with
+ *    TEEI_DTS_RESERVED_MEM off at :41). Whether that range must additionally be kept out of
+ *    Linux's allocator is the one open question of this step; the build report says how to settle
+ *    it at the first boot.
+ *
+ * status = "disabled": the lead enables it for the first boot of the secure world. A wrong secure
+ * world description freezes the phone, so it must not happen on an unattended boot.
+ */
+/ {
+	utos: utos {
+		compatible = "microtrust,utos";
+		interrupts = <GIC_SPI 91 IRQ_TYPE_EDGE_RISING>,
+			     <GIC_SPI 92 IRQ_TYPE_EDGE_RISING>;
+		status = "disabled";
+	};
+};

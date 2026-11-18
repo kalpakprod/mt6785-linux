@@ -23,3 +23,7 @@ source "drivers/tee/tstee/Kconfig"
 source "drivers/tee/qcomtee/Kconfig"
 
 endif
+
+# Not part of CONFIG_TEE: this driver carries its own client API and its own
+# copy of the tee core, because the secure world it talks to is vendor specific.
+source "drivers/tee/microtrust/Kconfig"

@@ -16,6 +16,8 @@
 //! See [Voltage and current regulator API](https://docs.kernel.org/driver-api/regulator.html)
 //! for more information.
 
+pub mod driver;
+
 use crate::{
     bindings,
     device::{Bound, Device},

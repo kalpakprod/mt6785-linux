@@ -120,10 +120,19 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6785[] = {
 		.pwr_sta2nd_offs = MT6785_PWR_STATUS_2ND,
 		.ext_buck_iso_offs = 0x3b0,
 		.ext_buck_iso_mask = GENMASK(1, 0),
+		/*
+		 * The vendor's order for this domain, and the reason it is not the
+		 * order the other domains happen to use: spm_mtcmos_ctrl_md1() takes
+		 * step1_0, then step2_0, then step2_1, waiting for each
+		 * acknowledgement before the next
+		 * (drivers/clk/mediatek/clk-mt6785-pg.c:1009-1042). The array order here
+		 * IS the order the common code walks (scpsys_bus_protect_enable(),
+		 * mtk-pm-domains.c), so step2_0 must precede step2_1 for this domain.
+		 */
 		.bp_cfg = {
-			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(7)),
-			MT6785_BUS_PROT_INFRA_WR_TOPAXI_1(BIT(6)),
-			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(3) | BIT(4)),
+			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(7)),		/* step1_0 */
+			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(3) | BIT(4)),	/* step2_0 */
+			MT6785_BUS_PROT_INFRA_WR_TOPAXI_1(BIT(6)),		/* step2_1 */
 		},
 		.caps = MTK_SCPD_EXT_BUCK_ISO | MTK_SCPD_MODEM_PWRSEQ,
 	},
@@ -212,8 +221,16 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6785[] = {
 				MT8365_INFRA_NAO_TOPAXI_SI2_STA),
 			MT6785_BUS_PROT_INFRA_WR_TOPAXI(BIT(6)),
 		},
+		/*
+		 * Always on: a power cycle of this domain (s2idle) also loses what the
+		 * bootloader set up and mediatek-drm does not program yet (OVL/RDMA
+		 * fetch thresholds, PQ shadow and window registers, DSI extras), and
+		 * the pipe then stalls after resume. The display blocks and the SMI
+		 * stay clock-gated while the screen is off.
+		 */
 		.caps =
-			MTK_SCPD_STRICT_BUS_PROTECTION | MTK_SCPD_HAS_INFRA_NAO,
+			MTK_SCPD_STRICT_BUS_PROTECTION | MTK_SCPD_HAS_INFRA_NAO |
+			MTK_SCPD_ALWAYS_ON,
 	},
 	[MT6785_POWER_DOMAIN_VDEC] = {
 		.name = "vdec",

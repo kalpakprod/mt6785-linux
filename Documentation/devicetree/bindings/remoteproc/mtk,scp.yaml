@@ -17,6 +17,7 @@ properties:
   compatible:
     enum:
       - mediatek,mt8183-scp
+      - mediatek,mt6785-scp
       - mediatek,mt8186-scp
       - mediatek,mt8188-scp
       - mediatek,mt8188-scp-dual
@@ -166,6 +167,7 @@ allOf:
         compatible:
           enum:
             - mediatek,mt8183-scp
+            - mediatek,mt6785-scp
             - mediatek,mt8186-scp
             - mediatek,mt8188-scp
     then:

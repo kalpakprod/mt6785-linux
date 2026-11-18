@@ -1,0 +1,48 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000031638 <_ZN12SeninfDrvImp16setSeninfMuxCtrlE15SENINF_MUX_ENUMmm18SENINF_SOURCE_ENUM14TG_FORMAT_ENUMj>:
+   31638:      	stp	x29, x30, [sp, #-0x10]!
+   3163c:      	mov	x29, sp
+   31640:      	add	x9, x0, w1, uxtw #3
+   31644:      	mov	w11, #0x8               // =8
+   31648:      	cmp	w4, #0x8
+   3164c:      	mov	w8, w1
+   31650:      	cinc	w11, w11, ne
+   31654:      	cmp	w4, #0x1
+   31658:      	ldr	x9, [x9, #0xa8]
+   3165c:      	csinc	w11, w11, wzr, ne
+   31660:      	adrp	x1, 0x21000
+   31664:      	mov	w0, #0x3                // =3
+   31668:      	add	x1, x1, #0x4e5
+   3166c:      	mov	w4, w8
+   31670:      	ldr	w10, [x9, #0x4]
+   31674:      	and	w10, w10, #0xfffffff0
+   31678:      	orr	w10, w10, w11
+   3167c:      	str	w10, [x9, #0x4]
+   31680:      	ldr	w10, [x9, #0x4]
+   31684:      	bfi	w10, w6, #8, #2
+   31688:      	str	w10, [x9, #0x4]
+   3168c:      	ldr	w10, [x9, #0x8]
+   31690:      	bfi	w10, w2, #16, #1
+   31694:      	adrp	x2, 0x1b000
+   31698:      	add	x2, x2, #0x58b
+   3169c:      	str	w10, [x9, #0x8]
+   316a0:      	ldr	w10, [x9, #0x8]
+   316a4:      	bfi	w10, w3, #17, #1
+   316a8:      	adrp	x3, 0x24000
+   316ac:      	add	x3, x3, #0x9f8
+   316b0:      	str	w10, [x9, #0x8]
+   316b4:      	ldr	w10, [x9]
+   316b8:      	orr	w11, w10, #0x6
+   316bc:      	and	w10, w10, #0xfffffff9
+   316c0:      	str	w11, [x9]
+   316c4:      	str	w10, [x9]
+   316c8:      	ldr	w5, [x9, #0x4]
+   316cc:      	ldr	w6, [x9, #0x8]
+   316d0:      	bl	0xf17d0 <__android_log_print@plt>
+   316d4:      	mov	w0, wzr
+   316d8:      	ldp	x29, x30, [sp], #0x10
+   316dc:      	ret

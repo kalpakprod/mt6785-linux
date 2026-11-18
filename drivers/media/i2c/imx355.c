@@ -898,7 +898,11 @@ static int imx355_set_stream(struct v4l2_subdev *sd, int enable)
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 
 	if (enable) {
-		ret = pm_runtime_resume_and_get(imx355->dev);
+		dev_info(imx355->dev, "stream %s: %u lanes, link freq %lld Hz\n",
+		 enable ? "on" : "off", imx355->hwcfg->num_lanes,
+		 imx355->hwcfg->link_freq_menu);
+
+	ret = pm_runtime_resume_and_get(imx355->dev);
 		if (ret < 0)
 			goto err_unlock;
 
@@ -931,23 +935,6 @@ err_unlock:
 }
 
 /* Verify chip ID */
-static int imx355_identify_module(struct imx355 *imx355)
-{
-	int ret;
-	u64 val;
-
-	ret = cci_read(imx355->regmap, IMX355_REG_CHIP_ID, &val, NULL);
-	if (ret)
-		return ret;
-
-	if (val != IMX355_CHIP_ID) {
-		dev_err(imx355->dev, "chip id mismatch: %x!=%llx",
-			IMX355_CHIP_ID, val);
-		return -EIO;
-	}
-	return 0;
-}
-
 static const struct v4l2_subdev_core_ops imx355_subdev_core_ops = {
 	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
 	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
@@ -979,6 +966,41 @@ static const struct v4l2_subdev_internal_ops imx355_internal_ops = {
 	.init_state = imx355_entity_init_state,
 };
 
+static int imx355_identify_module(struct imx355 *imx355)
+{
+	unsigned int attempt;
+	int ret = -EIO;
+	u64 val = 0;
+
+	/*
+	 * This board's two camera sensors share their AVDD/DVDD rails, and a failing neighbour's
+	 * probe releases them while this one is mid-identification - the phone shows exactly that
+	 * ("Error reading reg 0x0016: -6" right after the other sensor's -5). Three attempts 3-5 ms
+	 * apart were measured to sit entirely inside the neighbour's failure window, so the window
+	 * is spanned instead: five attempts, 20 ms apart, about 100 ms in total.
+	 */
+	for (attempt = 0; attempt < 5; attempt++) {
+		ret = cci_read(imx355->regmap, IMX355_REG_CHIP_ID, &val, NULL);
+		if (!ret)
+			break;
+
+		dev_dbg(imx355->dev, "chip id read failed (%d), attempt %u\n", ret,
+			attempt + 1);
+		usleep_range(20000, 22000);
+	}
+
+	if (ret)
+		return ret;
+
+	if (val != IMX355_CHIP_ID) {
+		dev_err(imx355->dev, "chip id mismatch: %x!=%llx\n",
+			IMX355_CHIP_ID, val);
+		return -EIO;
+	}
+
+	return 0;
+}
+
 static int imx355_power_off(struct device *dev)
 {
 	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
@@ -993,6 +1015,26 @@ static int imx355_power_off(struct device *dev)
 	return 0;
 }
 
+/*
+ * DIAG (not for upstream): bring the rails up one by one, in the order the vendor's per-position
+ * hardware list gives for this camera, and log every step with its result - the enable return
+ * code, the voltage the regulator core reports, whether it says enabled, the reset line's value
+ * and the memory clock's rate. The vendor's order is MCLK, AVDD, DOVDD, DVDD, PDN, RST
+ * (drivers/misc/mediatek/imgsensor/src/mt6785/camera_hw/imgsensor_cfg_table.c, the MAIN2 entry at
+ * :60-70 - our IMX355 is cam2); the delays the vendor's hardware layer applies are not in the GPL
+ * drop, so the ones from 5-cameras.md §1.2 are kept: 1 ms after the rails, 5 ms after reset is
+ * released.
+ */
+static void imx355_diag_rail(struct device *dev, const char *name, struct regulator *r)
+{
+	int ret;
+
+	ret = regulator_enable(r);
+	dev_warn(dev, "DIAG: %s enable -> %d, %d uV, enabled %d\n", name, ret,
+		 regulator_get_voltage(r), regulator_is_enabled(r));
+	usleep_range(1000, 1200);
+}
+
 static int imx355_power_on(struct device *dev)
 {
 	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
@@ -1004,22 +1046,22 @@ static int imx355_power_on(struct device *dev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to enable clocks");
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(imx355_supplies),
-				    imx355->supplies);
-	if (ret) {
-		dev_err_probe(dev, ret, "failed to enable regulators");
-		goto error_disable_clocks;
-	}
+	dev_warn(dev, "DIAG: MCLK on -> %d, rate %lu Hz\n", ret,
+		 clk_get_rate(imx355->clk));
+
+	/* Vendor order: AVDD, DOVDD, DVDD (supplies 0, 2, 1 of this driver's bulk list). */
+	imx355_diag_rail(dev, "avdd", imx355->supplies[0].consumer);
+	imx355_diag_rail(dev, "dovdd", imx355->supplies[2].consumer);
+	imx355_diag_rail(dev, "dvdd", imx355->supplies[1].consumer);
 
 	usleep_range(1000, 2000);
+	dev_warn(dev, "DIAG: reset %s -> 0 (release), was %d\n",
+		 imx355->reset_gpio ? "present" : "absent",
+		 imx355->reset_gpio ? gpiod_get_value_cansleep(imx355->reset_gpio) : -1);
 	gpiod_set_value_cansleep(imx355->reset_gpio, 0);
 	usleep_range(10000, 11000);
 
 	return 0;
-
-error_disable_clocks:
-	clk_disable_unprepare(imx355->clk);
-	return ret;
 }
 
 static DEFINE_RUNTIME_DEV_PM_OPS(imx355_pm_ops, imx355_power_off,

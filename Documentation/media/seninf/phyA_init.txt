@@ -1,0 +1,204 @@
+
+libcam.halsensor.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000032208 <_ZN12SeninfDrvImp19hal_csirx_phyA_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE>:
+   32208:      	mov	w8, w1
+   3220c:      	sub	w9, w1, #0x1
+   32210:      	cmp	w9, #0x7
+   32214:      	b.hi	0x32234 <_ZN12SeninfDrvImp19hal_csirx_phyA_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x2c>
+   32218:      	adrp	x10, 0x26000
+   3221c:      	add	x10, x10, #0xad8
+   32220:      	ldr	x1, [x10, w9, sxtw #3]
+   32224:      	cmp	w8, #0x2
+   32228:      	b.le	0x32240 <_ZN12SeninfDrvImp19hal_csirx_phyA_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x38>
+   3222c:      	mov	w9, #0x1                // =1
+   32230:      	b	0x32250 <_ZN12SeninfDrvImp19hal_csirx_phyA_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x48>
+   32234:      	mov	x1, xzr
+   32238:      	cmp	w8, #0x2
+   3223c:      	b.gt	0x3222c <_ZN12SeninfDrvImp19hal_csirx_phyA_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x24>
+   32240:      	b.hi	0x3224c <_ZN12SeninfDrvImp19hal_csirx_phyA_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x44>
+   32244:      	lsl	w8, w8, #1
+   32248:      	add	w8, w8, #0x3
+   3224c:      	mov	w9, #0x2                // =2
+   32250:      	sbfiz	x8, x8, #3, #32
+   32254:      	add	x8, x8, #0xd8
+   32258:      	ldr	x10, [x0, x8]
+   3225c:      	add	x8, x8, #0x8
+   32260:      	subs	x9, x9, #0x1
+   32264:      	ldr	w11, [x10, #0x4]
+   32268:      	and	w11, w11, #0xfffffff8
+   3226c:      	orr	w11, w11, #0x4
+   32270:      	str	w11, [x10, #0x4]
+   32274:      	ldr	w11, [x10, #0x4]
+   32278:      	and	w11, w11, #0xffffff8f
+   3227c:      	orr	w11, w11, #0x40
+   32280:      	str	w11, [x10, #0x4]
+   32284:      	ldr	w11, [x10, #0x4]
+   32288:      	and	w11, w11, #0xfffff8ff
+   3228c:      	orr	w11, w11, #0x400
+   32290:      	str	w11, [x10, #0x4]
+   32294:      	ldr	w11, [x10, #0x4]
+   32298:      	and	w11, w11, #0xffff8fff
+   3229c:      	orr	w11, w11, #0x4000
+   322a0:      	str	w11, [x10, #0x4]
+   322a4:      	ldr	w11, [x10, #0x4]
+   322a8:      	and	w11, w11, #0xfff0ffff
+   322ac:      	orr	w11, w11, #0x80000
+   322b0:      	str	w11, [x10, #0x4]
+   322b4:      	ldr	w11, [x10, #0x18]
+   322b8:      	and	w11, w11, #0xffffffcf
+   322bc:      	orr	w11, w11, #0x10
+   322c0:      	str	w11, [x10, #0x18]
+   322c4:      	ldr	w11, [x10, #0x18]
+   322c8:      	and	w11, w11, #0xffcfffff
+   322cc:      	orr	w11, w11, #0x100000
+   322d0:      	str	w11, [x10, #0x18]
+   322d4:      	ldr	w11, [x10, #0x1c]
+   322d8:      	and	w11, w11, #0xffffffcf
+   322dc:      	orr	w11, w11, #0x10
+   322e0:      	str	w11, [x10, #0x1c]
+   322e4:      	ldr	w11, [x10, #0x1c]
+   322e8:      	and	w11, w11, #0xffcfffff
+   322ec:      	orr	w11, w11, #0x100000
+   322f0:      	str	w11, [x10, #0x1c]
+   322f4:      	ldr	w11, [x10, #0x20]
+   322f8:      	and	w11, w11, #0xffffffcf
+   322fc:      	orr	w11, w11, #0x10
+   32300:      	str	w11, [x10, #0x20]
+   32304:      	ldr	w11, [x10, #0x20]
+   32308:      	and	w11, w11, #0xffcfffff
+   3230c:      	orr	w11, w11, #0x100000
+   32310:      	str	w11, [x10, #0x20]
+   32314:      	ldr	w11, [x10, #0x18]
+   32318:      	and	w11, w11, #0xffffff3f
+   3231c:      	orr	w11, w11, #0x40
+   32320:      	str	w11, [x10, #0x18]
+   32324:      	ldr	w11, [x10, #0x18]
+   32328:      	and	w11, w11, #0xff3fffff
+   3232c:      	orr	w11, w11, #0x400000
+   32330:      	str	w11, [x10, #0x18]
+   32334:      	ldr	w11, [x10, #0x1c]
+   32338:      	and	w11, w11, #0xffffff3f
+   3233c:      	orr	w11, w11, #0x40
+   32340:      	str	w11, [x10, #0x1c]
+   32344:      	ldr	w11, [x10, #0x1c]
+   32348:      	and	w11, w11, #0xff3fffff
+   3234c:      	orr	w11, w11, #0x400000
+   32350:      	str	w11, [x10, #0x1c]
+   32354:      	ldr	w11, [x10, #0x20]
+   32358:      	and	w11, w11, #0xffffff3f
+   3235c:      	orr	w11, w11, #0x40
+   32360:      	str	w11, [x10, #0x20]
+   32364:      	ldr	w11, [x10, #0x20]
+   32368:      	and	w11, w11, #0xff3fffff
+   3236c:      	orr	w11, w11, #0x400000
+   32370:      	str	w11, [x10, #0x20]
+   32374:      	ldr	w11, [x10, #0x18]
+   32378:      	orr	w11, w11, #0x4
+   3237c:      	str	w11, [x10, #0x18]
+   32380:      	ldr	w11, [x10, #0x18]
+   32384:      	orr	w11, w11, #0x40000
+   32388:      	str	w11, [x10, #0x18]
+   3238c:      	ldr	w11, [x10, #0x1c]
+   32390:      	orr	w11, w11, #0x4
+   32394:      	str	w11, [x10, #0x1c]
+   32398:      	ldr	w11, [x10, #0x1c]
+   3239c:      	orr	w11, w11, #0x40000
+   323a0:      	str	w11, [x10, #0x1c]
+   323a4:      	ldr	w11, [x10, #0x20]
+   323a8:      	orr	w11, w11, #0x4
+   323ac:      	str	w11, [x10, #0x20]
+   323b0:      	ldr	w11, [x10, #0x20]
+   323b4:      	orr	w11, w11, #0x40000
+   323b8:      	str	w11, [x10, #0x20]
+   323bc:      	ldr	w11, [x10, #0x18]
+   323c0:      	and	w11, w11, #0xfffff0ff
+   323c4:      	orr	w11, w11, #0x300
+   323c8:      	str	w11, [x10, #0x18]
+   323cc:      	ldr	w11, [x10, #0x18]
+   323d0:      	and	w11, w11, #0xf0ffffff
+   323d4:      	orr	w11, w11, #0x3000000
+   323d8:      	str	w11, [x10, #0x18]
+   323dc:      	ldr	w11, [x10, #0x1c]
+   323e0:      	and	w11, w11, #0xfffff0ff
+   323e4:      	orr	w11, w11, #0x300
+   323e8:      	str	w11, [x10, #0x1c]
+   323ec:      	ldr	w11, [x10, #0x1c]
+   323f0:      	and	w11, w11, #0xf0ffffff
+   323f4:      	orr	w11, w11, #0x3000000
+   323f8:      	str	w11, [x10, #0x1c]
+   323fc:      	ldr	w11, [x10, #0x20]
+   32400:      	and	w11, w11, #0xfffff0ff
+   32404:      	orr	w11, w11, #0x300
+   32408:      	str	w11, [x10, #0x20]
+   3240c:      	ldr	w11, [x10, #0x20]
+   32410:      	and	w11, w11, #0xf0ffffff
+   32414:      	orr	w11, w11, #0x3000000
+   32418:      	str	w11, [x10, #0x20]
+   3241c:      	ldr	w11, [x10, #0x8]
+   32420:      	and	w11, w11, #0xffffffe0
+   32424:      	orr	w11, w11, #0x10
+   32428:      	str	w11, [x10, #0x8]
+   3242c:      	ldr	w11, [x10, #0x8]
+   32430:      	and	w11, w11, #0xffffe0ff
+   32434:      	orr	w11, w11, #0x1000
+   32438:      	str	w11, [x10, #0x8]
+   3243c:      	ldr	w11, [x10, #0x8]
+   32440:      	and	w11, w11, #0xffe0ffff
+   32444:      	orr	w11, w11, #0x100000
+   32448:      	str	w11, [x10, #0x8]
+   3244c:      	ldr	w11, [x10, #0x8]
+   32450:      	and	w11, w11, #0xe0ffffff
+   32454:      	orr	w11, w11, #0x10000000
+   32458:      	str	w11, [x10, #0x8]
+   3245c:      	ldr	w11, [x10, #0xc]
+   32460:      	and	w11, w11, #0xffffffe0
+   32464:      	orr	w11, w11, #0x10
+   32468:      	str	w11, [x10, #0xc]
+   3246c:      	ldr	w11, [x10, #0xc]
+   32470:      	and	w11, w11, #0xffffe0ff
+   32474:      	orr	w11, w11, #0x1000
+   32478:      	str	w11, [x10, #0xc]
+   3247c:      	ldr	w11, [x10, #0x30]
+   32480:      	and	w11, w11, #0xffffffe0
+   32484:      	orr	w11, w11, #0x8
+   32488:      	str	w11, [x10, #0x30]
+   3248c:      	ldr	w11, [x10, #0x30]
+   32490:      	and	w11, w11, #0xffffe0ff
+   32494:      	orr	w11, w11, #0x800
+   32498:      	str	w11, [x10, #0x30]
+   3249c:      	ldr	w11, [x10, #0x30]
+   324a0:      	and	w11, w11, #0xffe0ffff
+   324a4:      	orr	w11, w11, #0x80000
+   324a8:      	str	w11, [x10, #0x30]
+   324ac:      	ldr	w11, [x10, #0x3c]
+   324b0:      	and	w11, w11, #0xffffffe0
+   324b4:      	orr	w11, w11, #0x8
+   324b8:      	str	w11, [x10, #0x3c]
+   324bc:      	ldr	w11, [x10, #0x3c]
+   324c0:      	and	w11, w11, #0xffffe0ff
+   324c4:      	orr	w11, w11, #0x800
+   324c8:      	str	w11, [x10, #0x3c]
+   324cc:      	ldr	w11, [x10, #0x3c]
+   324d0:      	and	w11, w11, #0xffe0ffff
+   324d4:      	orr	w11, w11, #0x80000
+   324d8:      	str	w11, [x10, #0x3c]
+   324dc:      	ldr	w11, [x10, #0x28]
+   324e0:      	orr	w11, w11, #0x1
+   324e4:      	str	w11, [x10, #0x28]
+   324e8:      	ldr	w11, [x10, #0x34]
+   324ec:      	orr	w11, w11, #0x1
+   324f0:      	str	w11, [x10, #0x34]
+   324f4:      	ldr	w11, [x10, #0x30]
+   324f8:      	and	w11, w11, #0xe0ffffff
+   324fc:      	orr	w11, w11, #0x1000000
+   32500:      	str	w11, [x10, #0x30]
+   32504:      	ldr	w11, [x10, #0x3c]
+   32508:      	and	w11, w11, #0xe0ffffff
+   3250c:      	orr	w11, w11, #0x1000000
+   32510:      	str	w11, [x10, #0x3c]
+   32514:      	b.ne	0x32258 <_ZN12SeninfDrvImp19hal_csirx_phyA_initEN17NSCamCustomSensor19CUSTOM_CFG_CSI_PORTE+0x50>
+   32518:      	b	0xf1980 <_ZN12SeninfDrvImp5EfuseEm@plt>
+   3251c:      	udf	#0x0

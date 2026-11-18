@@ -417,6 +417,19 @@ impl<Ctx: DeviceContext> Device<Ctx> {
         Some(unsafe { &*fwnode_handle.cast() })
     }
 
+    /// Returns the device tree node of this device, when it has one.
+    ///
+    /// Drivers that describe their child nodes in the device tree need it: a regulator, a
+    /// subdevice or a port is a child of the device's own node, and that child is what a phandle
+    /// in a board's tree names.
+    pub fn of_node(&self) -> Option<*mut crate::bindings::device_node> {
+        // SAFETY: `self` is valid, and the node belongs to the device's own tree, so it lives at
+        // least as long as the device.
+        let node = unsafe { (*self.as_raw()).of_node };
+
+        (!node.is_null()).then_some(node)
+    }
+
     /// Returns the name of the device.
     ///
     /// This is the kobject name of the device, or its initial name if the kobject is not yet
