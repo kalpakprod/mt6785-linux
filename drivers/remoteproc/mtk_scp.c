@@ -556,6 +556,7 @@ static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
+static void mt6785_scp_log_ring_probe(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_sspm(struct mtk_scp *scp);
 static void mt6785_scp_log_rails(struct mtk_scp *scp);
@@ -864,6 +865,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	dev_err(scp->dev, "post-mortem: probe word %#x (expected %#x)\n",
 		readl(cfg + MT6785_SCP_PROBE_REG), MT6785_SCP_PROBE_VALUE);
 	mt6785_scp_scan_dram_text(scp);
+	mt6785_scp_log_ring_probe(scp, "at the timeout");
 	mt6785_scp_log_dram_state(scp, "at the timeout");
 	mt6785_scp_log_pages(scp, "at the timeout");
 	mt6785_scp_hexdump(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE,
@@ -2729,6 +2731,42 @@ static bool mt6785_scp_in_image(const u8 *raw, size_t raw_len, const char *s, si
  * driver already maps, only printable runs of 12 characters or more, at most 32 of them, and each
  * one is compared against the loaded image so that the image's own strings are not repeated.
  */
+/*
+ * Where the firmware's own logger ring could live, and whether anything is in it.
+ *
+ * The vendor's logger is `SCP_A_LOGGER_MEM_ID` of the scp_share pool, 0x180000 bytes
+ * (vendor mt6785.dts' scp_mem_tbl), and the pool on this phone is LK's "SCP-reserved"
+ * carve-out at 0x9fc00000 with 3 MiB (pl_lk.txt:1806). The exact offset inside it depends on
+ * which of the table's entries are enabled (vow is the first and this build may not have it),
+ * so both plausible starts are looked at: after the 1 MiB sensor block (0x100000) and after
+ * sensor + flp (0x139200), plus the start of the pool itself.
+ *
+ * Nothing here writes: three memremaps of RAM and a few words each, at the timeout.
+ */
+static void mt6785_scp_log_ring_probe(struct mtk_scp *scp, const char *when)
+{
+	static const unsigned int ofs[] = { 0x0, 0x100000, 0x139200 };
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(ofs); i++) {
+		unsigned int w, nz = 0;
+		u32 first[8];
+		void *m = memremap(MT6785_LK_REGION_PHYS + ofs[i], 0x100, MEMREMAP_WB);
+
+		if (!m)
+			continue;
+		for (w = 0; w < ARRAY_SIZE(first); w++) {
+			first[w] = readl(m + w * 4);
+			if (first[w])
+				nz++;
+		}
+		dev_info(scp->dev, "%s: pool+%#x: %u of %zu words non-zero, first: %#x %#x %#x %#x %#x %#x %#x %#x\n",
+			 when, ofs[i], nz, ARRAY_SIZE(first), first[0], first[1], first[2],
+			 first[3], first[4], first[5], first[6], first[7]);
+		memunmap(m);
+	}
+}
+
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 {
 	/* DRAM only: the loader region the driver already maps, and the reserved pool */
@@ -2741,6 +2779,8 @@ static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 	size_t raw_len = scp->image_size;
 	unsigned int r, found = 0;
 	const u8 *p;
+	size_t ofs;
+	bool same;
 
 	buf = kzalloc(SZ_1M, GFP_KERNEL);
 	if (!buf)
@@ -2764,17 +2804,30 @@ static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 
 				if (!regions[r].mapped && !mt6785_scp_log_like(str, n))
 					continue;
-				if (!mt6785_scp_in_image(raw, raw_len, str, n)) {
-					dev_err(scp->dev, "%s+%#zx: %.*s\n",
-						regions[r].what, (size_t)(p - buf),
-						(int)n, str);
+				/*
+				 * Whether a run is image data or text written at run time has to be
+				 * decided at the same offset: a string that sits in the image at the same
+				 * place is the image's, whatever the search over the whole file says
+				 * (the region may hold a different build of the same image than the one
+				 * this boot requested, which is what made the earlier scan unreadable).
+				 */
+				ofs = (size_t)(p - buf);
+				same = ofs + n <= raw_len && raw &&
+				       !memcmp(raw + ofs, str, n);
+				if (!same) {
+					dev_err(scp->dev, "%s+%#zx: %.*s%s\n",
+						regions[r].what, ofs, (int)n, str,
+						mt6785_scp_in_image(raw, raw_len, str, n) ?
+						"   [in the image elsewhere]" :
+						"   [written at run time]");
 					found++;
 				}
 				p += n;
 			}
 		}
 	}
-	dev_err(scp->dev, "DRAM text scan: %u line(s) not in the image\n", found);
+	dev_err(scp->dev, "DRAM text scan: %u line(s) differ from the image at their own offset\n",
+		found);
 	if (regions[1].base)
 		iounmap(regions[1].base);
 	kfree(buf);
