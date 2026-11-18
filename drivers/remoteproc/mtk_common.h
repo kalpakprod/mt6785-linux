@@ -113,6 +113,12 @@
 /* the SCP's own voltage-level word for the SPM, and its lowest-OPP value (scp_reg.h:51) */
 #define MT6785_SCP_VOL_LV		0x94
 #define MT6785_SCP_VOL_LV_OPP0		0x0
+/*
+ * The three fields the vendor's SPM resource request sets. This driver reads them out and writes
+ * nothing: stock reads 0x0 there with the SCP running (evidence/stock-session-2026-11/scp-up.txt),
+ * the vendor delivers the request by SMC and releases it at the ready IPI, and the SMC's id (the
+ * idle model the SCP maps to) is not spelled out in any source we hold. See scp_start()'s comment.
+ */
 #define MT6785_SPM_SCP_SRC_REQ		(BIT(4) | BIT(3) | BIT(1))
 /* topckgen's clock-config register the vendor touches for the pwrap oscillator gate: CK_CFG_6 */
 #define MT6785_TOP_CK_CFG_6		0x80

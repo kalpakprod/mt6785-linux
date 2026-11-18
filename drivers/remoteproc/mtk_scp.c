@@ -553,7 +553,6 @@ static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
 static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_sspm(struct mtk_scp *scp);
 static void mt6785_scp_log_rails(struct mtk_scp *scp);
-static void mt6785_scp_spm_request(struct mtk_scp *scp, bool on);
 static void mt6785_scp_vol_lv(struct mtk_scp *scp);
 /*
  * True when the SCP is already up. On MT6785 the loader starts it from the scp_a partition, so its
@@ -1319,16 +1318,19 @@ static int scp_start(struct rproc *rproc)
 	 *  release the reset bit                            scp_helper.c:619       yes
 	 *  wait for the ready IPI                           scp_helper.c:621-640   yes
 	 *  release that PLL once the IPI has arrived        scp_helper.c:350       yes
-	 *  request MAINPLL|CK_26M|AXI_BUS from the SPM      scp_dvfs.c:289-292     NO
+	 *  request MAINPLL|CK_26M|AXI_BUS from the SPM      scp_dvfs.c:289-292     no write
 	 *
-	 * The last line is the one thing stock does for the SCP that this driver never does, and
-	 * the SPM's SPM_SRC_REQ would carry it (mtk_spm_reg.h:66, bits at :823-837). Its
-	 * per-user accounting lives in software and the per-resource bit mapping is not spelled
-	 * out in the tree we hold, so no bit is invented here: the register is reported with the
-	 * rest of the SPM block and the request stays open until that mapping is established.
+	 * The last line is the one deviation this driver had on the vendor's boot path, and
+	 * NOTE 27's table is why it is gone: the vendor delivers that request by SMC, one call
+	 * per field (spm/mt6785/mtk_spm_resource_req_console.c:44-70,
+	 * SMC_CALL(PWR_CTRL_ARGS, id, PW_REG_SPM_F26M_REQ/INFRA_REQ/VRF18_REQ, 1)), and releases
+	 * it at the ready IPI; stock reads SPM_SRC_REQ (0xb8) as 0x0 with the SCP running. An
+	 * earlier version of this driver wrote bits 4|3|1 into that register and held them
+	 * through the boot, which is neither the delivery nor the state of the reference, and the
+	 * SMC's id - the idle model the SCP maps to - is not spelled out in any source we hold.
+	 * So nothing is written: the register is reported with the rest of the SPM block.
 	 */
 	mt6785_scp_vol_lv(scp);
-	mt6785_scp_spm_request(scp, true);
 
 	/*
 	 * The protection has to be down before the core is released, and this is the one place
@@ -1388,7 +1390,6 @@ static int scp_start(struct rproc *rproc)
 		 * still booting.
 		 */
 		mt6785_scp_awake(scp, true);
-		mt6785_scp_spm_request(scp, false);
 		/*
 		 * When the block stopped answering: the probe word, once every 100 ms, together
 		 * with the TCM's first word - the loader's vector table, then the firmware's -
@@ -1449,7 +1450,6 @@ static int scp_start(struct rproc *rproc)
 		goto stop;
 	}
 
-	mt6785_scp_spm_request(scp, false);
 	clk_disable(scp->clk);
 	if (run->fw_ver[0])
 		dev_info(dev, "SCP is ready. FW version %s\n", run->fw_ver);
@@ -2640,52 +2640,6 @@ static void mt6785_scp_log_rails(struct mtk_scp *scp)
 			 en > 0 ? "enabled" : en == 0 ? "disabled" : "unknown");
 		regulator_put(r);
 	}
-}
-
-/*
- * The SCP's resource request to the SPM, the one stock step this driver did not have
- * (vendor scp/mt6785/scp_dvfs.c:289-292: spm_resource_req(SCP, MAINPLL | CK_26M | AXI_BUS)).
- *
- * The translation from those resources to SPM_SRC_REQ fields is spelled out in the vendor's own
- * deliver function, spm_resource_req_console_deliver() (mt6785/mtk_spm_resource_req_console.c):
- * MTK_SPM_RES_EX_MAINPLL -> PW_REG_SPM_VRF18_REQ (:54-57), MTK_SPM_RES_EX_AXI_BUS ->
- * PW_REG_SPM_INFRA_REQ (:59-62), MTK_SPM_RES_EX_26M -> PW_REG_SPM_F26M_REQ (:64-67), and those
- * three names are the SPM_SRC_REQ fields REG_SPM_VRF18_REQ (bit 4), REG_SPM_INFRA_REQ (bit 3) and
- * REG_SPM_F26M_REQ (bit 1) in mtk_spm_reg.h:825-827 (the register is SPM 0xb8, :66). So the SCP's
- * request is bits 4 | 3 | 1.
- *
- * Written directly and read back: if the field does not take the value, it says the register is
- * not writable from the AP on this SoC - which is itself the answer, and it is logged.
- *
- * The vendor's own delivery path for these three fields is a secure call, not a write: every one of
- * them goes through SMC_CALL(PWR_CTRL_ARGS, id, PW_REG_..., value)
- * (mt6785/mtk_spm_resource_req_console.c:44-67), which expands to
- * arm_smccc_smc(MTK_SIP_KERNEL_SPM_PWR_CTRL_ARGS, id, arg1, arg2, 0, ...)
- * (spm_v4/mtk_spm_internal.h:24-32) with the function id 0x82000224 | MTK_SIP_SMC_AARCH_BIT
- * (mt-plat/mtk_secure_api.h:72-73). The SPM kick this tree already carries uses the same wrapper
- * shape with the neighbouring id, MTK_SIP_KERNEL_SPM_ARGS (0x8200022a, :93-94). So if the direct
- * write above is refused, the answer is to deliver these three through that call, with id being the
- * power-control id of the idle model (SPM_PWR_CTRL_IDLE_BUS26M and friends) and the register index
- * PW_REG_SPM_F26M_REQ / INFRA_REQ / VRF18_REQ.
- */
-static void mt6785_scp_spm_request(struct mtk_scp *scp, bool on)
-{
-	struct regmap *spm = scp->spm_regmap;
-	u32 before, after, want;
-
-	if (IS_ERR_OR_NULL(spm))
-		return;
-	if (regmap_read(spm, MT6785_SPM_SRC_REQ, &before))
-		return;
-
-	want = on ? before | MT6785_SPM_SCP_SRC_REQ : before & ~MT6785_SPM_SCP_SRC_REQ;
-	regmap_write(spm, MT6785_SPM_SRC_REQ, want);
-	if (regmap_read(spm, MT6785_SPM_SRC_REQ, &after))
-		return;
-
-	dev_info(scp->dev, "SPM src_req %s: %#x -> %#x (want %#x)%s\n",
-		 on ? "request" : "release", before, after, want,
-		 after == want ? "" : " - the write did not take");
 }
 
 /*
