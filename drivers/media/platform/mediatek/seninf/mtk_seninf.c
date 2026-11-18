@@ -45,8 +45,20 @@
 #define SENINF_CTRL			0x0200
 #define SENINF_CSI2_CTRL		0x0210
 #define SENINF_CSI2_EN			0x0A00
-#define SENINF_CSI2_PACKET_CNT		0x0AC8
-#define SENINF_CSI2_ERR_CNT		0x0ADC
+/*
+ * The two counters, named as this phone's own vendor driver names them
+ * (los-mt6785, drivers/misc/mediatek/imgsensor/src/common/v1_1/seninf.c:218-223):
+ * 0x0AC8 is the CSI-2 interrupt status, cleared by writing ones, and 0x0ADC is the
+ * packet counter. This driver had them the other way round, so every "packet cnt 0"
+ * reading in the trials was the interrupt-status word, and the real counter was never
+ * looked at.
+ */
+#define SENINF_CSI2_IRQ_STATUS		0x0AC8
+#define SENINF_CSI2_PACKET_CNT		0x0ADC
+/* the receiver's own interrupt status and the lane/frame state words */
+#define SENINF_CSI2_INT_STATUS		0x0A14
+#define SENINF_CSI2_LNRD_FSM		0x0A2C
+#define SENINF_CSI2_FRAME_LINE_NUM	0x0A30
 #define SENINF_MUX_IRQ_STATUS		0x0D18
 #define SENINF_MUX_SIZE			0x0D30
 
@@ -174,20 +186,21 @@ static int mtk_seninf_packet_cnt_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(mtk_seninf_packet_cnt);
 
-static int mtk_seninf_err_cnt_show(struct seq_file *s, void *unused)
+static int mtk_seninf_int_status_show(struct seq_file *s, void *unused)
 {
 	struct mtk_seninf *seninf = s->private;
-	u32 val;
 
 	pm_runtime_get_sync(seninf->dev);
-	val = readl(seninf_inst(seninf) + SENINF_CSI2_ERR_CNT);
+	seq_printf(s, "int_status 0x%08x irq_status 0x%08x lnrd_fsm 0x%08x frame_line 0x%08x\n",
+		   readl(seninf_inst(seninf) + SENINF_CSI2_INT_STATUS),
+		   readl(seninf_inst(seninf) + SENINF_CSI2_IRQ_STATUS),
+		   readl(seninf_inst(seninf) + SENINF_CSI2_LNRD_FSM),
+		   readl(seninf_inst(seninf) + SENINF_CSI2_FRAME_LINE_NUM));
 	pm_runtime_put_autosuspend(seninf->dev);
-
-	seq_printf(s, "%u\n", val);
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(mtk_seninf_err_cnt);
+DEFINE_SHOW_ATTRIBUTE(mtk_seninf_int_status);
 
 static int mtk_seninf_clear_write(void *data, u64 val)
 {
@@ -197,8 +210,7 @@ static int mtk_seninf_clear_write(void *data, u64 val)
 		return 0;
 
 	pm_runtime_get_sync(seninf->dev);
-	writel(~0U, seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT);
-	writel(~0U, seninf_inst(seninf) + SENINF_CSI2_ERR_CNT);
+	writel(~0U, seninf_inst(seninf) + SENINF_CSI2_IRQ_STATUS);
 	writel(~0U, seninf->base + SENINF_MUX_IRQ_STATUS);
 	pm_runtime_put_autosuspend(seninf->dev);
 
@@ -216,7 +228,10 @@ static int mtk_seninf_regs_show(struct seq_file *s, void *unused)
 		{ "SENINF_CSI2_CTRL", SENINF_CSI2_CTRL },
 		{ "SENINF_CSI2_EN", SENINF_CSI2_EN },
 		{ "SENINF_CSI2_PACKET_CNT", SENINF_CSI2_PACKET_CNT },
-		{ "SENINF_CSI2_ERR_CNT", SENINF_CSI2_ERR_CNT },
+		{ "SENINF_CSI2_IRQ_STATUS", SENINF_CSI2_IRQ_STATUS },
+		{ "SENINF_CSI2_INT_STATUS", SENINF_CSI2_INT_STATUS },
+		{ "SENINF_CSI2_LNRD_FSM", SENINF_CSI2_LNRD_FSM },
+		{ "SENINF_CSI2_FRAME_LINE_NUM", SENINF_CSI2_FRAME_LINE_NUM },
 		{ "SENINF_MUX_IRQ_STATUS", SENINF_MUX_IRQ_STATUS },
 		{ "SENINF_MUX_SIZE", SENINF_MUX_SIZE },
 		/* The routing the HAL would program: top mux, cam mux and the cam mux checkers. */
@@ -248,8 +263,8 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 
 	debugfs_create_file("packet_cnt", 0444, seninf->debugfs, seninf,
 			    &mtk_seninf_packet_cnt_fops);
-	debugfs_create_file("err_cnt", 0444, seninf->debugfs, seninf,
-			    &mtk_seninf_err_cnt_fops);
+	debugfs_create_file("int_status", 0444, seninf->debugfs, seninf,
+			    &mtk_seninf_int_status_fops);
 	debugfs_create_file("regs", 0444, seninf->debugfs, seninf,
 			    &mtk_seninf_regs_fops);
 	debugfs_create_file("clear", 0200, seninf->debugfs, seninf,
@@ -283,11 +298,12 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 
 	/* This instance first, then one line per receiver port of the block. */
 	dev_info(seninf->dev,
-		 "500 ms in: CSI2_EN 0x%08x, packet cnt %u, err cnt %u, INTSTA 0x%08x\n",
+		 "500 ms in: CSI2_EN 0x%08x, pkt %u, irq_status 0x%08x, int_status 0x%08x, frame_line 0x%08x\n",
 		 readl(seninf_inst(seninf) + SENINF_CSI2_EN),
 		 readl(seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT),
-		 readl(seninf_inst(seninf) + SENINF_CSI2_ERR_CNT),
-		 readl(seninf_inst(seninf) + 0x0ac8));
+		 readl(seninf_inst(seninf) + SENINF_CSI2_IRQ_STATUS),
+		 readl(seninf_inst(seninf) + SENINF_CSI2_INT_STATUS),
+		 readl(seninf_inst(seninf) + SENINF_CSI2_FRAME_LINE_NUM));
 
 	/*
 	 * The top route and the CSI-2 bank once more, now that the sensor is really sending: a word
@@ -312,12 +328,13 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 		void __iomem *p = seninf->base + 0x1000 * port;
 
 		dev_info(seninf->dev,
-			 "instance %u (0x%08llx): CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, pkt %u, err %u, INTSTA 0x%08x\n",
+			 "instance %u (0x%08llx): CSI2_CTRL 0x%08x, mask 0x%08x, pkt %u, irq 0x%08x, int 0x%08x\n",
 			 port + 1,
 			 (unsigned long long)seninf->base_pa + 0x1000 * port,
 			 readl(p + SENINF_CSI2_CTRL), readl(p + SENINF_CSI2_EN),
-			 readl(p + SENINF_CSI2_PACKET_CNT), readl(p + SENINF_CSI2_ERR_CNT),
-			 readl(p + 0x0ac8));
+			 readl(p + SENINF_CSI2_PACKET_CNT),
+			 readl(p + SENINF_CSI2_IRQ_STATUS),
+			 readl(p + SENINF_CSI2_INT_STATUS));
 	}
 
 	/*
@@ -344,9 +361,10 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 		writel((readl(seninf->base + top) & ~0x2u) | 0x1u, seninf->base + top);
 		msleep(80);
 		dev_info(seninf->dev,
-			 "stage 1, route re-asserted after the sensor started: pkt %u err %u FSM 0x%08x\n",
+			 "stage 1, route re-asserted after the sensor started: pkt %u int 0x%08x FSM 0x%08x\n",
 			 readl(in + SENINF_CSI2_PACKET_CNT),
-			 readl(in + SENINF_CSI2_ERR_CNT), readl(in + 0x0a2c));
+			 readl(in + SENINF_CSI2_INT_STATUS),
+			 readl(in + SENINF_CSI2_LNRD_FSM));
 
 		if (readl(in + SENINF_CSI2_PACKET_CNT) || !seninf->mipi_sel)
 			return;
@@ -356,9 +374,10 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 		gpiod_set_value_cansleep(seninf->mipi_sel, flipped);
 		msleep(80);
 		dev_info(seninf->dev,
-			 "stage 2, mipi switch %d -> %d: pkt %u err %u FSM 0x%08x\n",
+			 "stage 2, mipi switch %d -> %d: pkt %u int 0x%08x FSM 0x%08x\n",
 			 cur, flipped, readl(in + SENINF_CSI2_PACKET_CNT),
-			 readl(in + SENINF_CSI2_ERR_CNT), readl(in + 0x0a2c));
+			 readl(in + SENINF_CSI2_INT_STATUS),
+			 readl(in + SENINF_CSI2_LNRD_FSM));
 
 		if (readl(in + SENINF_CSI2_PACKET_CNT))
 			return;
@@ -366,9 +385,10 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 		gpiod_set_value_cansleep(seninf->mipi_sel, cur);
 		msleep(80);
 		dev_info(seninf->dev,
-			 "stage 3, mipi switch back to %d: pkt %u err %u FSM 0x%08x\n",
+			 "stage 3, mipi switch back to %d: pkt %u int 0x%08x FSM 0x%08x\n",
 			 cur, readl(in + SENINF_CSI2_PACKET_CNT),
-			 readl(in + SENINF_CSI2_ERR_CNT), readl(in + 0x0a2c));
+			 readl(in + SENINF_CSI2_INT_STATUS),
+			 readl(in + SENINF_CSI2_LNRD_FSM));
 	}
 
 }
@@ -444,8 +464,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			phy_power_off(seninf->phy[phy_idx]);
 		pm_runtime_put_autosuspend(seninf->dev);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
-			 readl(seninf->base + SENINF_CSI2_PACKET_CNT),
-			 readl(seninf->base + SENINF_CSI2_ERR_CNT));
+			 readl(seninf->base + SENINF_CSI2_PACKET_CNT));
 		return 0;
 	}
 
@@ -640,11 +659,11 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	dev_info(seninf->dev,
-		 "stream on (instance %u, 0x%08llx): mask 0x%08x, +0x04 0x%08x, pkt %u, err %u, dbg 0x%08x\n",
+		 "stream on (instance %u, 0x%08llx): mask 0x%08x, +0x04 0x%08x, pkt %u, int 0x%08x, dbg 0x%08x\n",
 		 seninf_idx + 1, (unsigned long long)seninf->inst_pa,
 		 readl(inst + SENINF_CSI2_EN), readl(inst + 0x0a04),
-		 readl(inst + SENINF_CSI2_PACKET_CNT), readl(inst + SENINF_CSI2_ERR_CNT),
-		 readl(inst + 0x0a1c));
+		 readl(inst + SENINF_CSI2_PACKET_CNT),
+		 readl(inst + SENINF_CSI2_INT_STATUS), readl(inst + 0x0a1c));
 
 	/*
 	 * The routing at the moment the stream starts: the top mux decides which receiver
