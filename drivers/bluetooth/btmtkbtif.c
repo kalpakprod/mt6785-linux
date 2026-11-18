@@ -223,6 +223,22 @@ drop:
  * what open() does (RESULT #22). The write itself is MediaTek's own command
  * 0xfc1a, the same one drivers/bluetooth/btmtk.c uses.
  */
+/*
+ * bdaddr_t is little-endian - b[0] is the *last* octet a person reads - and so
+ * is the vendor's 0xfc1a write, which takes the same layout as the HCI events.
+ * The nvdata record and the one-line override hold the address the other way
+ * round (xx:xx:xx:xx:xx:xx), so copying one into the other verbatim advertises
+ * the address reversed: lead note 32 measured bluetoothctl showing
+ * xx:xx:xx:xx:xx:xx while the factory label says xx:xx:xx:xx:xx:xx.
+ */
+static void bdaddr_from_ether(bdaddr_t *dst, const u8 *src)
+{
+	int i;
+
+	for (i = 0; i < ETH_ALEN; i++)
+		dst->b[i] = src[ETH_ALEN - 1 - i];
+}
+
 static int btmtkbtif_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)
 {
 	struct sk_buff *skb;
@@ -289,7 +305,7 @@ static int btmtkbtif_apply_bdaddr(struct hci_dev *hdev)
 
 	err = btmtkbtif_set_bdaddr(hdev, &hdev->bdaddr);
 	if (!err)
-		bt_dev_info(hdev, "BD_ADDR %pM applied", &hdev->bdaddr);
+		bt_dev_info(hdev, "BD_ADDR %pMR applied", &hdev->bdaddr);
 	else
 		bt_dev_warn(hdev, "BD_ADDR write failed (%d)", err);
 
@@ -393,8 +409,11 @@ static int btmtkbtif_open(struct hci_dev *hdev)
 	 * copy happens here: writing it is setup()'s job, because no HCI
 	 * command may be sent from open().
 	 */
-	if (mtk_nvdata_get_bt_addr(addr))
-		bacpy(&hdev->bdaddr, (bdaddr_t *)addr);
+	if (mtk_nvdata_get_bt_addr(addr)) {
+		bdaddr_from_ether(&hdev->bdaddr, addr);
+		bt_dev_info(hdev, "BD_ADDR %pMR from the factory record",
+			    &hdev->bdaddr);
+	}
 
 	btdev->rx_thread = kthread_run(btmtkbtif_rx_kthread, btdev,
 				       "btmtkbtif-rx");

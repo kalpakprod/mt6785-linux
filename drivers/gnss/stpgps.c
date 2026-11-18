@@ -110,10 +110,11 @@
  * How much of the first frames of each direction reaches the log. The daemon's
  * boot exchange is short and its framing is undocumented: a session that dies
  * after one 116-byte frame and a 20-byte answer cannot be explained from byte
- * counters alone, so the first few frames of each direction are printed raw.
+ * counters alone, so the first frames of each direction are printed raw, in
+ * full - 168 bytes covers the largest GPS STP frame the vendor's daemon sends.
  */
 #define STPGPS_DUMP_FRAMES	4
-#define STPGPS_DUMP_BYTES	48
+#define STPGPS_DUMP_BYTES	168
 
 /*
  * The vendor driver tracks the chip's reset from the WMT notification
