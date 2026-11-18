@@ -4558,32 +4558,42 @@ u_int8_t kalRetrieveNetworkAddress(IN struct GLUE_INFO *prGlueInfo,
 		DBGLOG(INIT, INFO,
 			"MAC address: " MACSTR, MAC2STR(prMacAddr));
 #else
-		if (prGlueInfo->fgNvramAvailable == FALSE) {
-			DBGLOG(INIT, INFO, "glLoadNvram fail\n");
-			return FALSE;
-		}
-		kalMemCopy(prMacAddr, prGlueInfo->rRegInfo.aucMacAddr,
-			   PARAM_MAC_ADDR_LEN * sizeof(uint8_t));
-
 		/*
-		 * This port: the nvram blob normally holds no address, because
-		 * pushing it in is a job Android's Wi-Fi HAL does through a proc
-		 * entry and nobody does it here (the record on this phone is
-		 * 00:00:00:00:00:00). wlanUpdateNetworkAddress() then falls back to
-		 * a per-boot address built from the kernel timer
-		 * ("00:08:22" + kalGetTimeTick()), which changes on every boot.
-		 * Ask the nvdata driver for a persistent address first: the factory
-		 * record if this phone has one, else the owner's one-line override
-		 * (/lib/firmware/rosemary/wifi_mac). When neither exists, the old
-		 * behaviour stands.
+		 * This port, in the order the address is to be trusted:
+		 *
+		 *   1. the nvram blob, when something pushed one in - on stock that is
+		 *      Android's Wi-Fi HAL through the proc entry, and it holds the
+		 *      factory address;
+		 *   2. the nvdata driver: the factory WIFI record of the phone's own
+		 *      nvdata copy, or the owner's override file
+		 *      (/lib/firmware/rosemary/wifi_mac), or a stable address derived
+		 *      from the device serial;
+		 *   3. nothing - and then wlanUpdateNetworkAddress() builds its
+		 *      "00:08:22" + kalGetTimeTick() address, which changes on every
+		 *      boot.
+		 *
+		 * Until h7 step 2 sat below the fgNvramAvailable test, which is always
+		 * FALSE here because nobody pushes a blob in, so the driver returned
+		 * "no address" before ever asking - that is why lead/comb9 still came up
+		 * with a per-boot address even with the h5 hook in place.
 		 */
-		if (!is_valid_ether_addr(prMacAddr) &&
-		    mtk_nvdata_get_wifi_mac(prMacAddr))
+		if (prGlueInfo->fgNvramAvailable != FALSE) {
+			kalMemCopy(prMacAddr, prGlueInfo->rRegInfo.aucMacAddr,
+				   PARAM_MAC_ADDR_LEN * sizeof(uint8_t));
+			if (is_valid_ether_addr(prMacAddr))
+				return TRUE;
+		}
+
+		if (mtk_nvdata_get_wifi_mac(prMacAddr)) {
 			DBGLOG(INIT, INFO,
 			       "MAC address from nvdata: " MACSTR,
 			       MAC2STR(prMacAddr));
+			return TRUE;
+		}
+
+		DBGLOG(INIT, INFO, "glLoadNvram fail\n");
+		return FALSE;
 #endif
-		return TRUE;
 #endif
 	} else {
 		COPY_MAC_ADDR(prMacAddr, prGlueInfo->rMacAddrOverride);
