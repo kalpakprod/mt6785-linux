@@ -548,6 +548,7 @@ static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static void mt6785_scp_mpu_probe(struct mtk_scp *scp);
 static void mt6785_scp_dram_probe(struct mtk_scp *scp);
 static void mt6785_scp_dram_probe_check(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_clock_state(struct mtk_scp *scp, const char *when);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_set(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
@@ -1493,6 +1494,7 @@ static int scp_start(struct rproc *rproc)
 
 		mt6785_scp_log_wdt_sleep(scp, "at the timeout");
 		mt6785_scp_dram_probe_check(scp, "at the timeout");
+		mt6785_scp_clock_state(scp, "at the timeout");
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
 		mt6785_scp_awake(scp, false);
@@ -2754,6 +2756,43 @@ static bool mt6785_scp_in_image(const u8 *raw, size_t raw_len, const char *s, si
  *
  * Nothing here writes: three memremaps of RAM and a few words each, at the timeout.
  */
+/*
+ * The SCP's own clock at the timeout, and the six parents the firmware may switch to.
+ *
+ * comb23 read CK_CFG_0 as 0x20502, i.e. select 2: the firmware reprogrammed its own mux, which
+ * means it ran far enough to do it. Select 2 of scp_parents[] (clk-mt6785-top.c:142-150) is
+ * mainpll_d2_d4, the parent our bring-up enables as "SCP clock parent 2"; the vendor's OPP
+ * table asks for 165 MHz on mux 2 (vendor mt6785.dts dvfs-opp row 3). This prints the select,
+ * the power-down bit, the rate the clock framework reports for the selected parent and all six
+ * parents' rates at that moment - a parent that silently went away would show as a rate of 0.
+ */
+static void mt6785_scp_clock_state(struct mtk_scp *scp, const char *when)
+{
+	void __iomem *clk = scp->cluster->reg_base + MT6785_SCP_CLK_BLOCK;
+	unsigned int i, sel = 0;
+	u32 cfg0 = 0;
+	struct regmap *topckgen;
+
+	topckgen = syscon_regmap_lookup_by_phandle(scp->dev->of_node, "mediatek,topckgen");
+	if (!IS_ERR(topckgen))
+		regmap_read(topckgen, MT6785_TOP_CK_CFG_0, &cfg0);
+
+	dev_info(scp->dev, "%s: CK_CFG_0 %#x (scp sel %u, pdn %u), clk_sw %#x clk_en %#x ctrl24 %#x\n",
+		 when, cfg0, (cfg0 >> 16) & 0x7, (cfg0 >> 23) & 0x1,
+		 readl(clk + MT6785_SCP_CLK_SW_SEL),
+		 readl(clk + MT6785_SCP_CLK_ENABLE),
+		 readl(clk + MT6785_SCP_CLK_CTRL_24));
+
+	for (i = 0; i < scp->cluster->pll_num; i++) {
+		if (!scp->cluster->pll[i])
+			continue;
+		dev_info(scp->dev, "%s: SCP parent %u rate %lu Hz%s\n", when, i + 1,
+			 clk_get_rate(scp->cluster->pll[i]),
+			 ((cfg0 >> 16) & 0x7) == i + 1 ? "  <- the mux selects this one" : "");
+	}
+	dev_info(scp->dev, "%s: the mux rate itself is %lu Hz\n", when, clk_get_rate(scp->clk));
+}
+
 static void mt6785_scp_log_ring_probe(struct mtk_scp *scp, const char *when)
 {
 	static const unsigned int ofs[] = { 0x0, 0x100000, 0x139200 };
@@ -2799,9 +2838,12 @@ static void mt6785_scp_diff_region(struct mtk_scp *scp)
 	u8 *buf;
 	size_t total = MT6785_SCP_FIRMWARE_TCM_MAX + MT6785_LK_DRAM_OFS;
 	unsigned int s;
+	size_t total_runs = 0;
 
-	if (!mt6785_region_ref.img || !mt6785_region_ref.fw_len)
+	if (!mt6785_region_ref.img || !mt6785_region_ref.fw_len) {
+		dev_err(scp->dev, "diff: no staged reference kept, nothing to compare\n");
 		return;
+	}
 
 	slices[0].region_ofs = MT6785_LK_FIRMWARE_OFS;
 	slices[0].len = mt6785_region_ref.fw_len;
@@ -2812,9 +2854,23 @@ static void mt6785_scp_diff_region(struct mtk_scp *scp)
 	slices[1].img_ofs = mt6785_region_ref.dram_ofs;
 	slices[1].name = "dram part";
 
-	buf = kzalloc(total, GFP_KERNEL);
-	if (!buf)
+	/*
+	 * kvzalloc: 1.8 MiB does not come from the slab for an allocation that has to succeed on
+	 * the failure path - an earlier version used kzalloc and returned silently when it could
+	 * not, which is why one trial printed no report at all.
+	 */
+	/* the four areas' checksums as they stand now, beside the ones printed before the release */
+	dev_err(scp->dev, "diff: crc now - loader %#010x, firmware %#010x, dram %#010x, backup %#010x\n",
+		mt6785_scp_crc_region(scp, 0, MT6785_SCP_PROBE_OFS),
+		mt6785_scp_crc_region(scp, MT6785_LK_FIRMWARE_OFS, MT6785_SCP_FIRMWARE_TCM_MAX),
+		mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS, MT6785_LK_DRAM_SIZE),
+		mt6785_scp_crc_region(scp, MT6785_LK_DRAM_OFS * 2, MT6785_LK_DRAM_SIZE));
+
+	buf = kvzalloc(total, GFP_KERNEL);
+	if (!buf) {
+		dev_err(scp->dev, "diff: no memory for the %zu-byte comparison\n", total);
 		return;
+	}
 
 	for (s = 0; s < ARRAY_SIZE(slices); s++) {
 		const u8 *img = mt6785_region_ref.img + slices[s].img_ofs;
@@ -2847,8 +2903,11 @@ static void mt6785_scp_diff_region(struct mtk_scp *scp)
 		}
 		dev_err(scp->dev, "%s: %zu byte(s) compared, %zu run(s) of damage%s\n",
 			slices[s].name, n, runs, runs == 8 ? " (first eight shown)" : "");
+		total_runs += runs;
 	}
 	kfree(buf);
+	dev_err(scp->dev, "diff: %zu range(s) of damage in the staged slices%s\n",
+		total_runs, total_runs ? "" : " - nothing wrote over the image in this run");
 }
 
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
