@@ -95,6 +95,11 @@
 static int csi_port = 2;
 module_param(csi_port, int, 0644);
 
+/* Written by the sweep: the receiver the driver serves, and the parameter's own value. */
+struct mtk_seninf;
+static struct mtk_seninf *seninf_sweep;
+static int sweep_state;
+
 /*
  * The board's MIPI switch level, forced instead of taken from the sensor node's mipi-sel-level: -1
  * keeps the device tree's value. The front and rear 8 MP sensors share CSI port 2 through this
@@ -360,6 +365,97 @@ static u32 mtk_seninf_top_offset(unsigned int idx)
 		return 0x64;
 	return 0x68;
 }
+
+/*
+ * The sweep: one flash, one table. Written through /sys/module/mtk_seninf/parameters/sweep while a stream
+ * runs, it walks every port the HAL's table names with every lane mask this receiver accepts, and prints
+ * one line per combination - port, lanes, mask, and what the receiver counted. That is the whole of what
+ * is left: the sensor is proven to produce frames (DIAG frames counting), the clocks and gates are alive,
+ * so either the port is not the one the board routes (the driver’s own assumption) or the lane count /
+ * mask is not what the sensor sends.
+ *
+ * Ports other than the streaming one are powered on for their row of the table and powered off after it,
+ * so a row can only be attributed to the port it names; the streaming port is left configured as the
+ * stream expects.
+ */
+static const u32 mtk_seninf_sweep_masks[] = { 0x1, 0x3, 0x7, 0xf };
+static const unsigned int mtk_seninf_sweep_lanes[] = { 1, 2, 3, 4 };
+
+static void mtk_seninf_sweep(void)
+{
+	unsigned int p, m;
+	unsigned int live = clamp(csi_port, 0, 2);
+
+	if (!seninf_sweep)
+		return;
+	if (!seninf_sweep->inst) {
+		dev_info(seninf_sweep->dev, "sweep: no stream is running, nothing to sweep\n");
+		return;
+	}
+
+	for (p = 0; p < ARRAY_SIZE(csi_ports); p++) {
+		unsigned int idx = csi_ports[p].seninf_index;
+		unsigned int ph = csi_ports[p].phy_index;
+		void __iomem *in = seninf_sweep->base + 0x1000 * idx;
+		u32 top = mtk_seninf_top_offset(idx);
+
+		if (seninf_sweep->phy[ph] && p != live) {
+			if (phy_set_mode_ext(seninf_sweep->phy[ph], PHY_MODE_MIPI_DPHY, 4) ||
+			    phy_power_on(seninf_sweep->phy[ph]))
+				continue;
+		}
+
+		writel((readl(seninf_sweep->base + top) & ~0x2u) | 0x1u,
+		       seninf_sweep->base + top);
+
+		for (m = 0; m < ARRAY_SIZE(mtk_seninf_sweep_masks); m++) {
+			writel(mtk_seninf_sweep_masks[m], in + 0x0a00);
+			msleep(120);
+			dev_info(seninf_sweep->dev,
+				 "sweep: port %u (block %s, receiver %u) lanes %u mask 0x%x -> pkt %u irq 0x%08x int 0x%08x fsm 0x%08x\n",
+				 p,
+				 seninf_sweep->phy[ph] ? dev_name(&seninf_sweep->phy[ph]->dev) : "none",
+				 idx + 1, mtk_seninf_sweep_lanes[m], mtk_seninf_sweep_masks[m],
+				 readl(in + SENINF_CSI2_PACKET_CNT),
+				 readl(in + SENINF_CSI2_IRQ_STATUS),
+				 readl(in + SENINF_CSI2_INT_STATUS),
+				 readl(in + SENINF_CSI2_LNRD_FSM));
+		}
+
+		if (seninf_sweep->phy[ph] && p != live)
+			phy_power_off(seninf_sweep->phy[ph]);
+	}
+
+	/* Put the streaming port back the way the stream left it. */
+	{
+		unsigned int idx = csi_ports[live].seninf_index;
+		void __iomem *in = seninf_sweep->base + 0x1000 * idx;
+
+		writel(0xf, in + 0x0a00);
+		dev_info(seninf_sweep->dev, "sweep: done, port %u back to mask 0xf\n", live);
+	}
+}
+
+static int mtk_seninf_sweep_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = kstrtoint(val, 0, &sweep_state);
+
+	if (ret)
+		return ret;
+	if (sweep_state)
+		mtk_seninf_sweep();
+
+	return 0;
+}
+
+static const struct kernel_param_ops mtk_seninf_sweep_ops = {
+	.set = mtk_seninf_sweep_set,
+	.get = param_get_int,
+};
+
+module_param_cb(sweep, &mtk_seninf_sweep_ops, &sweep_state, 0644);
+MODULE_PARM_DESC(sweep,
+		 "write 1 during a stream to sweep every port with every lane mask once");
 
 /*
  * The other sensor on this receiver, with the switch at its own level, started by the kernel because no
@@ -1000,6 +1096,7 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 				     "failed to get the CSI-2 RX phy\n");
 
 	platform_set_drvdata(pdev, seninf);
+	seninf_sweep = seninf;
 	INIT_DELAYED_WORK(&seninf->late_counters, mtk_seninf_late_counters);
 	pm_runtime_set_autosuspend_delay(dev, 100);
 	pm_runtime_use_autosuspend(dev);
