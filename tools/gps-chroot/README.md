@@ -89,11 +89,15 @@ and something that reads `mtk_mnl2hal`.
   vendor driver `gps_stp/stp_chrdev_gps.c:64-79`: 6, 7, 8 (HW/FW version), 9 (D1 efuse), 10 (RTC
   flag), 11 (co-clock), 12 (trigger assert), 13 (WMT status), 14/15 (wake lock), 16 (LNA pin),
   17 (FW control), 18/19 (suspend/resume), 20 (listen for reset, blocks until close), 21 (MD status).
-  Our driver (`drivers/gnss/stpgps.c`) answers 7, 8, 16 in full and blocks in 20; the rest return
-  `-EINVAL`/`-EFAULT` the way the vendor's unimplemented ones do. **This is the gap to watch in the
-  first trial**: begonia's daemon called 9, 10 and 13 as well and the vendor driver answers them
-  with values, so a negative return there may or may not be tolerated - it will be visible in
-  `mnld`'s log and is the first thing to look at if the DSP upload starts and then stops.
+  Our driver (`drivers/gnss/stpgps.c`) answers every one of them the way the vendor driver does:
+  7/8 from the chip, 9 with 0 (the vendor logs "Read Efuse not supported in this platform" and
+  answers 0 on MT6785), 10 with 0, 11 from `mtk_wcn_wmt_co_clock_flag_get()`, 12 through
+  `mtk_wcn_wmt_assert()`, 13 with the vendor's -888/-889/0 reset states (fed by the WMT reset
+  callback), 14/15 through a real wakeup source, 16 from the pin number, 17 through
+  `mtk_wmt_gps_mcu_ctrl()`, 20 which wakes on a close **or** a chip reset, and 18/19/21 as -EFAULT
+  like the vendor's unimplemented ones on this platform. That work is branches
+  `area/connectivity-h6` (read/write path, no oops), `-h9` (the ioctl set and the byte counters) and
+  `-h10` (fwctl); before it, the daemon's own status polls were answered with failures.
 * `/dev/gps_emi` — ioctl 1 (the daemon's "window is ready", answered 1), 2/3 (NVRAM copies, 0),
   4 (physical address of the window), plus `mmap`. Our driver has all four; begonia observed
   `mnld` calling exactly 1 and 4 (`begonia-notes.md:442`).
@@ -104,6 +108,38 @@ and something that reads `mtk_mnl2hal`.
 * A connsys power cycle between sessions. A second session in a row returns `EIO`
   (`begonia-notes.md:752`), which is kernel-side work: a GPS off that actually power-cycles the
   chip, instead of only dropping the function.
+
+## The sequence that produces the first byte, and what the bridge cannot do
+
+The chip says nothing until four things have happened, and three of them are the daemon's:
+
+| # | who | what | on our side |
+|---|---|---|---|
+| a | `mnld` | `open("/dev/stpgps")` | `stpgps_open()` = `FUNC_CTRL(GPS on)`; the type-2 STP channel exists |
+| b | `mnld` | open `/dev/gps_emi`, `ioctl(1)` (window ready), `ioctl(4)` (physical base), `mmap` | answered and mapped out of the real CONNSYS carveout |
+| c | `mnld` | **the GNSS patch/DSP download**: `ioctl(17)` = `COMBO_IOC_GPS_FWCTL` → `mtk_wmt_gps_mcu_ctrl()` (a WMT op wrapping the payload in `01 32 00 00`), plus the image and command stream written to `/dev/stpgps` as type-2 frames | fwctl implemented; `write()` returns what STP took, `-ENOSPC` when it took nothing, and the kernel reports the totals on close (`GNSS channel closed: tx ... B`) |
+| d | `mnld` | PMTK out, NMEA back at 1 Hz, handed to the HAL on `mtk_mnl2hal` | frames land in `rx_list` from the RX work, so `read()`/`poll()` see them; `nmea-forward` plays the HAL |
+
+**`stpgps-bridge` alone does (a) and (d) only.** It opens the channel and reads it; it never asks the
+kernel for fwctl and never writes a frame, so on its own it can only ever report silence - which is
+exactly what every trial without the engine showed. The bytes of (c) are not in any file this system
+can load:
+
+* the stock kernel module `gps_drv.ko` (this phone's own, `scratch/stock-dump/vendor-ko/`) imports
+  `mtk_wmt_gps_mcu_ctrl`, `mtk_wmt_gps_suspend_ctrl` and the STP calls, and **no `request_firmware`** -
+  the kernel loads no GPS firmware on this SoC;
+* the phone's 106 vendor firmware files (`device-dump-2026-11-13/stock/vendor-firmware.sha256`) hold
+  none: `soc1_0_patch_mcu_2a_1_hdr.bin`, `soc1_0_ram_{mcu,bt,wifi}_2a_1_hdr.bin`,
+  `WIFI_RAM_CODE_soc1_0_2a_1.bin`, `mt6631_fm_v1_patch.bin`, touch/amp/SMART-PA blobs - and nothing
+  named gps, gnss, mnl, arc or bee;
+* the engine is inside `libmnl.so`: `_BootDSP_UART_V2()`, `BootDSP: start,%d`,
+  `code_frag_num,dsp_frag_size`, `COMD4`, `fgPatchApx`, a per-chip table carrying `MT6768_E1 DSP`
+  (this SoC's family), and no patch file name anywhere in its strings. `ARC.BIN`, `BEE.BIN` and
+  `STDTESTIF.BIN` in its data are entries of its own module-dispatch table, and no such file exists
+  under `/vendor`.
+
+So there is nothing to copy from a stock partition: the missing piece is the engine itself, and
+`deploy.sh` below is how it gets onto the phone.
 
 ## Deploying
 
