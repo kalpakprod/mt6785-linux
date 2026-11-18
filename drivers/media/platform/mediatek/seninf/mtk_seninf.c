@@ -104,6 +104,17 @@ module_param(csi_port, int, 0644);
  */
 static int mipi_sel_force = -1;
 module_param(mipi_sel_force, int, 0644);
+
+/*
+ * Program every receiver the HAL's port table lists (SENINF1, SENINF3 and SENINF5, one per CSI
+ * port) and every analog port with them, instead of only the one csi_port names. The vendor table
+ * says MAIN2 (the IMX355) is on port 2, and three trials have taken that as given along with the
+ * switch levels; if the board really routes it elsewhere, one scan says which instance counts.
+ */
+static bool scan_ports;
+module_param(scan_ports, bool, 0644);
+MODULE_PARM_DESC(scan_ports,
+		 "program all three CSI ports and receivers, not only the selected one");
 MODULE_PARM_DESC(mipi_sel_force,
 		 "force the MIPI switch level at stream on: -1 = device tree, 0 or 1 = force");
 MODULE_PARM_DESC(csi_port,
@@ -472,7 +483,15 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 		cancel_delayed_work_sync(&seninf->late_counters);
 		writel(0, inst + SENINF_CSI2_EN);
-			if (seninf->phy[phy_idx])
+		if (scan_ports) {
+			unsigned int i;
+
+			for (i = 0; i < ARRAY_SIZE(csi_ports); i++)
+				if (seninf->phy[csi_ports[i].phy_index] &&
+				    csi_ports[i].phy_index != phy_idx)
+					phy_power_off(seninf->phy[csi_ports[i].phy_index]);
+		}
+		if (seninf->phy[phy_idx])
 			phy_power_off(seninf->phy[phy_idx]);
 		pm_runtime_put_autosuspend(seninf->dev);
 		dev_info(seninf->dev, "stream off: packet cnt %u, err cnt %u\n",
@@ -668,6 +687,36 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 top_off, before, readl(seninf->base + top_off), want,
 			 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
 			 readl(seninf->base + 0x68));
+	}
+
+	/*
+	 * The scan: every receiver of the HAL's port table with its analog port and its lane mask, so
+	 * the per-instance line 500 ms later says which one the sensor really arrives on.
+	 */
+	if (scan_ports) {
+		unsigned int i;
+
+		for (i = 0; i < ARRAY_SIZE(csi_ports); i++) {
+			unsigned int idx = csi_ports[i].seninf_index;
+			unsigned int ph = csi_ports[i].phy_index;
+			void __iomem *in = seninf->base + 0x1000 * idx;
+			u32 top = mtk_seninf_top_offset(idx);
+			int ret2;
+
+			if (seninf->phy[ph] && ph != phy_idx) {
+				ret2 = phy_set_mode_ext(seninf->phy[ph], PHY_MODE_MIPI_DPHY, 4);
+				if (!ret2)
+					phy_power_on(seninf->phy[ph]);
+			}
+			writel(0xf, in + 0x0a00);
+			writel((readl(seninf->base + top) & ~0x2u) | 0x1u,
+			       seninf->base + top);
+			dev_info(seninf->dev,
+				 "scan: port %u instance %u mask 0x%08x top +0x%02x 0x%08x pkt %u\n",
+				 i, idx + 1, readl(in + 0x0a00), top,
+				 readl(seninf->base + top),
+				 readl(in + SENINF_CSI2_PACKET_CNT));
+		}
 	}
 
 	dev_info(seninf->dev,

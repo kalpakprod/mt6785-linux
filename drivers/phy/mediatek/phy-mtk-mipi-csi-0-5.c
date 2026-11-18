@@ -23,6 +23,16 @@
 
 #define CSIXB_OFFSET		0x1000
 
+/* Debug overrides, both off by default; see the comment where they are applied. */
+static int cphy = -1;
+module_param(cphy, int, 0644);
+MODULE_PARM_DESC(cphy, "force the C-PHY select bit: -1 leave alone, 0 = D-PHY, 1 = C-PHY");
+
+static bool ckmode_always;
+module_param(ckmode_always, bool, 0644);
+MODULE_PARM_DESC(ckmode_always,
+		 "set the per-lane clock-mode enables and clear their selects at power on");
+
 struct mtk_mipi_cdphy_port {
 	struct device *dev;
 	void __iomem *base;
@@ -296,6 +306,62 @@ static void mtk_mipi_phy_lane_clock(struct device *dev, void __iomem *base,
 	}
 }
 
+/*
+ * The block of four registers the HAL writes next to the lane clock assignment, and the only part
+ * of its D-PHY setup this driver still lacked: hal_csirx_dphy_init (libcam.halsensor.so 0x32078)
+ * writes the same three fields into 0x20, 0x24, 0x28 and 0x2c for every port - bits 23:16 = 0x20
+ * (:0x320b0-:0x3212c), bits 11:8 = 4 (:0x320f0-:0x3212c) and bit 29 (:0x32130-:0x3215c).
+ * Four registers, three lanes worth of receive settings, written per half.
+ */
+static void mtk_mipi_phy_dphy_init_bank(struct device *dev, void __iomem *base)
+{
+	unsigned int half, off;
+
+	for (half = 0; half < 2; half++) {
+		void __iomem *h = base + half * CSIXB_OFFSET;
+
+		for (off = 0x20; off <= 0x2c; off += 4) {
+			u32 v = readl(h + off);
+
+			v = (v & ~0xff0000u) | (0x20u << 16);
+			v = (v & ~0xf00u) | 0x400u;
+			v |= BIT(29);
+			writel(v, h + off);
+		}
+
+		dev_info(dev, "dphy init bank %s: 0x20 %08x 0x24 %08x 0x28 %08x 0x2c %08x\n",
+			 half ? "B" : "A", readl(h + 0x20), readl(h + 0x24),
+			 readl(h + 0x28), readl(h + 0x2c));
+	}
+}
+
+/*
+ * The enable bits decoded, so a trial reads like a list instead of a word: bit 0 is the C-PHY
+ * select (RG_CSI0A_CPHY_EN, phy-mtk-mipi-csi-0-5-rx-reg.h:18), bit 2 the bias LPF, bit 3 the bias
+ * core, bits 5/8/11 the per-lane clock mode enables and 6/9/12 their selects, and bits 0 and 16 of
+ * 0x18, 0x1c and 0x20 the lane receivers themselves (the HAL's own lane-enable bits).
+ */
+static void mtk_mipi_phy_decode(struct device *dev, void __iomem *base, const char *when)
+{
+	unsigned int half;
+
+	for (half = 0; half < 2; half++) {
+		void __iomem *h = base + half * CSIXB_OFFSET;
+		u32 a0 = readl(h + 0x00);
+
+		dev_info(dev,
+			 "%s %s: cphy %u bg_lpf %u bg_core %u ckmode %u/%u/%u cksel %u/%u/%u\n",
+			 when, half ? "B" : "A", a0 & 1, !!(a0 & BIT(2)), !!(a0 & BIT(3)),
+			 !!(a0 & BIT(5)), !!(a0 & BIT(8)), !!(a0 & BIT(11)),
+			 !!(a0 & BIT(6)), !!(a0 & BIT(9)), !!(a0 & BIT(12)));
+
+		dev_info(dev, "%s %s: lane_rx 0x18 %u 0x1c %u 0x20 %u ready %08x\n",
+			 when, half ? "B" : "A", !!(readl(h + 0x18) & 1),
+			 !!(readl(h + 0x1c) & 1), !!(readl(h + 0x20) & 1),
+			 readl(h + 0x48));
+	}
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
@@ -385,6 +451,41 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 
 	/* And the lane-clock assignment the HAL derives from the lane count. */
 	mtk_mipi_phy_lane_clock(&phy->dev, base, port->num_lanes);
+	mtk_mipi_phy_dphy_init_bank(&phy->dev, base);
+
+	/*
+	 * Two debug overrides for a trial, both off by default: dphy.cphy forces the C-PHY select bit
+	 * either way (0 = D-PHY, which is what the stock register dump shows), and dphy.ckmode_always
+	 * sets the per-lane clock-mode enables and clears their selects, i.e. "keep the lane clocks on"
+	 * (the bits the in-tree header names CKMODE_EN and CKSEL).
+	 */
+	if (cphy >= 0) {
+		unsigned int i;
+
+		for (i = 0; i < 2; i++) {
+			void __iomem *h = base + i * CSIXB_OFFSET;
+			u32 a0 = readl(h + 0x00);
+
+			a0 = cphy ? (a0 | BIT(0)) : (a0 & ~BIT(0));
+			writel(a0, h + 0x00);
+		}
+		dev_info(&phy->dev, "cphy forced to %d\n", cphy);
+	}
+	if (ckmode_always) {
+		unsigned int i;
+
+		for (i = 0; i < 2; i++) {
+			void __iomem *h = base + i * CSIXB_OFFSET;
+			u32 a0 = readl(h + 0x00);
+
+			a0 |= BIT(5) | BIT(8) | BIT(11);
+			a0 &= ~(BIT(6) | BIT(9) | BIT(12));
+			writel(a0, h + 0x00);
+		}
+		dev_info(&phy->dev, "clock mode enabled on every lane\n");
+	}
+
+	mtk_mipi_phy_decode(&phy->dev, base, "enables");
 
 	/* and the receivers of the lanes themselves, then the HAL's ready flag */
 	mtk_mipi_phy_lanes(&phy->dev, base, true);
