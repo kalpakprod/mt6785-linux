@@ -543,6 +543,7 @@ struct mt6785_scp_region_info {
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
+static int mt6785_scp_slp_prot_set(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
 static int mt6785_scp_awake(struct mtk_scp *scp, bool lock);
 static void mt6785_scp_log_wdt_sleep(struct mtk_scp *scp, const char *when);
@@ -644,6 +645,22 @@ static int mt6785_scp_before_load(struct mtk_scp *scp)
 	ret = mt6785_scp_clocks_on(scp);
 	if (ret)
 		return ret;
+
+	/*
+	 * The SCP's bus protection, around the bring-up this driver performs itself:
+	 * INFRA_SLP_PROT_SET bits 30/31 (SCP_TO_INFRA_BIT | SCP_TO_AUDIO_BIT) hold the SCP's
+	 * paths to the infra and audio busses while the SRAM is powered up and the images are
+	 * put in place. That is the vendor's full-reset path - the one piece of its driver that
+	 * does this work at all (scp_awake.c:222-305): protection up, reset cycled, SRAM on,
+	 * loader and region information copied, protection down (:285-296). Stock's normal boot
+	 * is LK's next door and never enters it, so the citation is "the path that does our job",
+	 * not "every boot". This driver does that work on every start, but took the protection
+	 * only inside mt6785_scp_subsys_reset()'s dead-block branch - and the state we find
+	 * (clk_sw 0x201, the loader's own clock select) returns from that function before the
+	 * write, so the work ran unprotected. The acknowledgment polled here is the block's own
+	 * (vendor :232-244), so a timeout is a fact about this SoC, not a reason to stop.
+	 */
+	(void)mt6785_scp_slp_prot_set(scp);
 
 	/*
 	 * The subsystem's module reset, and the SRAM switched on one block at a time, in the
@@ -2850,6 +2867,20 @@ static int mt6785_scp_subsys_reset(struct mtk_scp *scp)
 	dev_info(scp->dev, "after the reset cycle: reset_status %#x\n", status);
 
 	return 0;
+}
+
+/*
+ * "enable sleep protection": hold the SCP's infra and audio paths while it is brought up. The
+ * vendor's own order is protection up, then the SRAM and the images, then the protection down
+ * (scp_awake.c:224-244 and :285-296), and it takes it on every boot, not only on a recovery.
+ */
+static int mt6785_scp_slp_prot_set(struct mtk_scp *scp)
+{
+	return mt6785_infracfg_reset(scp, "sleep protect",
+				      MT6785_INFRACFG_SLP_PROT_SET,
+				      MT6785_INFRACFG_SLP_PROT_STAT,
+				      MT6785_SCP_TO_INFRA_BIT |
+				      MT6785_SCP_TO_AUDIO_BIT);
 }
 
 /* "disable sleep protection" once the images are in place (vendor scp_awake.c:285-296) */
