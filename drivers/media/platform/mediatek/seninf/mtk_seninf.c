@@ -127,16 +127,6 @@ module_param(sensor_pad, int, 0644);
 MODULE_PARM_DESC(sensor_pad,
 		 "sink pad whose sensor this stream starts: -1 = pad 0, or a pad number");
 
-/* The upstream pad of this stream: the sink pad the parameter names, or the first one. */
-static struct media_pad *mtk_seninf_upstream(struct mtk_seninf *seninf)
-{
-	unsigned int pad = sensor_pad < 0 ? 0 : sensor_pad;
-
-	if (pad >= 2)
-		return ERR_PTR(-EINVAL);
-
-	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
-}
 MODULE_PARM_DESC(mipi_sel_force,
 		 "force the MIPI switch level at stream on: -1 = device tree, 0 or 1 = force");
 MODULE_PARM_DESC(csi_port,
@@ -190,6 +180,17 @@ struct mtk_seninf {
 	struct media_pad pads[3];
 	struct mtk_cam_core *cam;
 };
+
+/* The upstream pad of this stream: the sink pad the parameter names, or the first one. */
+static struct media_pad *mtk_seninf_upstream(struct mtk_seninf *seninf)
+{
+	unsigned int pad = sensor_pad < 0 ? 0 : sensor_pad;
+
+	if (pad >= 2)
+		return ERR_PTR(-EINVAL);
+
+	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
+}
 
 static int mtk_seninf_runtime_resume(struct device *dev)
 {
