@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * MediaTek MT6785 factory addresses taken from a copied nvdata tree.
+ * MediaTek MT6785 Wi-Fi MAC and Bluetooth address.
  *
- * The records themselves are read once, from /lib/firmware, by nvdata_mac.c;
- * this header is what the Wi-Fi and Bluetooth drivers include.
+ * nvdata_mac.c works the address out once, at probe, from the owner's override
+ * file, the factory nvdata record, or the device serial (in that order); this
+ * header is what the Wi-Fi and Bluetooth drivers include.
  */
 #ifndef _MTK_NVDATA_MAC_H
 #define _MTK_NVDATA_MAC_H
