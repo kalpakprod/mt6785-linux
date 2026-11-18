@@ -3385,6 +3385,20 @@ static int mt6785_scp_clocks_on(struct mtk_scp *scp)
 	regmap_read(topckgen, MT6785_SCP_CLK_CFG_1, &val);
 	regmap_write(topckgen, MT6785_SCP_CLK_CFG_1, val | 0x11);
 
+	/*
+	 * The word DIFF-2026-11-18 reports at 0x10000110 (stock 0x7f00, this board 0x7f10) is
+	 * reported and never written: it is not the meter's configuration but the gate bank of
+	 * mainline's MT6785 top gates (clk-mt6785-top.c:568-572, sta/clr/set = 0x110), and its
+	 * bits 4 and 5 are the armpll_div_pll1/2 gates (:579-580). h6 cleared bit 4 there in the
+	 * belief that the vendor's clkdbg _CKGEN(0x110) named this register, and comb10/comb10a
+	 * hung silently ~0.3 s later: the ARMPLL divider's clock went away under the CPU. A read
+	 * of the same address is harmless and has been in every timeline tick since audio48, so
+	 * exactly that - a read and one line - is what stays here.
+	 */
+	if (!regmap_read(topckgen, MT6785_TOP_CK_REG_110, &val))
+		dev_info(scp->dev, "topckgen %#x (the armpll-div gate bank; not written) %#x, stock %#x\n",
+			 MT6785_TOP_CK_REG_110, val, MT6785_TOP_CK_REG_110_STOCK);
+
 	return 0;
 }
 
