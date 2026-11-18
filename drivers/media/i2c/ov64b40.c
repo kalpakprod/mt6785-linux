@@ -576,11 +576,14 @@ static int ov64b40_start_streaming(struct ov64b40 *ov64b40)
 {
 	int ret;
 
-	if (ov64b40->cphy) {
-		dev_err(ov64b40->dev,
-			"cannot stream: C-PHY is not supported by the CSI PHY or SENINF yet\n");
-		return -EOPNOTSUPP;
-	}
+	/*
+	 * C-PHY is allowed now that the receiver side has the mode: SENINF's mode-2 CSI-2 words and the
+	 * CSI PHY's RG_CSI0A_CPHY_EN bit. The register tables are the same for both bus types - only the
+	 * physical layer differs - so the sequence below runs either way and the log says which bus the
+	 * device tree declared.
+	 */
+	dev_info(ov64b40->dev, "stream on: %s, %u lanes/trios\n",
+		 ov64b40->cphy ? "C-PHY" : "D-PHY", OV64B40_DATA_LANES);
 
 	ret = ov64b40_write_regs(ov64b40, ov64b40_init_regs,
 				 ARRAY_SIZE(ov64b40_init_regs));

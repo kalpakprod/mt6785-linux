@@ -111,6 +111,7 @@
 			ov64b40_out: endpoint {
 				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
 				data-lanes = <1 2 3>;
+				remote-endpoint = <&seninf1_in_c>;
 			};
 		};
 	};

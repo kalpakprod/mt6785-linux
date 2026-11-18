@@ -2167,6 +2167,15 @@
 						remote-endpoint = <&camsv1_in>;
 					};
 				};
+
+				/* the C-PHY sensor on i2c2: third sink pad */
+				port@3 {
+					reg = <3>;
+
+					seninf1_in_c: endpoint {
+						remote-endpoint = <&ov64b40_out>;
+					};
+				};
 			};
 		};
 

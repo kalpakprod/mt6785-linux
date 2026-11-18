@@ -205,7 +205,8 @@ struct mtk_seninf {
 	struct dentry *debugfs;
 
 	struct v4l2_subdev sd;
-	struct media_pad pads[3];
+	/* pads 0, 1 and 3 are sensors, pad 2 is the source towards CAMSV */
+	struct media_pad pads[4];
 	struct mtk_cam_core *cam;
 };
 
@@ -214,7 +215,7 @@ static struct media_pad *mtk_seninf_upstream(struct mtk_seninf *seninf)
 {
 	unsigned int pad = sensor_pad < 0 ? 0 : sensor_pad;
 
-	if (pad >= 2)
+	if (pad >= 4)
 		return ERR_PTR(-EINVAL);
 
 	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
@@ -1399,7 +1400,8 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	seninf->pads[0].flags = MEDIA_PAD_FL_SINK;
 	seninf->pads[1].flags = MEDIA_PAD_FL_SINK;
 	seninf->pads[2].flags = MEDIA_PAD_FL_SOURCE;
-	ret = media_entity_pads_init(&seninf->sd.entity, 3, seninf->pads);
+	seninf->pads[3].flags = MEDIA_PAD_FL_SINK;
+	ret = media_entity_pads_init(&seninf->sd.entity, 4, seninf->pads);
 	if (ret)
 		goto err_debugfs;
 
