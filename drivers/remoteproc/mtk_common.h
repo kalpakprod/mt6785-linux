@@ -118,6 +118,15 @@
 #define MT6785_TOP_CK_CFG_6		0x80
 /* the SCP's own mux: select bits 16-18, power-down bit 23 (clk-mt6785-top.c:473) */
 #define MT6785_TOP_CK_CFG_0		0x20
+/*
+ * topckgen + 0x110, the word DIFF-2026-11-18 reports as 0x7f10 here against stock's 0x7f00
+ * (row 0x10000110). It is NOT a meter setting: it is the gate bank of mainline's top gates
+ * (clk-mt6785-top.c:568-572), whose bits 4 and 5 are the armpll_div_pll1/2 gates (:579-580).
+ * The driver reads it (mt6785_scp_log_fmeter has read it every 100 ms since audio48) and never
+ * writes it; only the value is reported beside the stock reference.
+ */
+#define MT6785_TOP_CK_REG_110		0x110
+#define MT6785_TOP_CK_REG_110_STOCK	0x7f00
 /* the reserved DRAM pool the SCP may use, and where its logger ring can live */
 #define MT6785_SCP_DRAM_PHYS		0x50000000
 #define MT6785_SCP_WDT_REG		0x84

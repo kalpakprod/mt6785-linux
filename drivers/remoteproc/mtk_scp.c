@@ -1343,6 +1343,17 @@ static int scp_start(struct rproc *rproc)
 	 */
 	mt6785_scp_slp_prot_clear(scp);
 
+	/*
+	 * The awake request, taken before the first read of a running SCP rather than after
+	 * the timeline: it is the vendor's guard around every access it makes to the core
+	 * (scp_awake.c:79-100, unlock at :162-178), and its acknowledgment is the firmware's
+	 * own ISR. comb9 took it at 1445 ms - after the firmware had already switched its clock
+	 * tree on at 1000 ms and the window had stopped answering - and it was never
+	 * acknowledged. From here it is held across the sampling and released when the ready IPI
+	 * arrives or the wait fails.
+	 */
+	mt6785_scp_awake(scp, true);
+
 	scp->data->scp_reset_deassert(scp);
 
 	/*
@@ -1413,8 +1424,6 @@ static int scp_start(struct rproc *rproc)
 				 MT6785_SCP_PROBE_POLLS * MT6785_SCP_PROBE_STEP_US / 1000);
 	}
 
-	mt6785_scp_awake(scp, true);
-
 	/*
 	 * One read back, immediately: the core has just been released and cannot have taken the
 	 * bus yet, so this is the last honest look at the register the write went to.
@@ -1444,6 +1453,8 @@ static int scp_start(struct rproc *rproc)
 	}
 	if (ret == -ERESTARTSYS) {
 		dev_err(dev, "wait SCP interrupted by a signal!\n");
+		/* the awake lock is held from the release on, so it has to go back here too */
+		mt6785_scp_awake(scp, false);
 		goto stop;
 	}
 
@@ -3384,6 +3395,20 @@ static int mt6785_scp_clocks_on(struct mtk_scp *scp)
 	regmap_write(topckgen, MT6785_SCP_CLK_CFG_0, val | 0x3ff);
 	regmap_read(topckgen, MT6785_SCP_CLK_CFG_1, &val);
 	regmap_write(topckgen, MT6785_SCP_CLK_CFG_1, val | 0x11);
+
+	/*
+	 * The word DIFF-2026-11-18 reports at 0x10000110 (stock 0x7f00, this board 0x7f10) is
+	 * reported and never written: it is not the meter's configuration but the gate bank of
+	 * mainline's MT6785 top gates (clk-mt6785-top.c:568-572, sta/clr/set = 0x110), and its
+	 * bits 4 and 5 are the armpll_div_pll1/2 gates (:579-580). h6 cleared bit 4 there in the
+	 * belief that the vendor's clkdbg _CKGEN(0x110) named this register, and comb10/comb10a
+	 * hung silently ~0.3 s later: the ARMPLL divider's clock went away under the CPU. A read
+	 * of the same address is harmless and has been in every timeline tick since audio48, so
+	 * exactly that - a read and one line - is what stays here.
+	 */
+	if (!regmap_read(topckgen, MT6785_TOP_CK_REG_110, &val))
+		dev_info(scp->dev, "topckgen %#x (the armpll-div gate bank; not written) %#x, stock %#x\n",
+			 MT6785_TOP_CK_REG_110, val, MT6785_TOP_CK_REG_110_STOCK);
 
 	return 0;
 }
