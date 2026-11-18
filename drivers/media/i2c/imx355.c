@@ -77,6 +77,17 @@
 
 /* Test Pattern Control */
 #define IMX355_REG_TEST_PATTERN		CCI_REG16(0x0600)
+
+/*
+ * The sensor's own test pattern, forced at stream on when this is set: -1 leaves the choice to the
+ * V4L2_CID_TEST_PATTERN control, 0 is off, 1 solid colour, 2 colour bars, 3 grey bars, 4 PN9
+ * (imx355_test_pattern_menu). It is the one way to make the sensor transmit a known picture
+ * whatever its mode and pixel array do.
+ */
+static int test_pattern = -1;
+module_param(test_pattern, int, 0644);
+MODULE_PARM_DESC(test_pattern,
+		 "force the sensor test pattern at stream on: -1 = leave the control alone, 0..4 = force");
 #define IMX355_TEST_PATTERN_DISABLED		0
 #define IMX355_TEST_PATTERN_SOLID_COLOR		1
 #define IMX355_TEST_PATTERN_COLOR_BARS		2
@@ -878,8 +889,26 @@ static int imx355_start_streaming(struct imx355 *imx355)
 	if (!ret)
 		ret = __v4l2_ctrl_handler_setup(imx355->sd.ctrl_handler);
 
+	/*
+	 * A pattern the sensor generates itself, so a trial can separate "the mode or the pixel array
+	 * is wrong" from "nothing reaches the receiver". Forced from the module parameter when one is
+	 * given, otherwise the V4L2_CID_TEST_PATTERN control decides, as before.
+	 */
+	if (test_pattern >= 0) {
+		cci_write(imx355->regmap, IMX355_REG_TEST_PATTERN, test_pattern, &ret);
+		dev_info(imx355->dev, "test pattern forced to %d\n", test_pattern);
+	}
+
 	cci_write(imx355->regmap, IMX355_REG_MODE_SELECT, IMX355_MODE_STREAMING,
 		  &ret);
+
+	{
+		u64 pat = 0;
+
+		cci_read(imx355->regmap, IMX355_REG_TEST_PATTERN, &pat, NULL);
+		dev_info(imx355->dev, "DIAG test pattern: 0x0600/0x0601 = 0x%04llx (%s)\n",
+			 pat, pat ? "a pattern is on" : "off");
+	}
 
 	/* The registers the receiver on the other end depends on, read back. */
 	imx355_diag_mipi(imx355);

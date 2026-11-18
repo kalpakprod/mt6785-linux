@@ -255,6 +255,47 @@ static void mtk_mipi_phy_status_work(struct work_struct *work)
 	}
 }
 
+/*
+ * The per-lane clock assignment of the HAL's own D-PHY path, which nothing in this driver carries.
+ * hal_csirx_dphy_setting (libcam.halsensor.so 0x32ed8) branches on the lane count and, for three
+ * lanes or more, sets bits 8, 9, 10 and 11 of 0x00 (:0x32f74-0x32fa0) and the fields bits 10:8 = 1,
+ * bits 2:0 = 2, bits 13:12 = 3 and bits 22:20 = 4 of 0x04 (:0x32f28-0x32f70). The values this
+ * driver writes there come from the MT8365 field map instead, and the ChromeOS 4D1C word it applies
+ * to bits 5..12 of 0x00 is that SoC's lane order, not this one's.
+ *
+ * Bit 0 of 0x00 is part of the same HAL step and is left out here on purpose: the in-tree header
+ * names it RG_CSI0A_CPHY_EN (phy-mtk-mipi-csi-0-5-rx-reg.h:18), so writing it would switch the port
+ * to C-PHY and no D-PHY frame could arrive. That one bit is the open question, not a guess to flash.
+ */
+static void mtk_mipi_phy_lane_clock(struct device *dev, void __iomem *base,
+				    unsigned int lanes)
+{
+	unsigned int half;
+
+	if (lanes < 3) {
+		dev_info(dev, "lane clock: %u lanes, the HAL branch is not applied\n", lanes);
+		return;
+	}
+
+	for (half = 0; half < 2; half++) {
+		void __iomem *h = base + half * CSIXB_OFFSET;
+		u32 a0 = readl(h + 0x00);
+		u32 a4 = readl(h + 0x04);
+
+		a0 |= 0x100 | 0x200 | 0x400 | 0x800;
+		a4 &= ~((0x7u << 16) | (0x7u << 8) | 0x7u | (0x3u << 12));
+		a4 |= (0x1u << 8) | 0x2u | (0x3u << 12);
+		a4 &= ~(0x7u << 20);
+		a4 |= 0x4u << 20;
+
+		writel(a0, h + 0x00);
+		writel(a4, h + 0x04);
+
+		dev_info(dev, "lane clock %s: 0x00 -> %08x, 0x04 -> %08x\n",
+			 half ? "B" : "A", a0, a4);
+	}
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
@@ -341,6 +382,9 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	 */
 	mtk_mipi_phy_vendor_ana(&phy->dev, base, "A");
 	mtk_mipi_phy_vendor_ana(&phy->dev, base + CSIXB_OFFSET, "B");
+
+	/* And the lane-clock assignment the HAL derives from the lane count. */
+	mtk_mipi_phy_lane_clock(&phy->dev, base, port->num_lanes);
 
 	/* and the receivers of the lanes themselves, then the HAL's ready flag */
 	mtk_mipi_phy_lanes(&phy->dev, base, true);
