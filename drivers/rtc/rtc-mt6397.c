@@ -58,6 +58,27 @@ static irqreturn_t mtk_rtc_irq_handler_thread(int irq, void *data)
 	return IRQ_NONE;
 }
 
+/* year-base:begin */
+/*
+ * The PMIC year register counts from 1968, as in the vendor (Android 4.19) driver: Android reads 1968 + reg.
+ * Storing the Linux year (base 1900) made Android read 2094 and hang at the boot logo. Linux itself cannot
+ * set a year before 1970, so the usable range is reg 2..127 (1970..2095).
+ */
+#define MTK_RTC_YEAR_BASE	68
+
+static inline int mtk_rtc_year_to_tm(u16 reg)
+{
+	return (reg & RTC_AL_YEA_MASK) + MTK_RTC_YEAR_BASE;
+}
+
+static inline int mtk_rtc_year_from_tm(int tm_year)
+{
+	int reg = tm_year - MTK_RTC_YEAR_BASE;
+
+	return reg < 0 || reg > RTC_AL_YEA_MASK ? -ERANGE : reg;
+}
+/* year-base:end */
+
 static int __mtk_rtc_read_time(struct mt6397_rtc *rtc,
 			       struct rtc_time *tm, int *sec)
 {
@@ -76,7 +97,7 @@ static int __mtk_rtc_read_time(struct mt6397_rtc *rtc,
 	tm->tm_mday = data[RTC_OFFSET_DOM];
 	tm->tm_wday = data[RTC_OFFSET_DOW];
 	tm->tm_mon = data[RTC_OFFSET_MTH] & RTC_TC_MTH_MASK;
-	tm->tm_year = data[RTC_OFFSET_YEAR];
+	tm->tm_year = mtk_rtc_year_to_tm(data[RTC_OFFSET_YEAR]);
 
 	ret = regmap_read(rtc->regmap, rtc->addr_base + RTC_TC_SEC, sec);
 exit:
@@ -106,8 +127,12 @@ exit:
 static int mtk_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	struct mt6397_rtc *rtc = dev_get_drvdata(dev);
-	int ret;
+	int ret, year;
 	u16 data[RTC_OFFSET_COUNT];
+
+	year = mtk_rtc_year_from_tm(tm->tm_year);
+	if (year < 0)
+		return year;
 
 	tm->tm_mon++;
 	tm->tm_wday++;
@@ -118,7 +143,7 @@ static int mtk_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	data[RTC_OFFSET_DOM] = tm->tm_mday;
 	data[RTC_OFFSET_DOW] = tm->tm_wday;
 	data[RTC_OFFSET_MTH] = tm->tm_mon;
-	data[RTC_OFFSET_YEAR] = tm->tm_year;
+	data[RTC_OFFSET_YEAR] = year;
 
 	mutex_lock(&rtc->lock);
 	ret = regmap_bulk_write(rtc->regmap, rtc->addr_base + RTC_TC_SEC,
@@ -164,7 +189,7 @@ static int mtk_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	tm->tm_hour = data[RTC_OFFSET_HOUR] & RTC_AL_HOU_MASK;
 	tm->tm_mday = data[RTC_OFFSET_DOM] & RTC_AL_DOM_MASK;
 	tm->tm_mon = data[RTC_OFFSET_MTH] & RTC_AL_MTH_MASK;
-	tm->tm_year = data[RTC_OFFSET_YEAR] & RTC_AL_YEA_MASK;
+	tm->tm_year = mtk_rtc_year_to_tm(data[RTC_OFFSET_YEAR]);
 
 	tm->tm_mon--;
 
@@ -178,8 +203,12 @@ static int mtk_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 {
 	struct rtc_time *tm = &alm->time;
 	struct mt6397_rtc *rtc = dev_get_drvdata(dev);
-	int ret;
+	int ret, year;
 	u16 data[RTC_OFFSET_COUNT];
+
+	year = mtk_rtc_year_from_tm(tm->tm_year);
+	if (year < 0)
+		return year;
 
 	tm->tm_mon++;
 
@@ -200,7 +229,7 @@ static int mtk_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	data[RTC_OFFSET_MTH] = ((data[RTC_OFFSET_MTH] & ~(RTC_AL_MTH_MASK)) |
 				(tm->tm_mon & RTC_AL_MTH_MASK));
 	data[RTC_OFFSET_YEAR] = ((data[RTC_OFFSET_YEAR] & ~(RTC_AL_YEA_MASK)) |
-				(tm->tm_year & RTC_AL_YEA_MASK));
+				(year & RTC_AL_YEA_MASK));
 
 	if (alm->enabled) {
 		ret = regmap_bulk_write(rtc->regmap,
@@ -323,10 +352,8 @@ static int mtk_rtc_probe(struct platform_device *pdev)
 	}
 
 	rtc->rtc_dev->ops = &mtk_rtc_ops;
-	rtc->rtc_dev->range_min = RTC_TIMESTAMP_BEGIN_1900;
-	rtc->rtc_dev->range_max = mktime64(2027, 12, 31, 23, 59, 59);
-	rtc->rtc_dev->start_secs = mktime64(1968, 1, 2, 0, 0, 0);
-	rtc->rtc_dev->set_start_time = true;
+	rtc->rtc_dev->range_min = mktime64(1970, 1, 1, 0, 0, 0);
+	rtc->rtc_dev->range_max = mktime64(2095, 12, 31, 23, 59, 59);
 
 	return devm_rtc_register_device(rtc->rtc_dev);
 }
