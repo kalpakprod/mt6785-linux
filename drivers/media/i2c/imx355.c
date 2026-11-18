@@ -103,6 +103,16 @@ module_param(sensor_lanes, int, 0644);
 MODULE_PARM_DESC(sensor_lanes,
 		 "force the sensor's MIPI lane count in 0x0114: 0 = device tree, 1..4 = that many");
 
+/*
+ * The 0x30xx block a trial may want written: 0 = leave the chip's reset values, 1 = write the
+ * vendor's zvhdr_off values (all zeros) over them, 2 = also write 0x3050 = 0. Read at every stream
+ * start, so a sweep can walk it without a rebuild.
+ */
+static int tx_block;
+module_param(tx_block, int, 0644);
+MODULE_PARM_DESC(tx_block,
+		 "0 = leave 0x30xx, 1 = write the zvhdr_off zeros, 2 = also 0x3050 = 0");
+
 static int vendor_mode;
 module_param(vendor_mode, int, 0644);
 MODULE_PARM_DESC(vendor_mode,
@@ -999,6 +1009,30 @@ vendor_tail:
 		dev_info(imx355->dev,
 			 "vendor mode: %zu vendor registers written, no own PLL, no 0x3050 write\n",
 			 ARRAY_SIZE(imx355_vendor_preview_regs));
+	}
+
+	/*
+	 * The 0x30xx block: the only vendor-table values this driver still never writes are the ZVHDR
+	 * ones - 0x30b4..0x30bc = 0x01 in addr_data_pair_imx355ofilm_zvhdr_on and 0x00 in _zvhdr_off,
+	 * 0x30c6/0x30c7 = 0x00. If the chip's reset value for those is the HDR arrangement, the sensor
+	 * may count frames while its MIPI output is split in a way no receiver of ours expects.
+	 * tx_block=1 writes the zvhdr_off values (all zeros) explicitly; tx_block=2 additionally writes
+	 * 0x3050 = 0, which no vendor table writes either and whose 0x03 readback may be a reset value
+	 * that means something (the lead's open question) - this is how that gets answered, by trying it.
+	 */
+	if (tx_block >= 1) {
+		u64 v = 0;
+		unsigned int i;
+
+		for (i = 0xb4; i <= 0xbc; i++)
+			cci_write(imx355->regmap, CCI_REG8(0x30u + i), 0x00, &ret);
+		cci_write(imx355->regmap, CCI_REG8(0x30c6), 0x00, &ret);
+		cci_write(imx355->regmap, CCI_REG8(0x30c7), 0x00, &ret);
+		if (tx_block >= 2)
+			cci_write(imx355->regmap, CCI_REG8(0x3050), 0x00, &ret);
+		cci_read(imx355->regmap, CCI_REG8(0x30b4), &v, NULL);
+		dev_info(imx355->dev, "tx block: zvhdr_off zeros written (0x30b4 reads 0x%02llx)%s\n",
+			 v, tx_block >= 2 ? ", 0x3050 = 0" : "");
 	}
 
 	cci_write(imx355->regmap, IMX355_REG_MODE_SELECT, IMX355_MODE_STREAMING,
