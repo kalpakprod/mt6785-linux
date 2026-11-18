@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * MediaTek MT6785 factory addresses from a copied nvdata tree.
+ * MediaTek MT6785 Wi-Fi MAC and Bluetooth address for the port.
  *
  * Copyright (C) 2026 The poco-m5s port
  *
@@ -13,28 +13,38 @@
  *   /lib/firmware/rosemary/nvdata/APCFG/APRDEB/WIFI
  *   /lib/firmware/rosemary/nvdata/APCFG/APRDEB/BT_Addr
  *
- * Both files are MTK NVRAM records: a 12-byte header followed by the payload.
- * The address sits at payload offset 0 in the byte order the network stack
- * expects. The fourth octet of the Wi-Fi record is the per-unit part of the
- * MAC, so no two phones share it.
+ * The two records have the layouts the vendor's own structures give them, not
+ * the offsets guessed in h5 (which read six bytes too far into each and found
+ * 00:00:00:00:00:00 and xx:xx:xx:xx:xx:xx - lead note 23):
  *
- * Sizes, per the begonia port which read the same records: the BT record is
- * 440 bytes in total, the Wi-Fi record is shorter than that and starts with
- * the same header.
+ *   APCFG/APRDEB/WIFI     2050 bytes of file = struct WIFI_CFG_PARAM_STRUCT
+ *                         (2048 bytes, gen4m/include/CFG_Wifi_File.h, whose
+ *                         own compile-time asserts pin it) plus two trailing
+ *                         bytes the nvram layer keeps. Two u16 version words
+ *                         open the struct, so aucMacAddress[6] is at byte 4.
+ *                         This phone's copy holds xx:xx:xx:xx:xx:xx.
+ *   APCFG/APRDEB/BT_Addr  440 bytes of file, and it begins with the BD_ADDR:
+ *                         xx:xx:xx:xx:xx:xx - the Wi-Fi address minus one, the
+ *                         way the factory writes the pair. Byte 12 is where the
+ *                         h5 guess read, and it holds xx:xx:xx:xx:xx:xx, a
+ *                         multicast address no radio may adopt.
  *
- * This phone's own records hold no address at all: the WIFI record's MAC field
- * is 00:00:00:00:00:00 and the BT_Addr record's 440 payload bytes contain no
- * unicast six-byte run (measured on the copy in this repository, 18.11). So
- * the module also accepts an explicit, one-line override that survives boots:
+ * So, in order of what wins:
  *
- *   /lib/firmware/rosemary/wifi_mac     e.g. "xx:xx:xx:xx:xx:xx"
- *   /lib/firmware/rosemary/bt_addr      e.g. "07:11:22:33:44:55"
+ *   1. an explicit one-line override, for the owner's real addresses or to
+ *      pin one by hand: /lib/firmware/rosemary/wifi_mac and .../bt_addr,
+ *      either 17 characters of text ("xx:xx:xx:xx:xx:xx") or six raw bytes;
+ *   2. the factory record from the nvdata copy above;
+ *   3. a stable address derived from the device serial, with the
+ *      locally-administered bit set and the multicast bit clear, so a unit
+ *      without a usable record keeps one address across boots instead of
+ *      gen4m's 00:08:22 + timer, which changed every boot.
  *
- * either as that 17-character text or as six raw bytes. The override wins over
- * the nvdata record, the record wins over nothing at all, and when neither is
- * usable the consumers keep their previous behaviour (gen4m derives a Wi-Fi
- * MAC per boot, the Bluetooth driver re-applies what the controller reports).
+ * Nothing here writes to the nvdata partition: a wrong write destroys the RF
+ * calibration.
  */
+
+#include <crypto/sha2.h>
 
 #include <linux/device.h>
 #include <linux/firmware.h>
@@ -45,6 +55,7 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/string.h>
 #include <linux/types.h>
 
 #include "nvdata_mac.h"
@@ -58,11 +69,20 @@
 #define OVERRIDE_WIFI_FILE	"rosemary/wifi_mac"
 #define OVERRIDE_BT_FILE	"rosemary/bt_addr"
 
-/* MTK NVRAM record header, 12 bytes; the payload follows it. */
-#define NVRAM_HEADER_SIZE	12
+/*
+ * Where each record keeps its address (see the comment at the top): the WIFI
+ * record's aucMacAddress after two version words, the BT_Addr record's BD_ADDR
+ * at the very start.
+ */
+#define WIFI_MAC_OFFSET		4
+#define BT_ADDR_OFFSET		0
 
-/* Enough for the largest record either file holds (BT is 440 bytes). */
-#define NVRAM_RECORD_MAX	512
+/* "androidboot.serialno=" is what the loader passes this phone at every boot. */
+#define SERIALNO_PROP		"androidboot.serialno="
+#define SERIAL_MAX		64
+
+/* Domain separator for the derived addresses: role, then the serial. */
+#define DERIVE_PREFIX		"poco-m5s/rosemary/"
 
 static u8 mtk_nvdata_wifi_mac[ETH_ALEN];
 static u8 mtk_nvdata_bt_addr[ETH_ALEN];
@@ -101,9 +121,11 @@ EXPORT_SYMBOL_GPL(mtk_nvdata_get_bt_addr);
 /*
  * Reject what is not a usable unicast address: all-zero and broadcast records
  * are erased or default data, and a multicast one is not an address any radio
- * may adopt. The last case is not hypothetical: this phone's BT_Addr record
- * yields xx:xx:xx:xx:xx:xx (byte 0 odd), which the driver used to apply to the
- * controller before this check existed (lead note 22).
+ * may adopt. That last case is what made h5's wrong offset visible rather than
+ * silent: read at byte 12, this phone's BT_Addr record yields xx:xx:xx:xx:xx:xx,
+ * whose odd first octet is the multicast bit, and the controller took it as the
+ * BD_ADDR until this check existed (lead note 22). Read where the record really
+ * keeps it, the same file yields xx:xx:xx:xx:xx:xx and passes.
  */
 static bool nvdata_addr_is_valid(const u8 *addr)
 {
@@ -172,39 +194,138 @@ static bool nvdata_load_override(const char *name, u8 addr[ETH_ALEN])
 	return err == 0;
 }
 
-static int nvdata_load_one(const char *name, u8 addr[ETH_ALEN])
+/*
+ * The factory record: `name` is the file in the nvdata copy, `offset` where its
+ * structure keeps the address.
+ */
+static int nvdata_load_record(const char *name, unsigned int offset,
+			      u8 addr[ETH_ALEN])
 {
 	const struct firmware *fw;
 	int err;
 
 	err = request_firmware(&fw, name, NULL);
 	if (err) {
-		pr_info("nvdata: %s not available (%d), keeping the default address\n",
-			name, err);
+		pr_info("nvdata: %s not available (%d)\n", name, err);
 		return err;
 	}
 
-	if (fw->size < NVRAM_HEADER_SIZE + ETH_ALEN) {
-		pr_warn("nvdata: %s is too short (%zu bytes)\n", name, fw->size);
+	if (fw->size < offset + ETH_ALEN) {
+		pr_warn("nvdata: %s is %zu bytes, too short for an address at byte %u\n",
+			name, fw->size, offset);
 		err = -EINVAL;
 		goto out;
 	}
 
-	ether_addr_copy(addr, fw->data + NVRAM_HEADER_SIZE);
+	ether_addr_copy(addr, fw->data + offset);
 
 	if (!nvdata_addr_is_valid(addr)) {
-		pr_warn("nvdata: %s holds no usable address (%pM), ignoring it\n",
-			name, addr);
+		pr_warn("nvdata: %s holds no usable address at byte %u (%pM), ignoring it\n",
+			name, offset, addr);
 		err = -EINVAL;
 		goto out;
 	}
 
-	pr_info("nvdata: %s gives %pM\n", name, addr);
+	pr_info("nvdata: %s gives %pM (byte %u)\n", name, addr, offset);
 
 out:
 	release_firmware(fw);
 
 	return err;
+}
+
+/*
+ * The loader's view of this phone's serial, from /chosen/bootargs - the same
+ * string the kernel prints as "androidboot.serialno=" in its command line, and
+ * the one thing this board keeps per unit that the kernel can read without
+ * touching a partition. Returns false when the bootloader did not pass one.
+ */
+static bool nvdata_serial(char *out, size_t len)
+{
+	struct device_node *chosen;
+	const char *prop, *bootargs, *p, *end;
+	int prop_len;
+	size_t n;
+
+	chosen = of_find_node_by_path("/chosen");
+	if (!chosen)
+		return false;
+
+	prop = of_get_property(chosen, "bootargs", &prop_len);
+	of_node_put(chosen);
+	if (!prop || prop_len <= 0)
+		return false;
+
+	/*
+	 * The kernel's own command line comes out of this property, so it ends
+	 * with a NUL in practice - but the length is what makes the search below
+	 * safe, and the loader is not ours to trust.
+	 */
+	bootargs = prop;
+	n = strnlen(bootargs, prop_len);
+
+	p = strnstr(bootargs, SERIALNO_PROP, n);
+	if (!p)
+		return false;
+
+	p += strlen(SERIALNO_PROP);
+	end = memchr(p, ' ', n - (size_t)(p - bootargs));
+	n = end ? (size_t)(end - p) : n - (size_t)(p - bootargs);
+
+	if (!n || n >= len)
+		return false;
+
+	memcpy(out, p, n);
+	out[n] = '\0';
+
+	return true;
+}
+
+/*
+ * A stable address for a unit whose nvdata copy holds nothing usable. The
+ * serial is hashed with SHA-256 under a role prefix, so the address is the
+ * same on every boot and on every reinstall of this image, two roles never
+ * collide, and the serial itself cannot be recovered from it. The two bits
+ * that make it a legal address are set the standard way: the multicast bit
+ * cleared, the locally-administered bit set.
+ */
+static bool nvdata_derive(const char *role, u8 addr[ETH_ALEN])
+{
+	char serial[SERIAL_MAX];
+	char seed[SERIAL_MAX + sizeof(DERIVE_PREFIX) + sizeof("bluetooth")];
+	u8 digest[SHA256_DIGEST_SIZE];
+	int len;
+
+	if (!nvdata_serial(serial, sizeof(serial))) {
+		pr_warn("nvdata: no %s address and no androidboot.serialno to derive one from\n",
+			role);
+		return false;
+	}
+
+	len = scnprintf(seed, sizeof(seed), DERIVE_PREFIX "%s:%s", role, serial);
+	sha256(seed, len, digest);
+
+	memcpy(addr, digest, ETH_ALEN);
+	addr[0] = (addr[0] & 0xfc) | 0x02;
+
+	pr_info("nvdata: no factory %s address, using the stable one derived from the device serial: %pM\n",
+		role, addr);
+
+	return true;
+}
+
+static void nvdata_take(bool is_wifi, const u8 addr[ETH_ALEN]);
+
+/* One role, in the order the override, the record and the derivation win. */
+static void nvdata_resolve(bool is_wifi, const char *override,
+			   const char *record, unsigned int offset)
+{
+	u8 addr[ETH_ALEN];
+
+	if (nvdata_load_override(override, addr) ||
+	    !nvdata_load_record(record, offset, addr) ||
+	    nvdata_derive(is_wifi ? "wifi" : "bluetooth", addr))
+		nvdata_take(is_wifi, addr);
 }
 
 static void nvdata_take(bool is_wifi, const u8 addr[ETH_ALEN])
@@ -222,17 +343,10 @@ static void nvdata_take(bool is_wifi, const u8 addr[ETH_ALEN])
 
 static int mtk_nvdata_probe(struct platform_device *pdev)
 {
-	u8 addr[ETH_ALEN];
-
-	/* Wi-Fi: the override file first, then the factory record. */
-	if (nvdata_load_override(OVERRIDE_WIFI_FILE, addr) ||
-	    !nvdata_load_one(NVDATA_WIFI_FILE, addr))
-		nvdata_take(true, addr);
-
-	/* Bluetooth: the same order. */
-	if (nvdata_load_override(OVERRIDE_BT_FILE, addr) ||
-	    !nvdata_load_one(NVDATA_BT_FILE, addr))
-		nvdata_take(false, addr);
+	nvdata_resolve(true, OVERRIDE_WIFI_FILE, NVDATA_WIFI_FILE,
+		       WIFI_MAC_OFFSET);
+	nvdata_resolve(false, OVERRIDE_BT_FILE, NVDATA_BT_FILE,
+		       BT_ADDR_OFFSET);
 
 	return 0;
 }
@@ -262,5 +376,5 @@ static struct platform_driver mtk_nvdata_driver = {
 module_platform_driver(mtk_nvdata_driver);
 
 MODULE_AUTHOR("The poco-m5s port");
-MODULE_DESCRIPTION("MediaTek MT6785 factory addresses from a copied nvdata tree");
+MODULE_DESCRIPTION("MediaTek MT6785 Wi-Fi MAC and Bluetooth address");
 MODULE_LICENSE("GPL");

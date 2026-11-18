@@ -24,11 +24,14 @@ config MTK_WLAN_GEN4M
 	  config subset: CONNAC (connac1.0) AXI-HIF, chip 6785, WIFI_IP_SET=2.
 
 config MTK_NVDATA_MAC
-	tristate "MediaTek MT6785 factory addresses from a copied nvdata tree"
+	tristate "MediaTek MT6785 Wi-Fi MAC and Bluetooth address"
+	select CRYPTO_LIB_SHA256
 	help
-	  Read the Wi-Fi MAC and the Bluetooth address from a read-only copy of
-	  the phone's nvdata partition, placed under
-	  /lib/firmware/rosemary/nvdata/APCFG/APRDEB/. The live partition is
-	  never touched: it holds the RF calibration and a wrong write destroys
-	  it. Without the copy the drivers keep their defaults (a random Wi-Fi
-	  MAC and the firmware's own Bluetooth address).
+	  Supply wlan0 and hci0 with the addresses this phone was made with,
+	  which stock reads through MTK's nvram service: from the factory records
+	  of a read-only copy of the nvdata partition under
+	  /lib/firmware/rosemary/nvdata/APCFG/APRDEB/, from a one-line override
+	  in /lib/firmware/rosemary/, or - when neither holds a usable address -
+	  derived from the device serial, so that a unit keeps one address
+	  instead of a new one on every boot. The live partition is never
+	  touched: it holds the RF calibration and a wrong write destroys it.
