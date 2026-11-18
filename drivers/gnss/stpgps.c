@@ -27,6 +27,7 @@
 
 #include <linux/cdev.h>
 #include <linux/fs.h>
+#include <linux/minmax.h>
 #include <linux/miscdevice.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -104,8 +105,16 @@
 #define GPS_EMI_BASE_ADDR_OFFSET	(0x1A0000)
 #define GPS_EMI_SIZE			(SZ_1M + SZ_1M / 2)
 
-/* One STP frame holds one NMEA sentence or one PMTK command. */
-#define STPGPS_FRAME_SIZE	1024
+/*
+ * One STP frame holds one NMEA sentence or one PMTK command - but the daemon's
+ * code download uses much larger ones: measured on the host, mnld answers the
+ * chip's 0xfe31 reply with 1417-byte fragments (aa f0 7e 05 ...), 46 of them.
+ * The vendor's driver sizes its buffers with MTKSTP_BUFFER_SIZE (16384,
+ * stp_core.h) and truncates a longer write to that; this driver used 1024 and
+ * answered -EMSGSIZE, which is why the code download never started on the phone
+ * (lead note 33: tx 116 B in 1 frames, mvcd 0/46, then exit).
+ */
+#define STPGPS_FRAME_SIZE	16384
 
 /*
  * How much of the first frames of each direction reaches the log. The daemon's
@@ -475,9 +484,30 @@ static ssize_t stpgps_read(struct file *file, char __user *buf, size_t count,
 		skb = stpgps_take_frame(gps);
 		if (skb) {
 			len = min(count, skb->len);
-			if (copy_to_user(buf, skb->data, len))
-				len = -EFAULT;
-			kfree_skb(skb);
+			if (copy_to_user(buf, skb->data, len)) {
+				kfree_skb(skb);
+				return -EFAULT;
+			}
+			/*
+			 * A short user read must not throw the rest of the frame
+			 * away. The vendor driver hands the user's count straight to
+			 * the STP ring, so whatever did not fit stays queued and the
+			 * daemon's next read gets it; this driver copied the whole
+			 * frame into an skb first and then dropped the tail, which is
+			 * silent data loss on exactly the daemon's protocol - a
+			 * message cut in the middle reads as "waiting for more" that
+			 * never comes. Pull the delivered prefix and put the rest back
+			 * at the head of the queue instead.
+			 */
+			if (len < skb->len) {
+				skb_pull(skb, len);
+				mutex_lock(&gps->lock);
+				list_add(&skb->list, &gps->rx_list);
+				mutex_unlock(&gps->lock);
+				wake_up_interruptible(&gps->read_wait);
+			} else {
+				kfree_skb(skb);
+			}
 			return len;
 		}
 
@@ -505,8 +535,8 @@ static ssize_t stpgps_write(struct file *file, const char __user *buf,
 	if (!gps->gps_on)
 		return -ENODEV;
 
-	if (count > STPGPS_FRAME_SIZE)
-		return -EMSGSIZE;
+	/* Like GPS_write(): the vendor truncates to the buffer instead of failing. */
+	count = min_t(size_t, count, STPGPS_FRAME_SIZE);
 
 	kbuf = memdup_user(buf, count);
 	if (IS_ERR(kbuf))
