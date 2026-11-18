@@ -46,13 +46,26 @@
 #define CFG_FUNC_FM_SUPPORT 0
 #endif
 
-#if IS_ENABLED(CONFIG_MTK_COMBO_GPS)
+/*
+ * GPS is a function of this same CONNSYS block on MT6785, so it must be
+ * compiled in: without these ops gpWmtFuncOps[WMTDRV_TYPE_GPS] stays NULL and
+ * every FUNC_CTRL(GPS on) fails. That is exactly what lead/comb7 logged when
+ * the GPS stage opened /dev/stpgps:
+ *
+ *   [WMT-CORE][W]opfunc_func_on:WMT-CORE: ops for type(2) not found
+ *   [WMT-CORE][E]opfunc_func_on(1333):WMT-CORE:type(0x2) function on failed, ret(-5)
+ *
+ * and why the bridge read 0 bytes: stpgps_open() returns -EIO when the
+ * function does not power on. The vendor gates this on CONFIG_MTK_COMBO_GPS,
+ * a BSP Kconfig symbol that does not exist in mainline, so the test was
+ * always false here.
+ *
+ * GPSL5 stays off: it is the second GNSS band of the newer combo chips
+ * (MT6877 and up); MT6631 has no L5 task, and WMTDRV_TYPE_GPSL5 is not a
+ * function this stack may switch on.
+ */
 #define CFG_FUNC_GPS_SUPPORT 1
-#define CFG_FUNC_GPSL5_SUPPORT 1
-#else
-#define CFG_FUNC_GPS_SUPPORT 0
 #define CFG_FUNC_GPSL5_SUPPORT 0
-#endif
 
 #if 1				/* IS_ENABLED(CONFIG_MTK_COMBO_WIFI) */
 #define CFG_FUNC_WIFI_SUPPORT 1
