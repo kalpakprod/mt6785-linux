@@ -4,6 +4,7 @@
 
 #include <asm/barrier.h>
 #include <linux/arm-smccc.h>
+#include <linux/io.h>
 #include <linux/soc/mediatek/mtk_sip_svc.h>
 #include <linux/clk.h>
 #include <linux/crc32.h>
@@ -545,8 +546,8 @@ struct mt6785_scp_region_info {
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static void mt6785_scp_mpu_probe(struct mtk_scp *scp);
-static void mt6785_scp_hello_world(struct mtk_scp *scp);
-static void mt6785_scp_hello_check(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_dram_probe(struct mtk_scp *scp);
+static void mt6785_scp_dram_probe_check(struct mtk_scp *scp, const char *when);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_set(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
@@ -1352,8 +1353,8 @@ static int scp_start(struct rproc *rproc)
 	 */
 	mt6785_scp_slp_prot_clear(scp);
 
-	/* the loader's place is taken by the hello-world program (NOTE 30), see its comment */
-	mt6785_scp_hello_world(scp);
+	/* the loader's place is taken by the DRAM probe (NOTE 31), see its comment */
+	mt6785_scp_dram_probe(scp);
 
 	scp->data->scp_reset_deassert(scp);
 
@@ -1387,10 +1388,10 @@ static int scp_start(struct rproc *rproc)
 	 * disassembled at whatever PC shows.
 	 */
 	mt6785_scp_log_wdt_sleep(scp, "just after the release");
-	mt6785_scp_hello_check(scp, "just after the release");
+	mt6785_scp_dram_probe_check(scp, "just after the release");
 	msleep(100);
 	mt6785_scp_log_wdt_sleep(scp, "100 ms after the release");
-	mt6785_scp_hello_check(scp, "100 ms after the release");
+	mt6785_scp_dram_probe_check(scp, "100 ms after the release");
 
 	/*
 	 * Nothing else reads the SCP's registers from here on: readiness is the ready IPI over
@@ -1465,7 +1466,7 @@ static int scp_start(struct rproc *rproc)
 		}
 
 		mt6785_scp_log_wdt_sleep(scp, "at the timeout");
-		mt6785_scp_hello_check(scp, "at the timeout");
+		mt6785_scp_dram_probe_check(scp, "at the timeout");
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
 		mt6785_scp_awake(scp, false);
@@ -3444,67 +3445,104 @@ static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
 }
 
 /*
- * A hello-world for the core itself.
+ * A DRAM probe for the core itself, at the loader's own reset vector.
  *
- * The real loader is 0x438 bytes at TCM 0 and its reset vector is 0x1e1 (LK stages exactly
- * that, `pl_lk.txt:1813-1815`). This program is 16 bytes placed at that same reset vector, so
- * the vector table LK staged - initial SP 0x538, reset vector 0x1e1 - stays valid and untouched:
+ * The hello-world of h15 proved the core runs our code from the TCM, so the question is now
+ * what it can reach. The loader itself carries no DRAM address: it reads the region information
+ * from TCM 0x400 (its entry at 0x1e0 loads 0x400 first, `ldr r2, [pc]` at image file 0x3e0) and
+ * copies the firmware from the address we write there, 0x9fc00800. So this program reads three
+ * candidate mappings of that same word and records what each returns:
  *
- *   1e0: 0x4801  ldr r0, [pc, #4]    -> 0xdeadbeef (the word at 0x1e8)
- *   1e2: 0x4902  ldr r1, [pc, #8]    -> 0x600      (the word at 0x1ec)
- *   1e4: 0x6008  str r0, [r1]        -> TCM word 0x600
- *   1e6: 0xe7fe  b   .               -> spin here
+ *   0x9fc00800  the address as the region info has it (what stock uses)
+ *   0x5fc00800  the same minus the 0x40000000 DRAM base
+ *   0xcfc00800  the same plus 0x30000000, the offset the core uses for its config block
+ *               (0x105c0000 -> 0x405c0000 in the firmware's own literals)
  *
- * The literal addresses are the core's own view. The core reads its vector table from 0 and
- * its stack pointer is 0x538, both inside the same window, so TCM byte n is address n for
- * the core and 0x10500000 + n for the AP.
+ * The program is hand-encoded Thumb16, no assembler involved:
  *
- * What the test means: 0xdeadbeef in TCM 0x600 after the release proves the core runs from
- * the TCM, and that the fault is in the loader/firmware path (DRAM access, the loader's own
- * copy, L1C). No write at all means the core is not executing: not released, not clocked, or
- * held by something this driver does not model.
+ *   1e0: ldr r5, [pc]   -> table at 0x220        1e2: ldr r6, [pc] -> progress 0x610
+ *   then, for each candidate i: movs r3, #i; str r3,[r6]; ldr r0,[r5,#4i]; ldr r1,[r0];
+ *                               ldr r0,[r5,#4i+4]; str r1,[r0]
+ *   208: movs r3, #0xf; str r3,[r6]; b .        (progress 0xf = all three reads finished)
  *
- * Test scaffolding for one trial, not for upstream: it replaces the loader, so nothing this
- * firmware would do can happen while it is in place. `mt6785_scp_hello_world()` is called from
- * scp_start() and the check below it; removing both calls is the whole revert.
+ * A read that faults hard-faults the core, so the progress word names the candidate that was in
+ * flight and its destination word stays 0 - which is the answer, not a failure of the test. No
+ * write to DRAM is made: a wrong alias would put a store into somebody else's memory.
+ *
+ * Registers and words, so the encoding can be checked by eye: ldr rX,[pc] = 0x48xx|X,
+ * ldr rX,[rY,#imm] = 0x6800|(imm/4<<6)|(Y<<3)|X, str rX,[rY] = 0x6000|(Y<<3)|X,
+ * movs rX,#imm = 0x2000|(X<<8)|imm, b . = 0xe7fe.
+ *
+ * Test scaffolding for one trial, not for upstream: it replaces the loader, so nothing the real
+ * firmware would do can happen while it is in place, and deleting its two calls is the revert.
  */
-static const u8 mt6785_scp_hello_code[] = {
-	0x01, 0x48, 0x02, 0x49, 0x08, 0x60, 0xfe, 0xe7,
-	0xef, 0xbe, 0xad, 0xde, 0x00, 0x06, 0x00, 0x00,
+static const u8 mt6785_scp_probe_code[] = {
+	0x0b, 0x4d, 0x0c, 0x4e, 0x00, 0x23, 0x33, 0x60, 0x28, 0x68, 0x01, 0x68,
+	0x68, 0x68, 0x01, 0x60, 0x01, 0x23, 0x33, 0x60, 0xa8, 0x68, 0x01, 0x68,
+	0xe8, 0x68, 0x01, 0x60, 0x02, 0x23, 0x33, 0x60, 0x28, 0x69, 0x01, 0x68,
+	0x68, 0x69, 0x01, 0x60, 0x0f, 0x23, 0x33, 0x60, 0xfe, 0xe7, 0x00, 0xbf,
+	0x20, 0x02, 0x00, 0x00, 0x10, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0xc0, 0x9f, 0x04, 0x06, 0x00, 0x00,
+	0x00, 0x08, 0xc0, 0x5f, 0x08, 0x06, 0x00, 0x00, 0x00, 0x08, 0xc0, 0xcf,
+	0x0c, 0x06, 0x00, 0x00,
 };
 
-#define MT6785_SCP_HELLO_OFS	0x1e0
-#define MT6785_SCP_HELLO_WORD	0x600
-#define MT6785_SCP_HELLO_VALUE	0xdeadbeef
+#define MT6785_SCP_PROBE_OFS	0x1e0
+#define MT6785_SCP_PROBE_PROGRESS	0x610
+/* the three destination words, one per candidate, in the program's own order */
+#define MT6785_SCP_PROBE_DEST0	0x604
+#define MT6785_SCP_PROBE_DEST1	0x608
+#define MT6785_SCP_PROBE_DEST2	0x60c
+#define MT6785_SCP_PROBE_DONE	0x0f
 
-static void mt6785_scp_hello_world(struct mtk_scp *scp)
+static void mt6785_scp_dram_probe(struct mtk_scp *scp)
 {
 	u32 sp = readl(scp->sram_base);
 	u32 vec = readl(scp->sram_base + 4);
 
-	writel(0, scp->sram_base + MT6785_SCP_HELLO_WORD);
-	memcpy_toio(scp->sram_base + MT6785_SCP_HELLO_OFS, mt6785_scp_hello_code,
-		    sizeof(mt6785_scp_hello_code));
+	writel(0, scp->sram_base + MT6785_SCP_PROBE_PROGRESS);
+	writel(0, scp->sram_base + MT6785_SCP_PROBE_DEST0);
+	writel(0, scp->sram_base + MT6785_SCP_PROBE_DEST1);
+	writel(0, scp->sram_base + MT6785_SCP_PROBE_DEST2);
+	memcpy_toio(scp->sram_base + MT6785_SCP_PROBE_OFS, mt6785_scp_probe_code,
+		    sizeof(mt6785_scp_probe_code));
 	wmb();
 
-	dev_info(scp->dev, "hello-world: %zu bytes at TCM %#x, sentinel at %#x cleared, vector table kept (SP %#x vector %#x)\n",
-		 sizeof(mt6785_scp_hello_code), MT6785_SCP_HELLO_OFS,
-		 MT6785_SCP_HELLO_WORD, sp, vec);
+	dev_info(scp->dev, "dram probe: %zu bytes at TCM %#x, vector table kept (SP %#x vector %#x)\n",
+		 sizeof(mt6785_scp_probe_code), MT6785_SCP_PROBE_OFS, sp, vec);
 }
 
-static void mt6785_scp_hello_check(struct mtk_scp *scp, const char *when)
+static void mt6785_scp_dram_probe_check(struct mtk_scp *scp, const char *when)
 {
-	u32 val = readl(scp->sram_base + MT6785_SCP_HELLO_WORD);
 	void __iomem *cfg = scp->cluster->reg_base;
 	void __iomem *clk = cfg + MT6785_SCP_CLK_BLOCK;
+	u32 progress = readl(scp->sram_base + MT6785_SCP_PROBE_PROGRESS);
+	u32 d0 = readl(scp->sram_base + MT6785_SCP_PROBE_DEST0);
+	u32 d1 = readl(scp->sram_base + MT6785_SCP_PROBE_DEST1);
+	u32 d2 = readl(scp->sram_base + MT6785_SCP_PROBE_DEST2);
+	u32 ap_dram;
+	void *ap_map;
 
-	dev_info(scp->dev, "hello-world %s: TCM %#x = %#x (%s), clk_sw %#x clk_en %#x ctrl24 %#x\n",
-		 when, MT6785_SCP_HELLO_WORD, val,
-		 val == MT6785_SCP_HELLO_VALUE ? "the core ran from the TCM" :
-		 val ? "something wrote it" : "nothing wrote it",
+	/* what the AP sees at the same two addresses the core tried, for comparison */
+	ap_dram = readl(scp->lk_base + MT6785_LK_FIRMWARE_OFS);
+	ap_map = memremap(0x5fc00800, sizeof(u32), MEMREMAP_WB);
+	dev_info(scp->dev, "dram probe %s: progress %#x (%s), 9fc00800 -> %#x, 5fc00800 -> %#x, cfc00800 -> %#x\n",
+		 when, progress,
+		 progress == MT6785_SCP_PROBE_DONE ? "all three reads returned" :
+		 progress < 3 ? "stopped at that candidate (fault or reset)" : "odd value",
+		 d0, d1, d2);
+	dev_info(scp->dev, "dram probe %s: the AP reads 9fc00800 = %#x%s, clk_sw %#x clk_en %#x ctrl24 %#x\n",
+		 when, ap_dram,
+		 (ap_map && d0 && d0 == ap_dram) ? " (the core's d0 matches: it reads DRAM)" : "",
 		 readl(clk + MT6785_SCP_CLK_SW_SEL),
 		 readl(clk + MT6785_SCP_CLK_ENABLE),
 		 readl(clk + MT6785_SCP_CLK_CTRL_24));
+	if (ap_map) {
+		dev_info(scp->dev, "dram probe %s: the AP reads 5fc00800 = %#x%s\n", when,
+			 readl(ap_map),
+			 (d1 && d1 == readl(ap_map)) ? " (the core's d1 matches too)" : "");
+		memunmap(ap_map);
+	}
 }
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
