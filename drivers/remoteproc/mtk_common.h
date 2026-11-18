@@ -140,6 +140,8 @@
 #define MT6785_EMIMPU_READ_EA		1
 #define MT6785_EMIMPU_READ_APC		2
 #define MT6785_EMIMPU_ALIGN_BITS	16
+/* the physical window LK reserves for the SCP and stages its images in (pl_lk.txt:1806) */
+#define MT6785_LK_REGION_PHYS		0x9fc00000
 /* LK's own programming of the SCP's window: region, range and both permission words */
 #define MT6785_EMIMPU_REGION_NUM	32
 #define MT6785_EMIMPU_SCP_REGION	6

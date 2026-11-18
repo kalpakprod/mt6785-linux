@@ -1353,7 +1353,7 @@ static int scp_start(struct rproc *rproc)
 	 */
 	mt6785_scp_slp_prot_clear(scp);
 
-	/* the loader's place is taken by the DRAM probe (NOTE 31), see its comment */
+	/* the loader's place is taken by the copy probe (NOTE 32), see its comment */
 	mt6785_scp_dram_probe(scp);
 
 	scp->data->scp_reset_deassert(scp);
@@ -3445,55 +3445,48 @@ static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
 }
 
 /*
- * A DRAM probe for the core itself, at the loader's own reset vector.
+ * The loader's own job, done by hand, at the loader's own reset vector.
  *
- * The hello-world of h15 proved the core runs our code from the TCM, so the question is now
- * what it can reach. The loader itself carries no DRAM address: it reads the region information
- * from TCM 0x400 (its entry at 0x1e0 loads 0x400 first, `ldr r2, [pc]` at image file 0x3e0) and
- * copies the firmware from the address we write there, 0x9fc00800. So this program reads three
- * candidate mappings of that same word and records what each returns:
+ * h15 proved the core executes our code from the TCM, and h16 proved it reads DRAM at
+ * 0x9fc00800 (`9fc00800 -> 0xb0180`, the same word the AP sees). So what is left of the loader
+ * is its copy: the firmware's 0xbb800 bytes from 0x9fc00800 into the TCM at core 0x800, and then
+ * the jump to 0x801 (the loader's own literals are exactly 0x800 for the destination). This
+ * program does that itself, 56 bytes, and writes a progress word to TCM 0x610 so the AP can see
+ * how far it got:
  *
- *   0x9fc00800  the address as the region info has it (what stock uses)
- *   0x5fc00800  the same minus the 0x40000000 DRAM base
- *   0xcfc00800  the same plus 0x30000000, the offset the core uses for its config block
- *               (0x105c0000 -> 0x405c0000 in the firmware's own literals)
+ *   1 = about to copy      2 = copy finished      3 = about to jump to the firmware
  *
- * The program is hand-encoded Thumb16, no assembler involved:
+ *   1e0: ldr r5,[pc] -> 0x610         movs r3,#1; str r3,[r5]
+ *   1e6: ldr r0,[pc] -> 0x9fc00800    ldr r1,[pc] -> 0x800    ldr r2,[pc] -> 0x2ee00 words
+ *   1ec: loop: ldr r3,[r0]; str r3,[r1]; adds r0,#4; adds r1,#4; subs r2,#1; bne loop
+ *   1f8: movs r3,#2; str r3,[r5]      ldr r0,[pc] -> 0x801     movs r3,#3; str r3,[r5]; bx r0
  *
- *   1e0: ldr r5, [pc]   -> table at 0x220        1e2: ldr r6, [pc] -> progress 0x610
- *   then, for each candidate i: movs r3, #i; str r3,[r6]; ldr r0,[r5,#4i]; ldr r1,[r0];
- *                               ldr r0,[r5,#4i+4]; str r1,[r0]
- *   208: movs r3, #0xf; str r3,[r6]; b .        (progress 0xf = all three reads finished)
+ * Hand-encoded Thumb16, no assembler: ldr rX,[pc] = 0x48xx|X, ldr rX,[rY] = 0x68|Y<<3|X,
+ * str rX,[rY] = 0x60|Y<<3|X, movs rX,#imm = 0x20|X<<8|imm, adds rX,#4 = 0x30|X<<8|4,
+ * subs rX,#1 = 0x38|X<<8|1, bne = 0xd1xx, bx = 0x4700|X.
  *
- * A read that faults hard-faults the core, so the progress word names the candidate that was in
- * flight and its destination word stays 0 - which is the answer, not a failure of the test. No
- * write to DRAM is made: a wrong alias would put a store into somebody else's memory.
- *
- * Registers and words, so the encoding can be checked by eye: ldr rX,[pc] = 0x48xx|X,
- * ldr rX,[rY,#imm] = 0x6800|(imm/4<<6)|(Y<<3)|X, str rX,[rY] = 0x6000|(Y<<3)|X,
- * movs rX,#imm = 0x2000|(X<<8)|imm, b . = 0xe7fe.
+ * If the copy is what the real loader dies in, 0x610 stays at 1 and nothing else moves; if the
+ * copy finishes and the jump is taken, the firmware is executing from TCM 0x800 and its own log
+ * buffer becomes the next place to look (the post-mortem's DRAM text scan already covers it).
  *
  * Test scaffolding for one trial, not for upstream: it replaces the loader, so nothing the real
- * firmware would do can happen while it is in place, and deleting its two calls is the revert.
+ * loader would do happens while it is in place, and deleting its two calls is the revert.
  */
 static const u8 mt6785_scp_probe_code[] = {
-	0x0b, 0x4d, 0x0c, 0x4e, 0x00, 0x23, 0x33, 0x60, 0x28, 0x68, 0x01, 0x68,
-	0x68, 0x68, 0x01, 0x60, 0x01, 0x23, 0x33, 0x60, 0xa8, 0x68, 0x01, 0x68,
-	0xe8, 0x68, 0x01, 0x60, 0x02, 0x23, 0x33, 0x60, 0x28, 0x69, 0x01, 0x68,
-	0x68, 0x69, 0x01, 0x60, 0x0f, 0x23, 0x33, 0x60, 0xfe, 0xe7, 0x00, 0xbf,
-	0x20, 0x02, 0x00, 0x00, 0x10, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0xc0, 0x9f, 0x04, 0x06, 0x00, 0x00,
-	0x00, 0x08, 0xc0, 0x5f, 0x08, 0x06, 0x00, 0x00, 0x00, 0x08, 0xc0, 0xcf,
-	0x0c, 0x06, 0x00, 0x00,
+	0x08, 0x4d, 0x01, 0x23, 0x2b, 0x60, 0x08, 0x48, 0x08, 0x49, 0x09, 0x4a,
+	0x03, 0x68, 0x0b, 0x60, 0x04, 0x30, 0x04, 0x31, 0x01, 0x3a, 0xf9, 0xd1,
+	0x02, 0x23, 0x2b, 0x60, 0x05, 0x48, 0x03, 0x23, 0x2b, 0x60, 0x00, 0x47,
+	0x10, 0x06, 0x00, 0x00, 0x00, 0x08, 0xc0, 0x9f, 0x00, 0x08, 0x00, 0x00,
+	0x00, 0xee, 0x02, 0x00, 0x01, 0x08, 0x00, 0x00,
 };
 
 #define MT6785_SCP_PROBE_OFS	0x1e0
 #define MT6785_SCP_PROBE_PROGRESS	0x610
-/* the three destination words, one per candidate, in the program's own order */
-#define MT6785_SCP_PROBE_DEST0	0x604
-#define MT6785_SCP_PROBE_DEST1	0x608
-#define MT6785_SCP_PROBE_DEST2	0x60c
-#define MT6785_SCP_PROBE_DONE	0x0f
+#define MT6785_SCP_PROBE_COPY_STARTED	1
+#define MT6785_SCP_PROBE_COPY_DONE	2
+#define MT6785_SCP_PROBE_JUMPING	3
+/* where the copy lands, and the word it should hold: the first word of the firmware record */
+#define MT6785_SCP_PROBE_DEST	0x800
 
 static void mt6785_scp_dram_probe(struct mtk_scp *scp)
 {
@@ -3501,15 +3494,18 @@ static void mt6785_scp_dram_probe(struct mtk_scp *scp)
 	u32 vec = readl(scp->sram_base + 4);
 
 	writel(0, scp->sram_base + MT6785_SCP_PROBE_PROGRESS);
-	writel(0, scp->sram_base + MT6785_SCP_PROBE_DEST0);
-	writel(0, scp->sram_base + MT6785_SCP_PROBE_DEST1);
-	writel(0, scp->sram_base + MT6785_SCP_PROBE_DEST2);
+	/* the destination is spelled out so a stale word from a previous boot cannot be mistaken
+	 * for a copy that happened
+	 */
+	writel(0, scp->sram_base + MT6785_SCP_PROBE_DEST);
 	memcpy_toio(scp->sram_base + MT6785_SCP_PROBE_OFS, mt6785_scp_probe_code,
 		    sizeof(mt6785_scp_probe_code));
 	wmb();
 
-	dev_info(scp->dev, "dram probe: %zu bytes at TCM %#x, vector table kept (SP %#x vector %#x)\n",
-		 sizeof(mt6785_scp_probe_code), MT6785_SCP_PROBE_OFS, sp, vec);
+	dev_info(scp->dev, "copy probe: %zu bytes at TCM %#x, vector table kept (SP %#x vector %#x), source %#x -> TCM %#x, %u words\n",
+		 sizeof(mt6785_scp_probe_code), MT6785_SCP_PROBE_OFS, sp, vec,
+		 MT6785_LK_REGION_PHYS + MT6785_LK_FIRMWARE_OFS, MT6785_SCP_PROBE_DEST,
+		 MT6785_SCP_FIRMWARE_TCM_MAX / 4);
 }
 
 static void mt6785_scp_dram_probe_check(struct mtk_scp *scp, const char *when)
@@ -3517,32 +3513,20 @@ static void mt6785_scp_dram_probe_check(struct mtk_scp *scp, const char *when)
 	void __iomem *cfg = scp->cluster->reg_base;
 	void __iomem *clk = cfg + MT6785_SCP_CLK_BLOCK;
 	u32 progress = readl(scp->sram_base + MT6785_SCP_PROBE_PROGRESS);
-	u32 d0 = readl(scp->sram_base + MT6785_SCP_PROBE_DEST0);
-	u32 d1 = readl(scp->sram_base + MT6785_SCP_PROBE_DEST1);
-	u32 d2 = readl(scp->sram_base + MT6785_SCP_PROBE_DEST2);
-	u32 ap_dram;
-	void *ap_map;
+	u32 dst = readl(scp->sram_base + MT6785_SCP_PROBE_DEST);
+	u32 src = readl(scp->lk_base + MT6785_LK_FIRMWARE_OFS);
 
-	/* what the AP sees at the same two addresses the core tried, for comparison */
-	ap_dram = readl(scp->lk_base + MT6785_LK_FIRMWARE_OFS);
-	ap_map = memremap(0x5fc00800, sizeof(u32), MEMREMAP_WB);
-	dev_info(scp->dev, "dram probe %s: progress %#x (%s), 9fc00800 -> %#x, 5fc00800 -> %#x, cfc00800 -> %#x\n",
+	dev_info(scp->dev, "copy probe %s: progress %u (%s), TCM %#x = %#x, the AP reads %#x there%s, clk_sw %#x clk_en %#x ctrl24 %#x\n",
 		 when, progress,
-		 progress == MT6785_SCP_PROBE_DONE ? "all three reads returned" :
-		 progress < 3 ? "stopped at that candidate (fault or reset)" : "odd value",
-		 d0, d1, d2);
-	dev_info(scp->dev, "dram probe %s: the AP reads 9fc00800 = %#x%s, clk_sw %#x clk_en %#x ctrl24 %#x\n",
-		 when, ap_dram,
-		 (ap_map && d0 && d0 == ap_dram) ? " (the core's d0 matches: it reads DRAM)" : "",
+		 progress == MT6785_SCP_PROBE_JUMPING ? "jumped to the firmware" :
+		 progress == MT6785_SCP_PROBE_COPY_DONE ? "copy finished" :
+		 progress == MT6785_SCP_PROBE_COPY_STARTED ? "still copying (or died in the loop)" :
+		 "nothing",
+		 MT6785_SCP_PROBE_DEST, dst, src,
+		 dst && dst == src ? " (the copy is in the TCM)" : "",
 		 readl(clk + MT6785_SCP_CLK_SW_SEL),
 		 readl(clk + MT6785_SCP_CLK_ENABLE),
 		 readl(clk + MT6785_SCP_CLK_CTRL_24));
-	if (ap_map) {
-		dev_info(scp->dev, "dram probe %s: the AP reads 5fc00800 = %#x%s\n", when,
-			 readl(ap_map),
-			 (d1 && d1 == readl(ap_map)) ? " (the core's d1 matches too)" : "");
-		memunmap(ap_map);
-	}
 }
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
