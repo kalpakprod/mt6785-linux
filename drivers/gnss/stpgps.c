@@ -27,7 +27,6 @@
 
 #include <linux/cdev.h>
 #include <linux/fs.h>
-#include <linux/kthread.h>
 #include <linux/miscdevice.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -40,6 +39,7 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 
 #include "osal_typedef.h"
 #include "wmt_exp.h"
@@ -102,7 +102,7 @@ struct stpgps {
 	struct miscdevice gps_misc;
 	struct miscdevice emi_misc;
 
-	/* Guards opened/rx_list: read() and the RX callback both take it. */
+	/* Guards opened/rx_list: read() and the RX path both take it. */
 	struct mutex lock;
 	wait_queue_head_t read_wait;
 	wait_queue_head_t close_wait;
@@ -110,9 +110,26 @@ struct stpgps {
 	bool opened;
 	bool gps_on;
 
+	/*
+	 * Set by remove(), read under the same wait as the queue: a reader must
+	 * wake up and see end of file when the module goes away, and it must not
+	 * depend on kthread_should_stop() to do it - that predicate belongs to
+	 * the thread which called kthread_run() and dereferences a NULL in every
+	 * other task (the oops lead note 23 opens with).
+	 */
+	bool shutting_down;
+
 	/* RX queue: one STP frame per entry. */
 	struct list_head rx_list;
-	unsigned int rx_len;
+
+	/*
+	 * STP hands frames over in its own RX thread, which must not sleep in a
+	 * callback: the callback only schedules this work, and the work moves
+	 * the frames into rx_list and wakes the readers. Draining here and not in
+	 * read() is also what makes poll() honest - a frame waiting in STP's queue
+	 * is invisible to a reader that asked whether the device is readable.
+	 */
+	struct work_struct rx_work;
 
 	void *emi_buf;
 	phys_addr_t emi_phys;
@@ -128,20 +145,19 @@ static void stpgps_rx_cb(void)
 	struct stpgps *gps = READ_ONCE(stpgps_dev);
 
 	if (gps)
-		wake_up_interruptible(&gps->read_wait);
+		schedule_work(&gps->rx_work);
 }
 
-/* Called from the RX thread; takes one STP frame off the queue. */
-static ssize_t stpgps_drain(void)
+/* Takes the frames STP holds for the GNSS task and puts them on our queue. */
+static int stpgps_drain(struct stpgps *gps)
 {
-	struct stpgps *gps = stpgps_dev;
 	int total = 0;
 
 	while (!mtk_wcn_stp_is_rxqueue_empty(GPS_TASK_INDX)) {
 		struct sk_buff *skb;
 		int cnt;
 
-		skb = alloc_skb(STPGPS_FRAME_SIZE, GFP_ATOMIC);
+		skb = alloc_skb(STPGPS_FRAME_SIZE, GFP_KERNEL);
 		if (!skb)
 			break;
 
@@ -155,12 +171,35 @@ static ssize_t stpgps_drain(void)
 		skb_put(skb, cnt);
 		mutex_lock(&gps->lock);
 		list_add_tail(&skb->list, &gps->rx_list);
-		gps->rx_len += cnt;
 		mutex_unlock(&gps->lock);
 		total += cnt;
 	}
 
 	return total;
+}
+
+static void stpgps_rx_work(struct work_struct *work)
+{
+	struct stpgps *gps = container_of(work, struct stpgps, rx_work);
+
+	stpgps_drain(gps);
+
+	if (!list_empty_careful(&gps->rx_list) || READ_ONCE(gps->shutting_down))
+		wake_up_interruptible(&gps->read_wait);
+}
+
+/* One frame for the reader, or NULL when the queue is empty. */
+static struct sk_buff *stpgps_take_frame(struct stpgps *gps)
+{
+	struct sk_buff *skb;
+
+	mutex_lock(&gps->lock);
+	skb = list_first_entry_or_null(&gps->rx_list, struct sk_buff, list);
+	if (skb)
+		list_del(&skb->list);
+	mutex_unlock(&gps->lock);
+
+	return skb;
 }
 
 /* ------------------------------------------------------------ char device */
@@ -225,12 +264,29 @@ static int stpgps_release(struct inode *inode, struct file *file)
 	gps->opened = false;
 	mutex_unlock(&gps->lock);
 
-	/* Wake a reader blocked in the ioctl that waits for the close. */
+	/*
+	 * Wake a reader blocked in the ioctl that waits for the close, and any
+	 * process sitting in read(): the channel is going away.
+	 */
 	wake_up_interruptible(&gps->close_wait);
+	wake_up_interruptible(&gps->read_wait);
 
 	return 0;
 }
 
+/*
+ * read() hands the daemon one STP frame at a time, the way the vendor's
+ * GPS_read() does: block until the RX path has something, return it, and give
+ * -EAGAIN instead of blocking when the daemon asked for non-blocking.
+ *
+ * What it must never do is decide whether to sleep on kthread_should_stop():
+ * that predicate only means anything inside the thread kthread_run() created
+ * (it reads current->worker_private), so calling it from the reading process
+ * dereferenced NULL and took the machine through an oops - "Unable to handle
+ * kernel NULL pointer dereference at virtual address 0, pc kthread_should_stop"
+ * on a plain user-space read of /dev/stpgps (lead note 23). End of file comes
+ * from the module going away instead, and only from there.
+ */
 static ssize_t stpgps_read(struct file *file, char __user *buf, size_t count,
 			   loff_t *ppos)
 {
@@ -242,32 +298,31 @@ static ssize_t stpgps_read(struct file *file, char __user *buf, size_t count,
 	if (!gps->gps_on)
 		return -ENODEV;
 
-	err = wait_event_interruptible(gps->read_wait,
-				       kthread_should_stop() ||
-				       !mtk_wcn_stp_is_rxqueue_empty(GPS_TASK_INDX));
-	if (err)
-		return err;
-
-	stpgps_drain();
-
-	mutex_lock(&gps->lock);
-	skb = list_first_entry_or_null(&gps->rx_list, struct sk_buff, list);
-	if (!skb) {
-		mutex_unlock(&gps->lock);
+	if (!count)
 		return 0;
+
+	for (;;) {
+		skb = stpgps_take_frame(gps);
+		if (skb) {
+			len = min(count, skb->len);
+			if (copy_to_user(buf, skb->data, len))
+				len = -EFAULT;
+			kfree_skb(skb);
+			return len;
+		}
+
+		if (READ_ONCE(gps->shutting_down))
+			return 0;
+
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+
+		err = wait_event_interruptible(gps->read_wait,
+					       READ_ONCE(gps->shutting_down) ||
+					       !list_empty(&gps->rx_list));
+		if (err)
+			return err;
 	}
-	list_del(&skb->list);
-
-	len = min(count, skb->len);
-	if (copy_to_user(buf, skb->data, len))
-		err = -EFAULT;
-	else
-		err = len;
-
-	mutex_unlock(&gps->lock);
-	kfree_skb(skb);
-
-	return err;
 }
 
 static ssize_t stpgps_write(struct file *file, const char __user *buf,
@@ -304,6 +359,9 @@ static __poll_t stpgps_poll(struct file *file, poll_table *wait)
 	if (!list_empty(&gps->rx_list))
 		mask |= EPOLLIN | EPOLLRDNORM;
 	mutex_unlock(&gps->lock);
+
+	if (READ_ONCE(gps->shutting_down))
+		mask |= EPOLLHUP;
 
 	return mask;
 }
@@ -475,6 +533,7 @@ static int stpgps_probe(struct platform_device *pdev)
 	init_waitqueue_head(&gps->read_wait);
 	init_waitqueue_head(&gps->close_wait);
 	INIT_LIST_HEAD(&gps->rx_list);
+	INIT_WORK(&gps->rx_work, stpgps_rx_work);
 
 	/*
 	 * Carve the GPS window out of the CONNSYS EMI region itself, the way
@@ -590,12 +649,30 @@ err_free:
 static void stpgps_remove(struct platform_device *pdev)
 {
 	struct stpgps *gps = platform_get_drvdata(pdev);
+	struct sk_buff *skb, *tmp;
 
+	/*
+	 * No new frames first, then whatever the RX work still has in flight,
+	 * and only then end of file for a reader that is still in read().
+	 */
 	WRITE_ONCE(stpgps_dev, NULL);
 	mtk_wcn_stp_register_event_cb(GPS_TASK_INDX, NULL);
+	cancel_work_sync(&gps->rx_work);
+
+	WRITE_ONCE(gps->shutting_down, true);
+	wake_up_interruptible(&gps->read_wait);
+	wake_up_interruptible(&gps->close_wait);
 
 	misc_deregister(&gps->emi_misc);
 	misc_deregister(&gps->gps_misc);
+
+	mutex_lock(&gps->lock);
+	list_for_each_entry_safe(skb, tmp, &gps->rx_list, list) {
+		list_del(&skb->list);
+		kfree_skb(skb);
+	}
+	mutex_unlock(&gps->lock);
+
 	iounmap(gps->emi_buf);
 }
 
