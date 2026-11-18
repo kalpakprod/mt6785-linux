@@ -3803,10 +3803,21 @@ uint32_t wlanUpdateNetworkAddress(IN struct ADAPTER
 		DBGLOG(INIT, INFO,
 		       "Using dynamically generated MAC address");
 #endif
-		/* dynamic generate */
+		/*
+		 * Last resort, and only when neither the nvram blob nor the nvdata
+		 * driver had an address (kalRetrieveNetworkAddress() above).
+		 *
+		 * The vendor's value here is 00:08:22 + kalGetTimeTick(), i.e. a
+		 * MediaTek OUI pretending to be a factory address, different on every
+		 * boot; 00:08:22 collides with real MediaTek devices and makes a
+		 * capture read as "some MTK phone" when it is this one. 02:xx is the
+		 * locally-administered range, so the address cannot claim to come
+		 * from any vendor, and the 08:22 bytes keep it recognisable as this
+		 * generator in a capture.
+		 */
 		u4SysTime = (uint32_t) kalGetTimeTick();
 
-		rMacAddr[0] = 0x00;
+		rMacAddr[0] = 0x02;
 		rMacAddr[1] = 0x08;
 		rMacAddr[2] = 0x22;
 
