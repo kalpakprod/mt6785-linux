@@ -1,0 +1,17 @@
+# /data/vendor/gps/mnl.prop - mnld's own configuration file.
+#
+# The daemon reads this file (checked with an open() interposer under qemu: it
+# opens exactly this path) and takes the data-link device and the UART speeds
+# from it. Without the file the three device fields are empty on the first pass
+# and the engine has to guess.
+#
+# This board's GNSS task lives on the CONNSYS MCU and its character device is
+# /dev/stpgps, which is what our driver registers; there is no second DSP device
+# and no UART, so the vendor's own "none" and "UseCallback" defaults are kept for
+# those two, and the speeds are the vendor defaults the daemon prints
+# (init_speed/link_speed: 38400 921600).
+dev_dsp=/dev/stpgps
+dev_dsp2=none
+dev_gps=UseCallback
+init_speed=38400
+link_speed=921600

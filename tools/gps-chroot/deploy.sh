@@ -50,7 +50,11 @@ if [ -f "$nvdata" ]; then
 	nvm=$root/mnt/vendor/nvdata
 	mkdir -p "$nvm/APCFG/APRDEB" "$nvm/APCFG/APRDCL"
 	for d in APRDEB APRDCL; do
-		for f in $(debugfs -R "ls /APCFG/$d" "$nvdata" 2>/dev/null | awk '$2 ~ /^\(/ {print $NF}' | grep -v '^\.'); do
+		# debugfs prints several entries per line: take the name that follows
+		# each "(mode)" field, not just the last field of the line.
+		for f in $(debugfs -R "ls /APCFG/$d" "$nvdata" 2>/dev/null |
+			awk '{ for (i = 1; i < NF; i++) if ($i ~ /^\([0-9]+\)$/) print $(i + 1) }' |
+			grep -v '^\.'); do
 			debugfs -R "dump -p /APCFG/$d/$f $nvm/APCFG/$d/$f" "$nvdata" >/dev/null 2>&1 || true
 		done
 	done
@@ -90,6 +94,7 @@ for f in $(find "$stage/root" -type f ! -name '*.so' ! -name '*.xml' ! -name '*.
 done
 chmod 0644 "$stage/root/system/lib64/libprops-shim.so" 2>/dev/null || true
 cp "$here/payload/gps.props" "$stage/etc/gps.props"
+cp "$here/payload/gps-mnl.prop" "$stage/etc/gps-mnl.prop"
 cp "$here/payload/gps-engine.service" "$stage/gps-engine.service"
 cp "$here/payload/install.sh" "$stage/install.sh"
 cp "$here/payload/scripts/"*.sh "$stage/scripts/"
