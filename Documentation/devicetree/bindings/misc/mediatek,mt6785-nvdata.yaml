@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/misc/mediatek,mt6785-nvdata.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6785 factory addresses from a copied nvdata tree
+
+maintainers:
+  - The poco-m5s port <worker@poco.local>
+
+description: |
+  On this phone the Wi-Fi MAC address and the Bluetooth BD_ADDR are not in the
+  firmware blobs and are not in the device tree: they live in the nvdata
+  partition, which stock reads through MediaTek's nvram daemons. A mainline
+  system must not read or write that partition (it is the phone's own factory
+  data), so the driver reads a read-only copy of the two records instead and
+  hands them to the radios that ask for them.
+
+  The node carries no register window, no interrupt and no clock: it exists so
+  that the driver is instantiated, and it reads
+  /lib/firmware/rosemary/nvdata/APCFG/APRDEB/WIFI and .../BT_Addr through
+  request_firmware().
+
+properties:
+  compatible:
+    const: mediatek,mt6785-nvdata
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    nvdata {
+        compatible = "mediatek,mt6785-nvdata";
+    };

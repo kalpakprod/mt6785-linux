@@ -213,4 +213,18 @@
 		compatible = "mediatek,mt6785-stpgps";
 		status = "okay";
 	};
+
+	/*
+	 * The factory Wi-Fi MAC and Bluetooth address. The driver reads them from
+	 * the read-only copy of the nvdata records under
+	 * /lib/firmware/rosemary/nvdata/APCFG/APRDEB/{WIFI,BT_Addr}; it never
+	 * touches the live nvdata partition. Without this node the driver has no
+	 * device to probe and both addresses stay at the controller's defaults -
+	 * which is what every trial up to lead/comb6 showed (nvdata_mac was
+	 * absent from lsmod for exactly that reason).
+	 */
+	nvdata: nvdata {
+		compatible = "mediatek,mt6785-nvdata";
+		status = "okay";
+	};
 };
