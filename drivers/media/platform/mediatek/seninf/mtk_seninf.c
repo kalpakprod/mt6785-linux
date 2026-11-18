@@ -383,8 +383,9 @@ static const unsigned int mtk_seninf_sweep_lanes[] = { 1, 2, 3, 4 };
 
 static void mtk_seninf_sweep(void)
 {
-	unsigned int p, m;
+	unsigned int p, m, s, sels;
 	unsigned int live = clamp(csi_port, 0, 2);
+	int switch_keep = 0;
 
 	if (!seninf_sweep)
 		return;
@@ -393,40 +394,70 @@ static void mtk_seninf_sweep(void)
 		return;
 	}
 
-	for (p = 0; p < ARRAY_SIZE(csi_ports); p++) {
-		unsigned int idx = csi_ports[p].seninf_index;
-		unsigned int ph = csi_ports[p].phy_index;
-		void __iomem *in = seninf_sweep->base + 0x1000 * idx;
-		u32 top = mtk_seninf_top_offset(idx);
-
-		if (seninf_sweep->phy[ph] && p != live) {
-			if (phy_set_mode_ext(seninf_sweep->phy[ph], PHY_MODE_MIPI_DPHY, 4) ||
-			    phy_power_on(seninf_sweep->phy[ph]))
-				continue;
-		}
-
-		writel((readl(seninf_sweep->base + top) & ~0x2u) | 0x1u,
-		       seninf_sweep->base + top);
-
-		for (m = 0; m < ARRAY_SIZE(mtk_seninf_sweep_masks); m++) {
-			writel(mtk_seninf_sweep_masks[m], in + 0x0a00);
-			msleep(120);
-			dev_info(seninf_sweep->dev,
-				 "sweep: port %u (block %s, receiver %u) lanes %u mask 0x%x -> pkt %u irq 0x%08x int 0x%08x fsm 0x%08x\n",
-				 p,
-				 seninf_sweep->phy[ph] ? dev_name(&seninf_sweep->phy[ph]->dev) : "none",
-				 idx + 1, mtk_seninf_sweep_lanes[m], mtk_seninf_sweep_masks[m],
-				 readl(in + SENINF_CSI2_PACKET_CNT),
-				 readl(in + SENINF_CSI2_IRQ_STATUS),
-				 readl(in + SENINF_CSI2_INT_STATUS),
-				 readl(in + SENINF_CSI2_LNRD_FSM));
-		}
-
-		if (seninf_sweep->phy[ph] && p != live)
-			phy_power_off(seninf_sweep->phy[ph]);
+	/*
+	 * The board's MIPI switch is the one thing between the sensors and the analog blocks that a
+	 * register sweep cannot see, so it is an axis of the table too: it has no enable pin in any
+	 * source we have (the only switch_enable/switch_disable pinctrl states in the live device tree
+	 * belong to the USB redriver, node redrv_*, :6301), only the select line on GPIO21, and here
+	 * both of its positions are walked with every port and lane mask.
+	 */
+	sels = seninf_sweep->mipi_sel ? 2 : 1;
+	if (seninf_sweep->mipi_sel) {
+		switch_keep = gpiod_get_value_cansleep(seninf_sweep->mipi_sel);
+		dev_info(seninf_sweep->dev, "sweep: mipi switch starts at %d, walking %u position(s)\n",
+			 switch_keep, sels);
 	}
 
-	/* Put the streaming port back the way the stream left it. */
+	for (s = 0; s < sels; s++) {
+		if (seninf_sweep->mipi_sel) {
+			gpiod_set_value_cansleep(seninf_sweep->mipi_sel, s);
+			msleep(20);
+			dev_info(seninf_sweep->dev, "sweep: mipi switch %d (reads %d)\n", s,
+				 gpiod_get_value_cansleep(seninf_sweep->mipi_sel));
+		}
+
+		for (p = 0; p < ARRAY_SIZE(csi_ports); p++) {
+			unsigned int idx = csi_ports[p].seninf_index;
+			unsigned int ph = csi_ports[p].phy_index;
+			void __iomem *in = seninf_sweep->base + 0x1000 * idx;
+			u32 top = mtk_seninf_top_offset(idx);
+
+			if (seninf_sweep->phy[ph] && p != live) {
+				if (phy_set_mode_ext(seninf_sweep->phy[ph],
+						     PHY_MODE_MIPI_DPHY, 4) ||
+				    phy_power_on(seninf_sweep->phy[ph]))
+					continue;
+			}
+
+			writel((readl(seninf_sweep->base + top) & ~0x2u) | 0x1u,
+			       seninf_sweep->base + top);
+
+			for (m = 0; m < ARRAY_SIZE(mtk_seninf_sweep_masks); m++) {
+				writel(mtk_seninf_sweep_masks[m], in + 0x0a00);
+				msleep(120);
+				dev_info(seninf_sweep->dev,
+					 "sweep: sel %u port %u (%s, receiver %u) lanes %u mask 0x%x -> pkt %u irq 0x%08x int 0x%08x fsm 0x%08x\n",
+					 s, p,
+					 seninf_sweep->phy[ph] ?
+						dev_name(&seninf_sweep->phy[ph]->dev) : "none",
+					 idx + 1, mtk_seninf_sweep_lanes[m],
+					 mtk_seninf_sweep_masks[m],
+					 readl(in + SENINF_CSI2_PACKET_CNT),
+					 readl(in + SENINF_CSI2_IRQ_STATUS),
+					 readl(in + SENINF_CSI2_INT_STATUS),
+					 readl(in + SENINF_CSI2_LNRD_FSM));
+			}
+
+			if (seninf_sweep->phy[ph] && p != live)
+				phy_power_off(seninf_sweep->phy[ph]);
+		}
+	}
+
+	/* Put the switch and the streaming port back the way the stream left them. */
+	if (seninf_sweep->mipi_sel) {
+		gpiod_set_value_cansleep(seninf_sweep->mipi_sel, switch_keep);
+		dev_info(seninf_sweep->dev, "sweep: mipi switch back to %d\n", switch_keep);
+	}
 	{
 		unsigned int idx = csi_ports[live].seninf_index;
 		void __iomem *in = seninf_sweep->base + 0x1000 * idx;
