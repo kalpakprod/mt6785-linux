@@ -121,7 +121,7 @@ module_param(probe_sensors, bool, 0644);
 MODULE_PARM_DESC(probe_sensors,
 		 "if a stream sees no packet after 500 ms, start the other sensor on this receiver once");
 
-static bool scan_ports;
+static bool scan_ports = true;
 module_param(scan_ports, bool, 0644);
 MODULE_PARM_DESC(scan_ports,
 		 "program all three CSI ports and receivers, not only the selected one");
@@ -178,6 +178,9 @@ struct mtk_seninf {
 	 * errors means. The upstream driver for this block family is phy-mtk-mipi-csi-0-5. */
 	struct phy *phy[3];
 	phys_addr_t inst_pa;
+	/* The camsys gate window at 0x1a000000 (the device tree's clock-controller@1a000000): its
+	 * CG_CON word says which camera gates are open, which no clock API call shows. */
+	void __iomem *camsys;
 	/* The receiver instance this stream is on; every per-instance access uses it. */
 	void __iomem *inst;
 	/* Its zero-based index, 0..4, so late work can find the top route again. */
@@ -328,6 +331,23 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 }
 
 /*
+ * The clock and power side of a stream, printed at stream on and again half a second in: the two
+ * clocks this driver holds (the camsys SENINF gate and the top-level SENINF mux), their rates, and
+ * the camsys CG_CON word. A mux parked on the 26 MHz crystal, or a gate bit still closed while the
+ * driver thinks it enabled it, would look exactly like "no packets" from the receiver side.
+ */
+static void mtk_seninf_clock_state(struct mtk_seninf *seninf, const char *when)
+{
+	unsigned long gate = seninf->clks[0].clk ? clk_get_rate(seninf->clks[0].clk) : 0;
+	unsigned long mux = seninf->clks[1].clk ? clk_get_rate(seninf->clks[1].clk) : 0;
+
+	dev_info(seninf->dev, "%s: %s %lu Hz, %s %lu Hz, camsys CG_CON 0x%08x CG_SET 0x%08x\n",
+		 when, seninf->clks[0].id, gate, seninf->clks[1].id, mux,
+		 seninf->camsys ? readl(seninf->camsys) : 0,
+		 seninf->camsys ? readl(seninf->camsys + 0x4) : 0);
+}
+
+/*
  * Which of the three top-route registers this receiver uses, from the HAL's masks
  * (hal_csirx_seninf_top_setting, libcam.halsensor.so 0x32910-0x3292c: 0x60 for indices 0, 3
  * and 4; 0x64 for 1, 5 and 6; 0x68 for the rest).
@@ -424,6 +444,8 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 	dev_info(seninf->dev, "500 ms in: top +0x60 %08x +0x64 %08x +0x68 %08x\n",
 		 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
 		 readl(seninf->base + 0x68));
+	mtk_seninf_clock_state(seninf, "500 ms in clocks");
+
 	dev_info(seninf->dev, "500 ms in: mask %08x +0x04 %08x +0x08 %08x +0x10 %08x +0x18 %08x +0xc0 %08x\n",
 		 readl(seninf_inst(seninf) + 0x0a00), readl(seninf_inst(seninf) + 0x0a04),
 		 readl(seninf_inst(seninf) + 0x0a08), readl(seninf_inst(seninf) + 0x0a10),
@@ -779,6 +801,8 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 readl(seninf->base + 0x68));
 	}
 
+	mtk_seninf_clock_state(seninf, "stream on clocks");
+
 	/*
 	 * The scan: every receiver of the HAL's port table with its analog port and its lane mask, so
 	 * the per-instance line 500 ms later says which one the sensor really arrives on.
@@ -937,6 +961,11 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	seninf->clks[0].id = "seninf";
 	seninf->clks[1].id = "mux";
 
+	/* The camsys window, from the device tree's clock-controller@1a000000. Read only. */
+	seninf->camsys = devm_ioremap(dev, 0x1a000000, 0x1000);
+	if (!seninf->camsys)
+		dev_warn(dev, "cannot map the camsys window, gate state will not be logged\n");
+
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(seninf->clks), seninf->clks);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to get the receiver clocks\n");
@@ -960,6 +989,12 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 		}
 		seninf->phy[i] = p;
 	}
+
+	/* Which analog block each port index is, so no log can be read against the wrong window. */
+	for (i = 0; i < ARRAY_SIZE(seninf->phy); i++)
+		dev_info(dev, "port %u -> %s (receiver %u)\n", i,
+			 seninf->phy[i] ? dev_name(&seninf->phy[i]->dev) : "no phy",
+			 csi_ports[i].seninf_index + 1);
 	if (IS_ERR(seninf->phy))
 		return dev_err_probe(dev, PTR_ERR(seninf->phy),
 				     "failed to get the CSI-2 RX phy\n");
