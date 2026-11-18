@@ -314,7 +314,7 @@ static unsigned int mtk_seninf_lanes(struct mtk_seninf *seninf)
 		return 4;
 
 	ep = fwnode_graph_get_endpoint_by_id(src->dev->fwnode, 0, 0,
-					     FWNODE_GRAPH_ENDPOINT_FIRST);
+					     0);
 	if (!ep)
 		return 4;
 

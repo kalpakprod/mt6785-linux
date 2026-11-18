@@ -802,6 +802,8 @@ static int imx355_entity_init_state(struct v4l2_subdev *subdev,
 }
 
 /* Start streaming */
+static void imx355_diag_mipi(struct imx355 *imx355);
+
 static int imx355_start_streaming(struct imx355 *imx355)
 {
 	const struct v4l2_mbus_framefmt *fmt;
