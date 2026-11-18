@@ -32,6 +32,7 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/phy/phy.h>
@@ -292,6 +293,42 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 
 }
 
+/*
+ * Data lanes the sensor in front of this receiver wants, from its own endpoint. Four when the
+ * graph does not say - that is the IMX355's and the OV13B10's count, and the one the HAL's
+ * lane-mask table needs (0xF).
+ */
+static unsigned int mtk_seninf_lanes(struct mtk_seninf *seninf)
+{
+	struct media_pad *remote;
+	struct v4l2_subdev *src;
+	struct fwnode_handle *ep;
+	u32 lanes[4];
+	int n;
+
+	remote = media_pad_remote_pad_unique(&seninf->sd.entity.pads[0]);
+	if (IS_ERR(remote))
+		return 4;
+	src = media_entity_to_v4l2_subdev(remote->entity);
+	if (!src->dev || !src->dev->fwnode)
+		return 4;
+
+	ep = fwnode_graph_get_endpoint_by_id(src->dev->fwnode, 0, 0,
+					     FWNODE_GRAPH_ENDPOINT_FIRST);
+	if (!ep)
+		return 4;
+
+	n = fwnode_property_count_u32(ep, "data-lanes");
+	if (n <= 0 || n > (int)ARRAY_SIZE(lanes) ||
+	    fwnode_property_read_u32_array(ep, "data-lanes", lanes, n)) {
+		fwnode_handle_put(ep);
+		return 4;
+	}
+	fwnode_handle_put(ep);
+
+	return n;
+}
+
 static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct mtk_seninf *seninf = container_of(sd, struct mtk_seninf, sd);
@@ -455,18 +492,53 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	/*
-	 * Lane count from the sensor's bus configuration, data type 0x2b (RAW10) for the Bayer
-	 * sensors this port carries. The values are written once per stream start; the receiver's
-	 * own mux programming (which engine reads which port) follows with the replay tables.
+	 * The receiver's own CSI-2 programming, exactly as the stock HAL does it for this SoC
+	 * (SeninfDrvImp::hal_csirx_seninf_csi2_setting, libcam.halsensor.so 0x326f8-0x3280c, from
+	 * scratch/native/5-cameras/vendor-img/):
+	 *
+	 *   0xA10 bit 8 = 1                                     (:0x32764-0x3276c)
+	 *   0xA08 bits 10:8 cleared; only the HAL's csirx mode 2 also sets bit 1 and the lane
+	 *       bits                                            (:0x32770-0x327a4)
+	 *   0xA04 bit 0 = 1 in that mode, 0 otherwise           (:0x327a8-0x327cc)
+	 *   0xAC0 bit 31 = 1                                    (:0x327d0-0x327d8)
+	 *   0xA00 = lane mask, 0x1/0x3/0x7/0xF for 1..4 lanes, written last
+	 *                                                       (:0x327dc-0x3280c)
+	 *
+	 * Two things this driver did before are why this is a rewrite: it put a lane count
+	 * into 0x0A00 and then overwrote it with the constant 1 (SENINF_CSI2_EN_ON), so a
+	 * four-lane sensor faced a one-lane receiver; and its write to 0x0210 never stuck,
+	 * the phone read 0x11 back where 0x2b001f had been written. Every word is printed
+	 * with what the silicon answers, so a trial that still sees no packet names the
+	 * write that was refused.
 	 */
-	writel(SENINF_CSI2_CTRL_LANES(4) | SENINF_CSI2_CTRL_DT(0x2b), inst + SENINF_CSI2_CTRL);
-	writel(SENINF_CSI2_EN_ON, inst + SENINF_CSI2_EN);
+	{
+		unsigned int lanes = mtk_seninf_lanes(seninf);
+		struct { u32 off; u32 val; const char *what; } seq[] = {
+			{ 0x0a10, readl(inst + 0x0a10) | 0x100, "CSI2 +0x10 bit 8" },
+			{ 0x0a08, readl(inst + 0x0a08) & ~0x700, "CSI2 +0x08 mode bits cleared" },
+			{ 0x0a04, readl(inst + 0x0a04) & ~1, "CSI2 +0x04 (mode-2 enable off)" },
+			{ 0x0ac0, readl(inst + 0x0ac0) | 0x80000000, "CSI2 +0xc0 bit 31" },
+			{ 0x0a00, (1u << lanes) - 1, "CSI2 lane mask" },
+			{ 0x0a18, 0x8000001a, "CSI2 debug port = packet counter" },
+		};
+		unsigned int i;
+
+		dev_info(seninf->dev, "csi2: instance %u at 0x%08llx, %u data lanes\n",
+			 seninf_idx + 1, (unsigned long long)seninf->inst_pa, lanes);
+		for (i = 0; i < ARRAY_SIZE(seq); i++) {
+			writel(seq[i].val, inst + seq[i].off);
+			dev_info(seninf->dev, "csi2 %s: +0x%03x = 0x%08x -> 0x%08x\n",
+				 seq[i].what, seq[i].off, seq[i].val,
+				 readl(inst + seq[i].off));
+		}
+	}
 
 	dev_info(seninf->dev,
-		 "stream on (instance %u, 0x%08llx): CSI2_CTRL 0x%08x, CSI2_EN 0x%08x, packet cnt %u, err cnt %u\n",
+		 "stream on (instance %u, 0x%08llx): mask 0x%08x, +0x04 0x%08x, pkt %u, err %u, dbg 0x%08x\n",
 		 seninf_idx + 1, (unsigned long long)seninf->inst_pa,
-		 readl(inst + SENINF_CSI2_CTRL), readl(inst + SENINF_CSI2_EN),
-		 readl(inst + SENINF_CSI2_PACKET_CNT), readl(inst + SENINF_CSI2_ERR_CNT));
+		 readl(inst + SENINF_CSI2_EN), readl(inst + 0x0a04),
+		 readl(inst + SENINF_CSI2_PACKET_CNT), readl(inst + SENINF_CSI2_ERR_CNT),
+		 readl(inst + 0x0a1c));
 
 	/*
 	 * The routing at the moment the stream starts: the top mux decides which receiver

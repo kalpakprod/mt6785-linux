@@ -160,12 +160,64 @@ static void mtk_mipi_phy_dump(struct device *dev, void __iomem *base, const char
 		readl(base + CSIXB_OFFSET + 0x08), readl(base + CSIXB_OFFSET + 0x0c));
 }
 
+/*
+ * The analog lane receivers and the ready flag, from the stock HAL's own power-on for one half
+ * (SeninfDrvImp::hal_csirx_phyA_power_on, libcam.halsensor.so 0x32a40, read from
+ * scratch/native/5-cameras/vendor-img/), in its order:
+ *
+ *   :0x32a68-0x32aac  clear bits 0 and 16 of 0x18, 0x1c and 0x20   (lane receivers off)
+ *   :0x32ab0-0x32ac4  clear bits 2 and 3 of 0x00                   (bias and LPF off)
+ *   :0x32ac8          usleep 200
+ *   :0x32ad0-0x32adc  set bit 3 of 0x00, usleep 30
+ *   :0x32ae4-0x32af0  set bit 2 of 0x00, usleep 1
+ *   :0x32af8-0x32b40  set bits 0 and 16 of 0x18, 0x1c and 0x20     (lane receivers on)
+ *   :0x32b48-0x32ba0  poll 0x48 for (value & 0x29) != 0, 101 tries 30 us apart
+ *
+ * The driver brings the bias up in that order already, but it never switches a lane receiver on
+ * and never reads the ready flag, so a powered block can still sit with silent lanes - which is
+ * what the phone measured: LNRD_FSM 0, packets 0, errors 0, no interrupt.
+ */
+static void mtk_mipi_phy_lanes(struct device *dev, void __iomem *base, bool on)
+{
+	unsigned int half, lane, i;
+	u32 a = 0, b = 0;
+
+	for (half = 0; half < 2; half++) {
+		void __iomem *h = base + half * CSIXB_OFFSET;
+
+		for (lane = 0; lane < 3; lane++) {
+			u32 val = readl(h + 0x18 + 4 * lane);
+
+			val = on ? (val | 0x10001) : (val & ~0x10001);
+			writel(val, h + 0x18 + 4 * lane);
+		}
+	}
+
+	if (!on) {
+		dev_info(dev, "lanes off: A +0x18 %08x, B +0x18 %08x\n",
+			 readl(base + 0x18), readl(base + CSIXB_OFFSET + 0x18));
+		return;
+	}
+
+	for (i = 0; i < 101; i++) {
+		a = readl(base + 0x48);
+		b = readl(base + CSIXB_OFFSET + 0x48);
+		if ((a & 0x29) && (b & 0x29))
+			break;
+		usleep_range(30, 60);
+	}
+
+	dev_info(dev, "lanes on: A +0x18 %08x +0x48 %08x, B +0x18 %08x +0x48 %08x, %u tries\n",
+		 readl(base + 0x18), a, readl(base + CSIXB_OFFSET + 0x18), b, i);
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
 	void __iomem *base = port->base;
 
 	mtk_mipi_phy_dump(&phy->dev, base, "before");
+	mtk_mipi_phy_lanes(&phy->dev, base, false);
 
 	/*
 	 * The driver currently supports DPHY and CD-PHY phys,
@@ -246,6 +298,9 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	mtk_mipi_phy_vendor_ana(&phy->dev, base, "A");
 	mtk_mipi_phy_vendor_ana(&phy->dev, base + CSIXB_OFFSET, "B");
 
+	/* and the receivers of the lanes themselves, then the HAL's ready flag */
+	mtk_mipi_phy_lanes(&phy->dev, base, true);
+
 		mtk_mipi_phy_dump(&phy->dev, base, "after");
 
 	return 0;
@@ -255,6 +310,9 @@ static int mtk_mipi_phy_power_off(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
 	void __iomem *base = port->base;
+
+	/* Lane receivers first, then the bias, the order the HAL uses. */
+	mtk_mipi_phy_lanes(&phy->dev, base, false);
 
 	/* Disable MIPI BG. */
 	mtk_phy_update_field(base + MIPI_RX_ANA00_CSIXA, RG_CSIXA_BG_CORE_EN, 0);
