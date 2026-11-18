@@ -545,6 +545,8 @@ struct mt6785_scp_region_info {
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp);
 static void mt6785_scp_mpu_probe(struct mtk_scp *scp);
+static void mt6785_scp_hello_world(struct mtk_scp *scp);
+static void mt6785_scp_hello_check(struct mtk_scp *scp, const char *when);
 static int mt6785_scp_subsys_reset(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_set(struct mtk_scp *scp);
 static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp);
@@ -1350,6 +1352,9 @@ static int scp_start(struct rproc *rproc)
 	 */
 	mt6785_scp_slp_prot_clear(scp);
 
+	/* the loader's place is taken by the hello-world program (NOTE 30), see its comment */
+	mt6785_scp_hello_world(scp);
+
 	scp->data->scp_reset_deassert(scp);
 
 	/*
@@ -1382,8 +1387,10 @@ static int scp_start(struct rproc *rproc)
 	 * disassembled at whatever PC shows.
 	 */
 	mt6785_scp_log_wdt_sleep(scp, "just after the release");
+	mt6785_scp_hello_check(scp, "just after the release");
 	msleep(100);
 	mt6785_scp_log_wdt_sleep(scp, "100 ms after the release");
+	mt6785_scp_hello_check(scp, "100 ms after the release");
 
 	/*
 	 * Nothing else reads the SCP's registers from here on: readiness is the ready IPI over
@@ -1458,6 +1465,7 @@ static int scp_start(struct rproc *rproc)
 		}
 
 		mt6785_scp_log_wdt_sleep(scp, "at the timeout");
+		mt6785_scp_hello_check(scp, "at the timeout");
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
 		mt6785_scp_awake(scp, false);
@@ -3433,6 +3441,70 @@ static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
 	}
 
 	mt6785_scp_mpu_dump(scp, "after the MPU set");
+}
+
+/*
+ * A hello-world for the core itself.
+ *
+ * The real loader is 0x438 bytes at TCM 0 and its reset vector is 0x1e1 (LK stages exactly
+ * that, `pl_lk.txt:1813-1815`). This program is 16 bytes placed at that same reset vector, so
+ * the vector table LK staged - initial SP 0x538, reset vector 0x1e1 - stays valid and untouched:
+ *
+ *   1e0: 0x4801  ldr r0, [pc, #4]    -> 0xdeadbeef (the word at 0x1e8)
+ *   1e2: 0x4902  ldr r1, [pc, #8]    -> 0x600      (the word at 0x1ec)
+ *   1e4: 0x6008  str r0, [r1]        -> TCM word 0x600
+ *   1e6: 0xe7fe  b   .               -> spin here
+ *
+ * The literal addresses are the core's own view. The core reads its vector table from 0 and
+ * its stack pointer is 0x538, both inside the same window, so TCM byte n is address n for
+ * the core and 0x10500000 + n for the AP.
+ *
+ * What the test means: 0xdeadbeef in TCM 0x600 after the release proves the core runs from
+ * the TCM, and that the fault is in the loader/firmware path (DRAM access, the loader's own
+ * copy, L1C). No write at all means the core is not executing: not released, not clocked, or
+ * held by something this driver does not model.
+ *
+ * Test scaffolding for one trial, not for upstream: it replaces the loader, so nothing this
+ * firmware would do can happen while it is in place. `mt6785_scp_hello_world()` is called from
+ * scp_start() and the check below it; removing both calls is the whole revert.
+ */
+static const u8 mt6785_scp_hello_code[] = {
+	0x01, 0x48, 0x02, 0x49, 0x08, 0x60, 0xfe, 0xe7,
+	0xef, 0xbe, 0xad, 0xde, 0x00, 0x06, 0x00, 0x00,
+};
+
+#define MT6785_SCP_HELLO_OFS	0x1e0
+#define MT6785_SCP_HELLO_WORD	0x600
+#define MT6785_SCP_HELLO_VALUE	0xdeadbeef
+
+static void mt6785_scp_hello_world(struct mtk_scp *scp)
+{
+	u32 sp = readl(scp->sram_base);
+	u32 vec = readl(scp->sram_base + 4);
+
+	writel(0, scp->sram_base + MT6785_SCP_HELLO_WORD);
+	memcpy_toio(scp->sram_base + MT6785_SCP_HELLO_OFS, mt6785_scp_hello_code,
+		    sizeof(mt6785_scp_hello_code));
+	wmb();
+
+	dev_info(scp->dev, "hello-world: %zu bytes at TCM %#x, sentinel at %#x cleared, vector table kept (SP %#x vector %#x)\n",
+		 sizeof(mt6785_scp_hello_code), MT6785_SCP_HELLO_OFS,
+		 MT6785_SCP_HELLO_WORD, sp, vec);
+}
+
+static void mt6785_scp_hello_check(struct mtk_scp *scp, const char *when)
+{
+	u32 val = readl(scp->sram_base + MT6785_SCP_HELLO_WORD);
+	void __iomem *cfg = scp->cluster->reg_base;
+	void __iomem *clk = cfg + MT6785_SCP_CLK_BLOCK;
+
+	dev_info(scp->dev, "hello-world %s: TCM %#x = %#x (%s), clk_sw %#x clk_en %#x ctrl24 %#x\n",
+		 when, MT6785_SCP_HELLO_WORD, val,
+		 val == MT6785_SCP_HELLO_VALUE ? "the core ran from the TCM" :
+		 val ? "something wrote it" : "nothing wrote it",
+		 readl(clk + MT6785_SCP_CLK_SW_SEL),
+		 readl(clk + MT6785_SCP_CLK_ENABLE),
+		 readl(clk + MT6785_SCP_CLK_CTRL_24));
 }
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
