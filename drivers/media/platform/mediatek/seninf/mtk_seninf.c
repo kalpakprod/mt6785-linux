@@ -60,6 +60,9 @@
 #define SENINF_CSI2_INT_STATUS		0x0A14
 #define SENINF_CSI2_LNRD_FSM		0x0A2C
 #define SENINF_CSI2_FRAME_LINE_NUM	0x0A30
+/* Pads: 0, 1 and 3 are sensors, 2 is the source towards the capture engines. */
+#define MTK_SENINF_PAD_SOURCE		2
+
 #define SENINF_MUX_IRQ_STATUS		0x0D18
 #define SENINF_MUX_SIZE			0x0D30
 
@@ -210,15 +213,32 @@ struct mtk_seninf {
 	struct mtk_cam_core *cam;
 };
 
+/*
+ * The pad count is the subdev's, not a constant: a kernel without the fourth pad (before the C-PHY
+ * sensor existed) must refuse pad 3 instead of indexing past its array - that NULL deref in the 500 ms
+ * worker is what hung the phone on 19.11 (poco-m5s/evidence/comb7/comb36-cphy-pass-oops.txt).
+ */
+static unsigned int mtk_seninf_pads(const struct mtk_seninf *seninf)
+{
+	return seninf->sd.entity.num_pads;
+}
+
+/* A sink pad that exists and is a sensor (never the source pad 2), or ERR. */
+static struct media_pad *mtk_seninf_sink_pad(struct mtk_seninf *seninf, unsigned int pad)
+{
+	if (pad >= mtk_seninf_pads(seninf) || pad == MTK_SENINF_PAD_SOURCE) {
+		dev_err(seninf->dev, "pad %u is not a sensor pad (this kernel has %u pads, source is %u)\n",
+			pad, mtk_seninf_pads(seninf), MTK_SENINF_PAD_SOURCE);
+		return ERR_PTR(-EINVAL);
+	}
+
+	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
+}
+
 /* The upstream pad of this stream: the sink pad the parameter names, or the first one. */
 static struct media_pad *mtk_seninf_upstream(struct mtk_seninf *seninf)
 {
-	unsigned int pad = sensor_pad < 0 ? 0 : sensor_pad;
-
-	if (pad >= 4)
-		return ERR_PTR(-EINVAL);
-
-	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
+	return mtk_seninf_sink_pad(seninf, sensor_pad < 0 ? 0 : sensor_pad);
 }
 
 static int mtk_seninf_runtime_resume(struct device *dev)
@@ -332,6 +352,22 @@ static int mtk_seninf_regs_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(mtk_seninf_regs);
 
+static int mtk_seninf_pads_show(struct seq_file *s, void *unused)
+{
+	struct mtk_seninf *seninf = s->private;
+	unsigned int i;
+
+	seq_printf(s, "pads %u source %u\n", mtk_seninf_pads(seninf),
+		   MTK_SENINF_PAD_SOURCE);
+	for (i = 0; i < mtk_seninf_pads(seninf); i++)
+		seq_printf(s, "pad %u %s\n", i,
+			   seninf->sd.entity.pads[i].flags & MEDIA_PAD_FL_SINK ?
+			   "sink" : "source");
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mtk_seninf_pads);
+
 static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 {
 	seninf->debugfs = debugfs_create_dir(dev_name(seninf->dev), NULL);
@@ -344,6 +380,8 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 			    &mtk_seninf_regs_fops);
 	debugfs_create_file("clear", 0200, seninf->debugfs, seninf,
 			    &mtk_seninf_clear_fops);
+	debugfs_create_file("pads", 0444, seninf->debugfs, seninf,
+			    &mtk_seninf_pads_fops);
 }
 
 /*
@@ -674,10 +712,22 @@ static void mtk_seninf_probe_other_sensor(struct mtk_seninf *seninf)
 	void __iomem *in = seninf_inst(seninf);
 	u32 level = 0, keep;
 
-	cur = media_pad_remote_pad_unique(&seninf->sd.entity.pads[cur_pad]);
-	other = media_pad_remote_pad_unique(&seninf->sd.entity.pads[other_pad]);
-	if (IS_ERR(cur) || IS_ERR(other))
+	/*
+	 * Pad 3 is the C-PHY sensor: it has no D-PHY sibling that shares the MIPI switch, and probing
+	 * "the other sensor" from it would start a D-PHY part on a port configured for trios.
+	 */
+	if (cur_pad == 3 || other_pad == 3) {
+		dev_info(seninf->dev, "probe: pad %u has no D-PHY sibling, skipped\n", cur_pad);
 		return;
+	}
+
+	cur = mtk_seninf_sink_pad(seninf, cur_pad);
+	other = mtk_seninf_sink_pad(seninf, other_pad);
+	if (IS_ERR(cur) || IS_ERR(other)) {
+		dev_info(seninf->dev, "probe: no upstream sensor on pad %u or %u, skipped\n",
+			 cur_pad, other_pad);
+		return;
+	}
 
 	cur_src = media_entity_to_v4l2_subdev(cur->entity);
 	other_src = media_entity_to_v4l2_subdev(other->entity);
