@@ -727,6 +727,16 @@ static void mtk_seninf_late_counters(struct work_struct *work)
  * graph does not say - that is the IMX355's and the OV13B10's count, and the one the HAL's
  * lane-mask table needs (0xF).
  */
+/*
+ * Runtime override for the receiver's lane mask, so one boot can try 4, 2 and 1 lanes without a
+ * rebuild: 0 keeps the device tree's data-lanes (four on this board), 1..4 force the mask 0x1..0xf.
+ * The matching sensor-side value is imx355.sensor_lanes, which changes its 0x0114 lane mode.
+ */
+static int lanes_override;
+module_param(lanes_override, int, 0644);
+MODULE_PARM_DESC(lanes_override,
+		 "force the receiver's data lanes: 0 = device tree, 1..4 = that many");
+
 static unsigned int mtk_seninf_lanes(struct mtk_seninf *seninf)
 {
 	struct media_pad *remote;
@@ -734,6 +744,9 @@ static unsigned int mtk_seninf_lanes(struct mtk_seninf *seninf)
 	struct fwnode_handle *ep;
 	u32 lanes[4];
 	int n;
+
+	if (lanes_override >= 1 && lanes_override <= 4)
+		return lanes_override;
 
 	remote = mtk_seninf_upstream(seninf);
 	if (IS_ERR(remote))

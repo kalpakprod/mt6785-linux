@@ -93,6 +93,16 @@ module_param(test_pattern, int, 0644);
  * written in this mode: no PLL words, no VTS/HTS computed by this driver, and no write to 0x3050 (which
  * this driver never writes anyway - the 3 the log shows is the chip's own value).
  */
+/*
+ * Runtime override of the sensor's lane mode (0x0114 = lanes - 1, four lanes by default from the
+ * device tree's data-lanes). 0 keeps the device tree's value, 1..4 force that many lanes, so a host
+ * lane mask can be matched to the sensor's within one boot instead of a rebuild.
+ */
+static int sensor_lanes;
+module_param(sensor_lanes, int, 0644);
+MODULE_PARM_DESC(sensor_lanes,
+		 "force the sensor's MIPI lane count in 0x0114: 0 = device tree, 1..4 = that many");
+
 static int vendor_mode;
 module_param(vendor_mode, int, 0644);
 MODULE_PARM_DESC(vendor_mode,
@@ -948,7 +958,8 @@ static int imx355_start_streaming(struct imx355 *imx355)
 
 	/* Set MIPI configuration */
 	cci_write(imx355->regmap, IMX355_REG_LANE_SEL,
-		  imx355->hwcfg->num_lanes - 1, &ret);
+		  (sensor_lanes >= 1 && sensor_lanes <= 4 ?
+		   sensor_lanes : imx355->hwcfg->num_lanes) - 1, &ret);
 
 	link_bitrate = imx355->link_freq->qmenu_int[imx355->link_freq->val] *
 		       imx355->hwcfg->num_lanes * 2;
