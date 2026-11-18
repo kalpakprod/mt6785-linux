@@ -10,11 +10,13 @@
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 
 #include "phy-mtk-io.h"
 #include "phy-mtk-mipi-csi-0-5-rx-reg.h"
@@ -28,6 +30,8 @@ struct mtk_mipi_cdphy_port {
 	u32 type;
 	u32 mode;
 	u32 num_lanes;
+	/* One late read of the block, half a second after it is powered on. */
+	struct delayed_work status_work;
 };
 
 enum PHY_TYPE {
@@ -211,6 +215,46 @@ static void mtk_mipi_phy_lanes(struct device *dev, void __iomem *base, bool on)
 		 readl(base + 0x18), a, readl(base + CSIXB_OFFSET + 0x18), b, i);
 }
 
+/*
+ * The block's own state, half a second after it was powered on and - because this runs from
+ * power_on - while the sensor is transmitting. The vendor reads the analog state through a debug
+ * selector: hal_csirx_ana_get_dbg_value (libcam.halsensor.so 0x33a20) writes the selector into
+ * bits 15:8 of 0x80 of each half and reads 0x84. Selector 0x18 is the first of the four per-lane
+ * codes its dphy counterpart builds (hal_csirx_dphy_get_dbg_value, :0x337f0-:0x3380c packs
+ * 0x03020100, i.e. one byte per lane, and steps the base by 0x18181818 per selector). Reads only.
+ */
+static void mtk_mipi_phy_status_work(struct work_struct *work)
+{
+	struct mtk_mipi_cdphy_port *port =
+		container_of(to_delayed_work(work), struct mtk_mipi_cdphy_port, status_work);
+	void __iomem *base = port->base;
+	unsigned int sel, half;
+
+	dev_info(port->dev, "status: num_lanes %u type %u\n", port->num_lanes, port->type);
+
+	for (half = 0; half < 2; half++) {
+		void __iomem *h = base + half * CSIXB_OFFSET;
+
+		dev_info(port->dev,
+			 "status %s: 0x00 %08x 0x04 %08x 0x18 %08x 0x1c %08x 0x20 %08x 0x24 %08x 0x40 %08x 0x48 %08x 0x80 %08x 0xa8 %08x\n",
+			 half ? "B" : "A", readl(h + 0x00), readl(h + 0x04),
+			 readl(h + 0x18), readl(h + 0x1c), readl(h + 0x20),
+			 readl(h + 0x24), readl(h + 0x40), readl(h + 0x48),
+			 readl(h + 0x80), readl(h + 0xa8));
+	}
+
+	for (sel = 0x18; sel <= 0x1b; sel++) {
+		u32 a, b;
+
+		writel((readl(base + 0x80) & ~0xff00u) | (sel << 8), base + 0x80);
+		writel((readl(base + CSIXB_OFFSET + 0x80) & ~0xff00u) | (sel << 8),
+		       base + CSIXB_OFFSET + 0x80);
+		a = readl(base + 0x84);
+		b = readl(base + CSIXB_OFFSET + 0x84);
+		dev_info(port->dev, "status dbg sel 0x%02x: A 0x%08x B 0x%08x\n", sel, a, b);
+	}
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
@@ -303,6 +347,9 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 
 		mtk_mipi_phy_dump(&phy->dev, base, "after");
 
+	/* And once more when the sensor has had time to transmit. */
+	schedule_delayed_work(&port->status_work, msecs_to_jiffies(500));
+
 	return 0;
 }
 
@@ -310,6 +357,8 @@ static int mtk_mipi_phy_power_off(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
 	void __iomem *base = port->base;
+
+	cancel_delayed_work_sync(&port->status_work);
 
 	/* Lane receivers first, then the bias, the order the HAL uses. */
 	mtk_mipi_phy_lanes(&phy->dev, base, false);
@@ -423,6 +472,7 @@ static int mtk_mipi_cdphy_probe(struct platform_device *pdev)
 
 	port->phy = phy;
 	phy_set_drvdata(phy, port);
+	INIT_DELAYED_WORK(&port->status_work, mtk_mipi_phy_status_work);
 
 	phy_provider = devm_of_phy_provider_register(dev, mtk_mipi_cdphy_xlate);
 	if (IS_ERR(phy_provider)) {
