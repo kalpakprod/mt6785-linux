@@ -494,8 +494,19 @@ static int stpgps_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "cannot find the consys node for the EMI window\n");
 			return -ENODEV;
 		}
-		err = of_reserved_mem_region_to_resource_byname(consys,
-								"memory-region", &res);
+		/*
+		 * Index 0 of the node's "memory-region" property, not the "_byname"
+		 * helper: that one searches "memory-region-names"
+		 * (drivers/of/of_reserved_mem.c, of_reserved_mem_region_to_resource_byname()),
+		 * and the consys node has a bare "memory-region" with no names
+		 * companion - so it could only ever return -EINVAL, which is the
+		 * "cannot resolve the consys EMI region (-22)" that killed this probe
+		 * on every boot up to lead/comb6. This is the same lookup the WMT
+		 * module already does correctly: of_parse_phandle() index 0 plus
+		 * of_reserved_mem_lookup() (common_main/platform/mtk_wcn_consys_hw.c,
+		 * wmt_allocate_connsys_emi()).
+		 */
+		err = of_reserved_mem_region_to_resource(consys, 0, &res);
 		of_node_put(consys);
 		if (err) {
 			dev_err(&pdev->dev, "cannot resolve the consys EMI region (%d)\n",
