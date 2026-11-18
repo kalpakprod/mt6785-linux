@@ -74,9 +74,14 @@
  * that still wants the stock-phone replay tables, and the register dump below exists so the
  * phone can show what the closed HAL would have written.
  */
-#define SENINF_CSI2_CTRL_LANES(lanes)	(0x10 | ((1 << (lanes)) - 1))
-#define SENINF_CSI2_CTRL_DT(dt)		((dt) << 16)
-#define SENINF_CSI2_EN_ON		BIT(0)
+/*
+ * 0x0210 is NOT a control register on this SoC: the stock HAL's receiver sequence never writes it
+ * (hal_csirx_seninf_csi2_setting, libcam.halsensor.so 0x326f8-0x3280c), the phone reads 0 there on
+ * every instance, and the write this driver used to make there was never observed to stick - which
+ * is why the lane count and data type live in the 0x0A00 bank and the old CHROMEOS-derived macros
+ * for 0x0210 are gone. The offset stays for the register dumps, so a future trial can keep proving
+ * it is unused.
+ */
 
 /*
  * The top-level registers that tie the analog ports to the CSI-2 receivers, and the values the
@@ -468,6 +473,17 @@ module_param(gates, bool, 0644);
 MODULE_PARM_DESC(gates,
 		 "print the topckgen, infra and pin-controller windows read-only at stream on");
 
+/*
+ * Which receiver instance reads the sensor: -1 keeps the HAL table's pairing (port 0 -> receiver 1,
+ * port 1 -> 3, port 2 -> 5), 0..4 forces one. The lead's list needs the *cross* of analogue ports and
+ * receivers, because the board may route a port to a receiver the table does not pair it with, and
+ * that combination has never been programmed.
+ */
+static int rx_index = -1;
+module_param(rx_index, int, 0644);
+MODULE_PARM_DESC(rx_index,
+		 "receiver to program: -1 = the port's own (HAL pairing), 0..4 = force");
+
 static void mtk_seninf_window(struct mtk_seninf *seninf, const char *what,
 			      void __iomem *w, phys_addr_t pa, unsigned int words)
 {
@@ -831,6 +847,10 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	int port = clamp(csi_port, 0, 2);
 	unsigned int seninf_idx = csi_ports[port].seninf_index;
 	unsigned int phy_idx = csi_ports[port].phy_index;
+
+	/* The receiver may be forced independently of the analogue port, for the cross sweep. */
+	if (rx_index >= 0 && rx_index <= 4)
+		seninf_idx = rx_index;
 	/* Every per-instance access goes through this base: the sensor is on SENINF5, not SENINF1. */
 	void __iomem *inst = seninf->base + 0x1000 * seninf_idx;
 
@@ -1079,12 +1099,17 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 readl(seninf->base + 0x0008));
 	}
 	if (gates) {
-		mtk_seninf_window(seninf, "topck", seninf->topck, 0x10000000, 0x40);
-		mtk_seninf_window(seninf, "infra", seninf->infra, 0x10001000, 0x40);
-		mtk_seninf_window(seninf, "pio", seninf->pio, 0x10005000, 0x40);
-		dev_info(seninf->dev, "pins: mipi-sel gpiolib dir/val %d/%d\n",
+		/* The pins first, so this line cannot be lost to a failed window map. */
+		dev_info(seninf->dev,
+			 "gates: topck %s infra %s pio %s, mipi-sel gpiolib dir/val %d/%d\n",
+			 seninf->topck ? "mapped" : "UNMAPPED",
+			 seninf->infra ? "mapped" : "UNMAPPED",
+			 seninf->pio ? "mapped" : "UNMAPPED",
 			 seninf->mipi_sel ? gpiod_get_direction(seninf->mipi_sel) : -1,
 			 seninf->mipi_sel ? gpiod_get_value_cansleep(seninf->mipi_sel) : -1);
+		mtk_seninf_window(seninf, "topck", seninf->topck, 0x10000000, 0x80);
+		mtk_seninf_window(seninf, "infra", seninf->infra, 0x10001000, 0x80);
+		mtk_seninf_window(seninf, "pio", seninf->pio, 0x10005000, 0x80);
 	}
 
 	if (stock_words) {
@@ -1261,6 +1286,21 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	seninf->topck = devm_ioremap(dev, 0x10000000, 0x1000);
 	seninf->infra = devm_ioremap(dev, 0x10001000, 0x1000);
 	seninf->pio = devm_ioremap(dev, 0x10005000, 0x1000);
+
+	/*
+	 * The MIPI-switch select pad's state BEFORE this driver touches it: the vendor's own imgsensor
+	 * driver never drives it on this platform (imgsensor_platform.h:9 is '#undef MIPI_SWITCH', and
+	 * every cam_mipi_switch_* use sits under that ifdef), so whatever the bootloader left is the
+	 * state the stock driver runs in, and our driving the pin is a change nothing in the vendor
+	 * tree explains - hence this reading of the pad before the driver touches it.
+	 */
+	if (seninf->pio)
+		dev_info(dev, "pio before we touch it: 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
+			 readl(seninf->pio), readl(seninf->pio + 0x4),
+			 readl(seninf->pio + 0x10), readl(seninf->pio + 0x20),
+			 readl(seninf->pio + 0x40));
+	else
+		dev_warn(dev, "the pin controller window could not be mapped\n");
 
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(seninf->clks), seninf->clks);
 	if (ret)
