@@ -24,6 +24,7 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/unaligned.h>
 
 #include "mtk-sensorhub.h"
 #include "mtk-sensorhub-scale.h"
@@ -32,7 +33,7 @@
 #define MTK_SH_MAX_CHANNELS	3
 
 struct mtk_sh_iio {
-	const struct mtk_sh_sensor *sensor;
+	struct mtk_sh_sensor *sensor;	/* rate_hz is kept here, so it is not const */
 	struct mtk_sh *sh;
 	struct iio_chan_spec chans[MTK_SH_MAX_CHANNELS];
 };
