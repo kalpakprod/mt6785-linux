@@ -42,6 +42,8 @@ struct mtk_mipi_cdphy_port {
 	u32 num_lanes;
 	/* One late read of the block, half a second after it is powered on. */
 	struct delayed_work status_work;
+	/* The window's physical base, for the stock-format lines. */
+	phys_addr_t base_pa;
 };
 
 enum PHY_TYPE {
@@ -408,9 +410,14 @@ static const struct {
 	{ 0x80, 0x00000002 }, { 0xa8, 0x00000007 },
 };
 
-static void mtk_mipi_phy_stock_analog(struct device *dev, void __iomem *base)
+static void mtk_mipi_phy_stock_analog(struct device *dev, void __iomem *base,
+				      phys_addr_t base_pa)
 {
 	unsigned int i, half;
+
+	dev_info(dev, "stock analog: writing %zu stock words to 0x%08x and 0x%08x\n",
+		 ARRAY_SIZE(mtk_mipi_stock_analog), (u32)base_pa,
+		 (u32)(base_pa + CSIXB_OFFSET));
 
 	for (half = 0; half < 2; half++) {
 		void __iomem *h = base + half * CSIXB_OFFSET;
@@ -420,7 +427,7 @@ static void mtk_mipi_phy_stock_analog(struct device *dev, void __iomem *base)
 
 		for (i = 0; i < ARRAY_SIZE(mtk_mipi_stock_analog); i++)
 			dev_info(dev, "REGDUMP camera-streaming 0x%08x 0x%08x\n",
-				 (u32)(0x11c84000 + half * CSIXB_OFFSET +
+				 (u32)(base_pa + half * CSIXB_OFFSET +
 				       mtk_mipi_stock_analog[i].off),
 				 readl(h + mtk_mipi_stock_analog[i].off));
 	}
@@ -552,8 +559,13 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	mtk_mipi_phy_decode(&phy->dev, base, "enables");
 
 	/* The stock dump's analog words over ours, when a trial asks for it. */
+	dev_info(&phy->dev,
+		 "stock_analog=%d: set %s.stock_analog=1 on the command line, or write 1 to\n",
+		 stock_analog, KBUILD_MODNAME);
+	dev_info(&phy->dev, "  /sys/module/%s/parameters/stock_analog before streaming\n",
+		 KBUILD_MODNAME);
 	if (stock_analog)
-		mtk_mipi_phy_stock_analog(&phy->dev, base);
+		mtk_mipi_phy_stock_analog(&phy->dev, base, port->base_pa);
 
 	/* and the receivers of the lanes themselves, then the HAL's ready flag */
 	mtk_mipi_phy_lanes(&phy->dev, base, true);
@@ -649,6 +661,8 @@ static int mtk_mipi_cdphy_probe(struct platform_device *pdev)
 	port->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(port->base))
 		return PTR_ERR(port->base);
+
+	port->base_pa = platform_get_resource(pdev, IORESOURCE_MEM, 0)->start;
 
 	ret = of_property_read_u32(dev->of_node, "num-lanes", &port->num_lanes);
 	if (ret) {
