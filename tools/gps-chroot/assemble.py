@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -190,6 +191,69 @@ def extract_runtime_apex(system_img, workdir):
     return payload
 
 
+# The bionic runtime lives in the apex, and nothing on this side of the chroot puts it
+# where the linker looks for it: Android generates /linkerconfig/ld.config.txt for that.
+# The tree does not generate one, so the runtime's libraries are linked into /system/lib64
+# the way the vendor image does with its own symlinks, and the links are *relative* so the
+# tree also resolves on the host (which is what makes it verifiable before it is deployed).
+RUNTIME_LIBS = ["libc.so", "libm.so", "libdl.so", "libdl_android.so"]
+
+
+def move_tree(src, dst):
+    if not os.path.isdir(src):
+        return
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(src):
+        s = os.path.join(src, name)
+        d = os.path.join(dst, name)
+        if os.path.isdir(s) and not os.path.islink(s):
+            move_tree(s, d)
+        else:
+            if os.path.lexists(d):
+                os.remove(d)
+            shutil.move(s, d)
+
+
+def build_tree(root, apex_img):
+    """Turn the extracted per-partition stage into the tree mnld expects to run in."""
+    runtime = os.path.join(root, "apex", "com.android.runtime")
+    os.makedirs(runtime, exist_ok=True)
+
+    # The apex payload: the linker and the bionic libraries, which the closure walk
+    # cannot find by SONAME alone.
+    for d in ("/bin", "/lib64"):
+        debugfs(apex_img, "rdump %s %s" % (d, runtime))
+
+    move_tree(os.path.join(root, "system_b", "system"), os.path.join(root, "system"))
+    move_tree(os.path.join(root, "system_b"), os.path.join(root, "system"))
+    move_tree(os.path.join(root, "vendor_b"), os.path.join(root, "vendor"))
+    move_tree(os.path.join(root, "system_ext_b"), os.path.join(root, "system_ext"))
+    move_tree(os.path.join(root, "product_b"), os.path.join(root, "product"))
+    move_tree(os.path.join(root, "runtime"), os.path.join(runtime, "lib64"))
+    for stale in ("system_b", "vendor_b", "system_ext_b", "product_b", "runtime"):
+        shutil.rmtree(os.path.join(root, stale), ignore_errors=True)
+
+    # /system/bin/linker64 in Android is a symlink into the runtime apex, and so are the
+    # bionic libraries; relative links resolve the same way inside the chroot.
+    os.makedirs(os.path.join(root, "system", "bin"), exist_ok=True)
+    os.makedirs(os.path.join(root, "system", "lib64"), exist_ok=True)
+    link = os.path.join(root, "system", "bin", "linker64")
+    if os.path.lexists(link):
+        os.remove(link)
+    os.symlink("../../../apex/com.android.runtime/bin/linker64", link)
+    for name in RUNTIME_LIBS:
+        link = os.path.join(root, "system", "lib64", name)
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink("../../apex/com.android.runtime/lib64/bionic/" + name, link)
+
+    # What mnld writes into, and the pseudo filesystems start.sh bind-mounts over.
+    for d in ("data/vendor/gps", "data/vendor/log/gps", "data/agps_supl",
+              "data/local/tmp", "dev", "proc", "sys", "tmp"):
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+    os.chmod(os.path.join(root, "tmp"), 0o1777)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--super", required=True)
@@ -251,6 +315,9 @@ def main():
         for dep in needed(dest):
             if dep not in seen:
                 queue.append(dep)
+
+    if not args.list_only:
+        build_tree(root, images["runtime"])
 
     lines = ["%-48s %-12s %10s  %s" %
              ("file", "partition", "bytes", "path in the tree")]

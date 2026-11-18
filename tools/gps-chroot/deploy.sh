@@ -54,6 +54,30 @@ cp "$here/payload/gps-engine.service" "$stage/gps-engine.service"
 cp "$here/payload/install.sh" "$stage/install.sh"
 cp "$here/payload/scripts/"*.sh "$stage/scripts/"
 
+echo "3/4b verifying the tree the way check.sh will on the phone"
+[ -L "$stage/root/system/bin/linker64" ] || { echo "deploy: system/bin/linker64 is not a symlink" >&2; exit 1; }
+qemu=${QEMU:-qemu-aarch64-static}
+if command -v "$qemu" >/dev/null; then
+	# bionic's own linker, resolving mnld's closure inside the tree. It is the only check
+	# that cannot be faked: a missing library, or a runtime library the linker cannot find
+	# without an ld.config, fails here rather than on the phone.
+	run="$stage/root/apex/com.android.runtime/bin/linker64"
+	if ! "$qemu" -L "$stage/root" "$run" --list "$stage/root/vendor/bin/mnld" \
+		> "$out/linker-list.txt" 2> "$out/linker-error.txt"; then
+		sed -n '1,5p' "$out/linker-error.txt" >&2
+		echo "deploy: the runtime closure does not resolve" >&2
+		exit 1
+	fi
+	if grep -q "not found" "$out/linker-error.txt"; then
+		grep "not found" "$out/linker-error.txt" | head -5 >&2
+		echo "deploy: the runtime closure does not resolve" >&2
+		exit 1
+	fi
+	echo "    $(grep -c '=>' "$out/linker-list.txt") libraries resolved ($out/linker-list.txt)"
+else
+	echo "    $qemu is not installed: the closure check is left to check.sh on the phone"
+fi
+
 echo "4/4 packing"
 name=gps-engine-$(date +%Y%m%d-%H%M%S).tar.gz
 tar -C "$stage" -czf "$out/$name" .
