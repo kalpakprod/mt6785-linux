@@ -71,10 +71,16 @@
  * The vendor EMI stub hands out a window inside the CONNSYS carve-out, not a
  * separately allocated buffer: `gGpsEmiPhyBase = gConEmiPhyBase +
  * GPS_EMI_BASE_ADDR_OFFSET` (gps_emi.c, mtk_wcn_consys_gps_memory_reserve()).
- * The MNL daemon then writes its DSP image into that window through
- * /dev/gps_emi and the conn MCU fetches it from there, which is why this
- * window must be real memory the chip can reach and not a private vmalloc
- * buffer.
+ * It must be real memory the chip can reach, so it is mapped out of the
+ * carveout rather than allocated here.
+ *
+ * What the daemon does with that window is narrower than it looks: on this SoC
+ * the GNSS image and the boot commands reach the chip over the STP channel
+ * (measured on the same SoC: 39721 B out before the first NMEA byte, and the
+ * begonia port got that far with a plain vmalloc stub), while the window
+ * carries the daemon's own data exchanges. The window is still given its real
+ * place in the carveout, because the vendor's ioctl 4 hands its physical base
+ * to the daemon and the chip may be asked to fetch from it.
  *
  * The offset for MT6785 is not in the vendor file - gps_emi.c has no
  * CONFIG_MACH_MT6785 branch at all, only MT6765/61/68 (2 MiB + 1.5 MiB +
@@ -500,6 +506,77 @@ static __poll_t stpgps_poll(struct file *file, poll_table *wait)
 	return mask;
 }
 
+/*
+ * COMBO_IOC_GPS_FWCTL - the daemon's synchronous request/response channel to
+ * the GPS task, and the path the vendor driver uses to push the GNSS patch:
+ * GPS_fwctl() in stp_chrdev_gps.c copies the request out of the daemon's
+ * struct, calls mtk_wmt_gps_mcu_ctrl() and copies the answer back. That call is
+ * a WMT op (WMT_OPID_GPS_MCU_CTRL), which wraps the payload in the fixed
+ * command "01 32 00 00" and takes the GPS channel synchronously - not the
+ * asynchronous type-2 data path write() uses.
+ *
+ * Answering -EFAULT here (as this driver did up to h9) means the daemon has no
+ * way to talk to the task it is booting, whatever else the driver gets right.
+ */
+struct stpgps_fwctl_data {
+	u32 size;
+	u32 tx_len;
+	u32 rx_max;
+	u32 pad;
+	u64 p_tx_buf;
+	u64 p_rx_buf;
+	u64 p_rx_len;
+	u64 p_reserved;
+};
+
+#define STPGPS_FWCTL_BUF_MAX	128
+
+static long stpgps_fwctl(struct stpgps *gps, unsigned long arg)
+{
+	struct stpgps_fwctl_data ctl;
+	u8 tx_buf[STPGPS_FWCTL_BUF_MAX];
+	u8 rx_buf[STPGPS_FWCTL_BUF_MAX];
+	u32 rx_len = 0;
+	u32 to_user;
+	int status;
+
+	if (copy_from_user(&ctl, (void __user *)arg, sizeof(ctl)))
+		return -EFAULT;
+
+	if (ctl.size < sizeof(ctl) || !ctl.tx_len ||
+	    ctl.tx_len > STPGPS_FWCTL_BUF_MAX || !ctl.rx_max)
+		return -EFAULT;
+
+	if (copy_from_user(tx_buf, (void __user *)(uintptr_t)ctl.p_tx_buf,
+			   ctl.tx_len))
+		return -EFAULT;
+
+	/* The vendor clears this flag when the chip resets the GPS task. */
+	if (gps->rst_state == STPGPS_RST_START)
+		return -EFAULT;
+
+	status = mtk_wmt_gps_mcu_ctrl(tx_buf, ctl.tx_len, rx_buf,
+				      STPGPS_FWCTL_BUF_MAX, &rx_len);
+	if (status || rx_len < 2 || rx_len > STPGPS_FWCTL_BUF_MAX) {
+		dev_dbg(gps->gps_misc.this_device,
+			"fwctl failed: status %d, tx %u bytes, rx %u bytes\n",
+			status, ctl.tx_len, rx_len);
+		return -EFAULT;
+	}
+
+	to_user = min(ctl.rx_max, rx_len);
+	if (copy_to_user((void __user *)(uintptr_t)ctl.p_rx_buf, rx_buf, to_user) ||
+	    copy_to_user((void __user *)(uintptr_t)ctl.p_rx_len, &rx_len,
+			 sizeof(rx_len)))
+		return -EFAULT;
+
+	dev_dbg(gps->gps_misc.this_device,
+		"fwctl: tx %u bytes ([0]=%02x), rx %u bytes ([0]=%02x [1]=%02x)\n",
+		ctl.tx_len, tx_buf[0], rx_len, rx_buf[0], rx_buf[1]);
+
+	return 0;
+}
+
 static long stpgps_ioctl(struct file *file, unsigned int cmd,
 			 unsigned long arg)
 {
@@ -576,18 +653,19 @@ static long stpgps_ioctl(struct file *file, unsigned int cmd,
 		stpgps_hold_wake_lock(gps, false);
 		return gps->ws_held ? -EAGAIN : 0;
 
+	case COMBO_IOC_GPS_FWCTL:
+		return stpgps_fwctl(gps, arg);
+
 	case 0:			/* enable/disable STP: WMT owns that */
 	case 1:			/* raw data from GPS dev */
 	case COMBO_IOC_GPS_HWVER:
-	case COMBO_IOC_GPS_FWCTL:
 	case COMBO_IOC_GPS_HW_SUSPEND:
 	case COMBO_IOC_GPS_HW_RESUME:
 	case COMBO_IOC_GPS_GET_MD_STATUS:
 		/*
 		 * 0 and 1: the daemon must not drive STP itself (-EINVAL).
 		 * 6 (raw hw version): compiled out on this platform (-EFAULT).
-		 * 17/18/19 (fwctl, hw suspend/resume): not used by the daemon on this
-		 * SoC, and the vendor answers -EFAULT for the unimplemented rest.
+		 * 18/19 (hw suspend/resume): no daemon on this SoC uses them.
 		 * 21 (MD status): the vendor needs a physical MD2GPS register address,
 		 * has none on MT6785 and answers -EFAULT.
 		 */
