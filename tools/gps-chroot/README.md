@@ -141,6 +141,55 @@ can load:
 So there is nothing to copy from a stock partition: the missing piece is the engine itself, and
 `deploy.sh` below is how it gets onto the phone.
 
+## The order the connsys needs: Wi-Fi first, then GPS
+
+Measured on the phone (REPORT.md, LEAD-NOTE 30): if the GPS function is the first consys user after a
+boot, `FUNC_CTRL(GPS on)` fails and takes the chip with it -
+
+```
+wmt_cmd_test cmd len err ...
+WMT-CORE: get hwcode (chip id) fail
+consys_hw_reset_bit_set: connector MCU did not boot: 0x18002600=0x0 after 11 polls
+Read CONSYS version id(0x00000000)
+connsys clock check fail 0x18007000(0x0)
+```
+
+- and every later attempt fails too until the phone reboots. With Wi-Fi up first the same call answers
+`OPID(3) type(2) ok`.
+
+The code path says why this cannot be a GPS-path bug: `opfunc_func_on()` (`wmt_core.c:1255`) powers the
+chip through the *shared* `opfunc_pwr_on()` before it looks at the function type at all, and the power-on
+sequence (`wmt_core_ctrl(WMT_CTRL_HW_PWR_ON)` → `mtk_wcn_consys_hw_reg_ctrl()`) is the same for both. The
+only difference for Wi-Fi is that `opfunc_func_on()` hands the rest to `WMT_OPID_WLAN_PROBE`, i.e. to
+`wlan_gen4m`'s own probe, after the chip is up. GPS's extra steps (`wmt_func_gps_on()`: PALDO/VCN28 and
+the LNA) are gated on `co_clock_flag`, which is 0 on this board, so they are skipped. The failure above
+happens *inside* the shared power-on (the MCU does not boot), which means the state of the chip at that
+moment is wrong, not the GPS function's code - and the kernel's own headless MCU patch step
+(`wmt_dev_srh_patch_headless()`, which publishes `soc1_0_patch_mcu_2a_1_hdr.bin` because this port has
+no `stp_uart_launcher`) is the step that has to have completed for the MCU to boot at all.
+
+`start.sh` therefore brings Wi-Fi up first when nothing has yet (`printf 1 > /dev/wmtWifi`, wait for
+`wlan0`), and only then starts the daemon. `GPS_ENGINE_SKIP_WIFI=1` skips that, for a trial that wants
+the failure.
+
+## Reading mnld's own log
+
+`mnld` reports through Android's `liblog`, and this environment has no `logd`: the lines went nowhere.
+The preloaded shim now also defines `__android_log_print`, `__android_log_vprint`, `__android_log_write`,
+`__android_log_buf_write` and `__android_log_assert`, and writes them to stderr, which `start.sh` sends
+to `/var/log/gps-engine/mnld-<stamp>.log`. The formatter covers `%s %c %d %i %u %x %X %p` with the
+`hh/h/l/ll/z` modifiers; anything else is printed literally rather than guessed at, and a bad format
+string cannot take the daemon down.
+
+On the kernel side the first frames of each direction are dumped raw, so a short exchange can be read
+without a protocol decoder:
+
+```
+GNSS tx frame 116 B (first 48): aa 0f 32 ...
+GNSS rx frame 20 B: ...
+GNSS channel closed: tx 116 B in 1 frames, rx 20 B in 1 frames
+```
+
 ## Deploying
 
     ./deploy.sh                 # host: extracts, builds the helpers, writes out/gps-engine-*.tar.gz

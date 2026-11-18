@@ -38,6 +38,28 @@ else
 	echo "    reusing $root"
 fi
 
+# NVRAM: mnld keeps the GNSS calibration in MTK's nvram store, which stock finds
+# through the kernel's fstab as the mounted nvdata partition (/mnt/vendor/nvdata).
+# There is no such mount in this tree - and the live partition must never be
+# touched - so the record files are copied out of the phone's own nvdata image
+# into the tree, where the daemon reads and writes them like a normal filesystem
+# (writes land in /opt/gps-engine, never on the partition).
+nvdata=${NVDATA:-$here/../../../poco-m5s/device-dump-2026-11-12/partitions/nvdata.img}
+[ -f "$nvdata" ] || nvdata=/path/to/project/poco-m5s/device-dump-2026-11-12/partitions/nvdata.img
+if [ -f "$nvdata" ]; then
+	nvm=$root/mnt/vendor/nvdata
+	mkdir -p "$nvm/APCFG/APRDEB" "$nvm/APCFG/APRDCL"
+	for d in APRDEB APRDCL; do
+		for f in $(debugfs -R "ls /APCFG/$d" "$nvdata" 2>/dev/null | awk '$2 ~ /^\(/ {print $NF}' | grep -v '^\.'); do
+			debugfs -R "dump -p /APCFG/$d/$f $nvm/APCFG/$d/$f" "$nvdata" >/dev/null 2>&1 || true
+		done
+	done
+	: > "$nvm/RestoreFlag" 2>/dev/null || true
+	echo "    nvram: $(find "$nvm/APCFG" -type f 2>/dev/null | wc -l) record files from $(basename "$nvdata")"
+else
+	echo "    nvram: no nvdata image found, mnld will report NVM_Init fail (calibration only)"
+fi
+
 echo "2/4 building the helpers"
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/lib" "$stage/etc" "$stage/scripts"
