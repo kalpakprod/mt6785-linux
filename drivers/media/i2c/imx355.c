@@ -87,6 +87,17 @@
 static int test_pattern = -1;
 module_param(test_pattern, int, 0644);
 
+/*
+ * Program the vendor's own init + preview tables instead of mainline's setup, for a trial that asks
+ * whether the mode/PLL difference the logs show is what keeps the transmitter silent. Nothing else is
+ * written in this mode: no PLL words, no VTS/HTS computed by this driver, and no write to 0x3050 (which
+ * this driver never writes anyway - the 3 the log shows is the chip's own value).
+ */
+static int vendor_mode;
+module_param(vendor_mode, int, 0644);
+MODULE_PARM_DESC(vendor_mode,
+		 "1 = program the vendor init and preview register tables instead of mainline's mode setup");
+
 /* Read the sensor's frame counter at stream on: on by default, off by imx355.diag_frames=0. */
 static bool diag_frames = true;
 module_param(diag_frames, bool, 0644);
@@ -820,6 +831,65 @@ static int imx355_entity_init_state(struct v4l2_subdev *subdev,
 /* Start streaming */
 static void imx355_diag_mipi(struct imx355 *imx355);
 
+/*
+ * The stock HAL's own register tables for this module, copied whole from the vendor driver
+ * (los-mt6785, drivers/misc/mediatek/imgsensor/src/mt6785/imx355ofilm_mipi_raw/
+ * imx355ofilmmipiraw_Sensor.c): addr_data_pair_init_imx355ofilm (37 pairs) followed by
+ * addr_data_pair_preview_imx355ofilm (53 pairs) - what its sensor_init() and preview path write
+ * when a camera app previews on rosemary. They differ from mainline's setup in exactly the words the
+ * trials printed side by side: 0x0820 (2016 Mb/s against our 2880), 0x030d, 0x030e, VTS 0x0e4c
+ * (ours 0x0a37), HTS 0x072c (ours 0x0e58).
+ */
+static const struct cci_reg_sequence imx355_vendor_preview_regs[] = {
+	{ CCI_REG8(0x0136), 0x18 }, { CCI_REG8(0x0137), 0x00 },
+	{ CCI_REG8(0x4348), 0x16 }, { CCI_REG8(0x4350), 0x19 },
+	{ CCI_REG8(0x4408), 0x0a }, { CCI_REG8(0x440c), 0x0b },
+	{ CCI_REG8(0x4411), 0x5f }, { CCI_REG8(0x4412), 0x2c },
+	{ CCI_REG8(0x4623), 0x00 }, { CCI_REG8(0x462c), 0x0f },
+	{ CCI_REG8(0x462d), 0x00 }, { CCI_REG8(0x462e), 0x00 },
+	{ CCI_REG8(0x4684), 0x54 }, { CCI_REG8(0x480a), 0x07 },
+	{ CCI_REG8(0x4908), 0x07 }, { CCI_REG8(0x4909), 0x07 },
+	{ CCI_REG8(0x490d), 0x0a }, { CCI_REG8(0x491e), 0x0f },
+	{ CCI_REG8(0x4921), 0x06 }, { CCI_REG8(0x4923), 0x28 },
+	{ CCI_REG8(0x4924), 0x28 }, { CCI_REG8(0x4925), 0x29 },
+	{ CCI_REG8(0x4926), 0x29 }, { CCI_REG8(0x4927), 0x1f },
+	{ CCI_REG8(0x4928), 0x20 }, { CCI_REG8(0x4929), 0x20 },
+	{ CCI_REG8(0x492a), 0x20 }, { CCI_REG8(0x492c), 0x05 },
+	{ CCI_REG8(0x492d), 0x06 }, { CCI_REG8(0x492e), 0x06 },
+	{ CCI_REG8(0x492f), 0x06 }, { CCI_REG8(0x4930), 0x03 },
+	{ CCI_REG8(0x4931), 0x04 }, { CCI_REG8(0x4932), 0x04 },
+	{ CCI_REG8(0x4933), 0x05 }, { CCI_REG8(0x595e), 0x01 },
+	{ CCI_REG8(0x5963), 0x01 },
+	/* addr_data_pair_preview_imx355ofilm */
+	{ CCI_REG8(0x0100), 0x00 }, { CCI_REG8(0x0112), 0x0a },
+	{ CCI_REG8(0x0113), 0x0a }, { CCI_REG8(0x0114), 0x03 },
+	{ CCI_REG8(0x0342), 0x07 }, { CCI_REG8(0x0343), 0x2c },
+	{ CCI_REG8(0x0340), 0x0e }, { CCI_REG8(0x0341), 0x4c },
+	{ CCI_REG8(0x0344), 0x00 }, { CCI_REG8(0x0345), 0x00 },
+	{ CCI_REG8(0x0346), 0x00 }, { CCI_REG8(0x0347), 0x00 },
+	{ CCI_REG8(0x0348), 0x0c }, { CCI_REG8(0x0349), 0xcf },
+	{ CCI_REG8(0x034a), 0x09 }, { CCI_REG8(0x034b), 0x9f },
+	{ CCI_REG8(0x0220), 0x00 }, { CCI_REG8(0x0222), 0x01 },
+	{ CCI_REG8(0x0900), 0x01 }, { CCI_REG8(0x0901), 0x22 },
+	{ CCI_REG8(0x0902), 0x00 }, { CCI_REG8(0x034c), 0x06 },
+	{ CCI_REG8(0x034d), 0x68 }, { CCI_REG8(0x034e), 0x04 },
+	{ CCI_REG8(0x034f), 0xd0 }, { CCI_REG8(0x0301), 0x05 },
+	{ CCI_REG8(0x0303), 0x01 }, { CCI_REG8(0x0305), 0x02 },
+	{ CCI_REG8(0x0306), 0x00 }, { CCI_REG8(0x0307), 0x78 },
+	{ CCI_REG8(0x030b), 0x01 }, { CCI_REG8(0x030d), 0x04 },
+	{ CCI_REG8(0x030e), 0x00 }, { CCI_REG8(0x030f), 0x54 },
+	{ CCI_REG8(0x0310), 0x00 }, { CCI_REG8(0x0700), 0x00 },
+	{ CCI_REG8(0x0701), 0x10 }, { CCI_REG8(0x0820), 0x07 },
+	{ CCI_REG8(0x0821), 0xe0 }, { CCI_REG8(0x3088), 0x04 },
+	{ CCI_REG8(0x6813), 0x01 }, { CCI_REG8(0x6835), 0x00 },
+	{ CCI_REG8(0x6836), 0x00 }, { CCI_REG8(0x6837), 0x02 },
+	{ CCI_REG8(0x684d), 0x00 }, { CCI_REG8(0x684e), 0x00 },
+	{ CCI_REG8(0x684f), 0x02 }, { CCI_REG8(0x0202), 0x0e },
+	{ CCI_REG8(0x0203), 0x42 }, { CCI_REG8(0x0204), 0x00 },
+	{ CCI_REG8(0x0205), 0x00 }, { CCI_REG8(0x020e), 0x01 },
+	{ CCI_REG8(0x020f), 0x00 },
+};
+
 static int imx355_start_streaming(struct imx355 *imx355)
 {
 	const struct v4l2_mbus_framefmt *fmt;
@@ -830,6 +900,9 @@ static int imx355_start_streaming(struct imx355 *imx355)
 	u64 link_bitrate;
 	u8 binning_mode;
 	int ret = 0;
+
+	if (vendor_mode)
+		goto vendor_tail;
 
 	/* Global Setting */
 	cci_multi_reg_write(imx355->regmap, imx355_global_regs,
@@ -902,6 +975,19 @@ static int imx355_start_streaming(struct imx355 *imx355)
 	if (test_pattern >= 0) {
 		cci_write(imx355->regmap, IMX355_REG_TEST_PATTERN, test_pattern, &ret);
 		dev_info(imx355->dev, "test pattern forced to %d\n", test_pattern);
+	}
+
+vendor_tail:
+	/*
+	 * The vendor's own tables where mainline's setup would have been (or, on the normal path, where
+	 * its values already stand): the last step before the streaming bit either way.
+	 */
+	if (vendor_mode) {
+		cci_multi_reg_write(imx355->regmap, imx355_vendor_preview_regs,
+				    ARRAY_SIZE(imx355_vendor_preview_regs), &ret);
+		dev_info(imx355->dev,
+			 "vendor mode: %zu vendor registers written, no own PLL, no 0x3050 write\n",
+			 ARRAY_SIZE(imx355_vendor_preview_regs));
 	}
 
 	cci_write(imx355->regmap, IMX355_REG_MODE_SELECT, IMX355_MODE_STREAMING,
