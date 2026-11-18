@@ -5,6 +5,7 @@
  */
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/pinctrl/mediatek,mt6785-pinfunc.h>
 
 /*
@@ -74,6 +75,47 @@
  * state - the sensor binds and its controls work, only the stream has no sink. When SENINF
  * lands, its port connects to these endpoints unchanged.
  */
+/*
+ * The main rear sensor, OV64B40-Semco (cam0): i2c2 at 7-bit 0x10 (vendor table 0x20 eight-bit), reset
+ * GPIO118, MCLK CAMTG1 on GPIO116 (the stock HAL's sensor table: index MAIN -> MCLK enum 0 -> CMMCLK0,
+ * TOP_MUX_CAMTG1, stock-hal-port-map-2026-11-17.md), rails cam0_vcama = wl2866d_avdd2 2.8 V,
+ * cam0_vcamd = wl2866d_dvdd2 (1.1 V requested, 1.08 V is what the part's 600 mV + n x 60 mV grid
+ * holds) and vcamio 1.8 V (live DT kd_camera_hw1, study 1.2/1.4).
+ *
+ * Three data lanes and no clock lane: this module is **C-PHY** (vendor
+ * ov64b40ofilm_mipi_raw.c:245 `.mipi_sensor_type = MIPI_CPHY`, :253 `SENSOR_MIPI_3_LANE`), the only
+ * C-PHY sensor on the board. Its endpoint carries the bus type and the three trios but no remote
+ * endpoint yet: the receiver path for C-PHY (a fourth sink pad on SENINF and the mode-2 CSI-2 words)
+ * is the next step, and until it exists the node is there for the one cheap fact a trial can produce -
+ * the driver probes, powers the module in the vendor's order and reads its chip id (0x566442).
+ */
+&i2c2 {
+	status = "okay";
+
+	ov64b40: camera@10 {
+		compatible = "ovti,ov64b40";
+		reg = <0x10>;
+
+		clocks = <&topckgen CLK_TOP_CAMTG1>;
+		assigned-clocks = <&topckgen CLK_TOP_CAMTG1>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL_192M_D8>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&wl2866d_avdd2>;
+		dvdd-supply = <&wl2866d_dvdd2>;
+		dovdd-supply = <&mt6359_vcamio_ldo_reg>;
+		reset-gpios = <&pio 118 GPIO_ACTIVE_LOW>;
+		status = "okay";
+
+		port {
+			ov64b40_out: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <1 2 3>;
+			};
+		};
+	};
+};
+
 &i2c4 {
 	status = "okay";
 

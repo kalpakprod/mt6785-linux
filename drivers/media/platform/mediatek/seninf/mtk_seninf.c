@@ -484,6 +484,39 @@ module_param(rx_index, int, 0644);
 MODULE_PARM_DESC(rx_index,
 		 "receiver to program: -1 = the port's own (HAL pairing), 0..4 = force");
 
+/*
+ * The state of the camera pins, decoded through this tree's own pin map rather than guessed:
+ * drivers/pinctrl/mediatek/pinctrl-mt6785.c:24-36 gives DIR at 0x000, DOUT at 0x100, DIN at 0x200
+ * and MODE at 0x300 with a 0x10 stride per sixteen pins and one bit (four for MODE) per pin, so
+ * pin 21 is bit 5 of the pins-16..31 words. MTK's DIR convention: 1 = input, 0 = output.
+ */
+static void mtk_seninf_pin_state(struct mtk_seninf *seninf, const char *when)
+{
+	static const unsigned int pins[] = { 21, 22, 118, 124, 125, 195 };
+	unsigned int i;
+
+	if (!seninf->pio) {
+		dev_warn(seninf->dev, "CAMGATES %s: the pin controller window is unmapped\n", when);
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(pins); i++) {
+		unsigned int p = pins[i];
+		unsigned int bank = (p / 16) * 0x10;
+		unsigned int bit = p % 16;
+		u32 dir = readl(seninf->pio + 0x000 + bank);
+		u32 dout = readl(seninf->pio + 0x100 + bank);
+		u32 din = readl(seninf->pio + 0x200 + bank);
+		u32 mode = readl(seninf->pio + 0x300 + bank);
+
+		dev_info(seninf->dev,
+			 "CAMGATES %s pin %u: mode %u %s dout %u din %u\n", when, p,
+			 (mode >> (bit * 4)) & 0xf,
+			 ((dir >> bit) & 1) ? "in" : "out",
+			 (dout >> bit) & 1, (din >> bit) & 1);
+	}
+}
+
 static void mtk_seninf_window(struct mtk_seninf *seninf, const char *what,
 			      void __iomem *w, phys_addr_t pa, unsigned int words)
 {
@@ -1098,15 +1131,18 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		dev_info(seninf->dev, "topmux: 0x0008 0x%08x (mux n <- receiver n), five muxes enabled\n",
 			 readl(seninf->base + 0x0008));
 	}
+	dev_info(seninf->dev, "CAMGATES gates=%d topmux_all=%d csi2_enable=%d rx_index=%d\n",
+		 gates, topmux_all, csi2_enable, rx_index);
 	if (gates) {
 		/* The pins first, so this line cannot be lost to a failed window map. */
 		dev_info(seninf->dev,
-			 "gates: topck %s infra %s pio %s, mipi-sel gpiolib dir/val %d/%d\n",
+			 "CAMGATES windows: topck %s infra %s pio %s, mipi-sel gpiolib dir/val %d/%d\n",
 			 seninf->topck ? "mapped" : "UNMAPPED",
 			 seninf->infra ? "mapped" : "UNMAPPED",
 			 seninf->pio ? "mapped" : "UNMAPPED",
 			 seninf->mipi_sel ? gpiod_get_direction(seninf->mipi_sel) : -1,
 			 seninf->mipi_sel ? gpiod_get_value_cansleep(seninf->mipi_sel) : -1);
+		mtk_seninf_pin_state(seninf, "stream");
 		mtk_seninf_window(seninf, "topck", seninf->topck, 0x10000000, 0x80);
 		mtk_seninf_window(seninf, "infra", seninf->infra, 0x10001000, 0x80);
 		mtk_seninf_window(seninf, "pio", seninf->pio, 0x10005000, 0x80);
@@ -1294,13 +1330,7 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	 * state the stock driver runs in, and our driving the pin is a change nothing in the vendor
 	 * tree explains - hence this reading of the pad before the driver touches it.
 	 */
-	if (seninf->pio)
-		dev_info(dev, "pio before we touch it: 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
-			 readl(seninf->pio), readl(seninf->pio + 0x4),
-			 readl(seninf->pio + 0x10), readl(seninf->pio + 0x20),
-			 readl(seninf->pio + 0x40));
-	else
-		dev_warn(dev, "the pin controller window could not be mapped\n");
+	mtk_seninf_pin_state(seninf, "before");
 
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(seninf->clks), seninf->clks);
 	if (ret)
