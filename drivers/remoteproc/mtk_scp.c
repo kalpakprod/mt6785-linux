@@ -557,6 +557,16 @@ static void mt6785_scp_log_ulposc(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_fmeter(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp);
 static void mt6785_scp_log_ring_probe(struct mtk_scp *scp, const char *when);
+static void mt6785_scp_diff_region(struct mtk_scp *scp);
+
+/*
+ * Where the region's bytes came from: the requested image, and the offsets of the firmware and
+ * dram records inside it. Filled in when the image is staged.
+ */
+static struct {
+	const u8 *img;
+	size_t fw_ofs, fw_len, dram_ofs, dram_len;
+} mt6785_region_ref;
 static void mt6785_scp_log_spm_handshake(struct mtk_scp *scp, const char *when);
 static void mt6785_scp_log_sspm(struct mtk_scp *scp);
 static void mt6785_scp_log_rails(struct mtk_scp *scp);
@@ -865,6 +875,7 @@ static void mt6785_scp_dump_regs(struct mtk_scp *scp)
 	dev_err(scp->dev, "post-mortem: probe word %#x (expected %#x)\n",
 		readl(cfg + MT6785_SCP_PROBE_REG), MT6785_SCP_PROBE_VALUE);
 	mt6785_scp_scan_dram_text(scp);
+	mt6785_scp_diff_region(scp);
 	mt6785_scp_log_ring_probe(scp, "at the timeout");
 	mt6785_scp_log_dram_state(scp, "at the timeout");
 	mt6785_scp_log_pages(scp, "at the timeout");
@@ -2767,6 +2778,79 @@ static void mt6785_scp_log_ring_probe(struct mtk_scp *scp, const char *when)
 	}
 }
 
+/*
+ * What has been written over the staged image by the time the start fails.
+ *
+ * comb22 showed the three slices changing while the firmware ran (firmware crc 0x3e3c38ba ->
+ * 0x5b052a57, dram 0x8797730b -> 0x2278a4e1, backup -> 0x06dad136) and the region's text coming
+ * back garbled. There is no remap register behind this: the vendor kernel only ioremaps
+ * ap_dram_start (scp_helper.c:1726-1731) and h16 measured that the core reaches 0x9fc00800
+ * directly, so a wrong SCP->DRAM mapping cannot be the cause - something the firmware ran
+ * (its own copy, its crash path, a log or dump write) lands on the image.
+ *
+ * This walks the three slices word by word against the image records they were staged from and
+ * prints each run of differing words with its region offset, its length and the first pair of
+ * values, which is what names the range and its shape (a dump header, text, or noise).
+ */
+static void mt6785_scp_diff_region(struct mtk_scp *scp)
+{
+	struct slice { size_t region_ofs, len, img_ofs; const char *name; };
+	struct slice slices[2];
+	u8 *buf;
+	size_t total = MT6785_SCP_FIRMWARE_TCM_MAX + MT6785_LK_DRAM_OFS;
+	unsigned int s;
+
+	if (!mt6785_region_ref.img || !mt6785_region_ref.fw_len)
+		return;
+
+	slices[0].region_ofs = MT6785_LK_FIRMWARE_OFS;
+	slices[0].len = mt6785_region_ref.fw_len;
+	slices[0].img_ofs = mt6785_region_ref.fw_ofs;
+	slices[0].name = "firmware";
+	slices[1].region_ofs = MT6785_LK_DRAM_OFS;
+	slices[1].len = mt6785_region_ref.dram_len;
+	slices[1].img_ofs = mt6785_region_ref.dram_ofs;
+	slices[1].name = "dram part";
+
+	buf = kzalloc(total, GFP_KERNEL);
+	if (!buf)
+		return;
+
+	for (s = 0; s < ARRAY_SIZE(slices); s++) {
+		const u8 *img = mt6785_region_ref.img + slices[s].img_ofs;
+		size_t i, n = slices[s].len, runs = 0;
+
+		memcpy_fromio(buf, scp->lk_base + slices[s].region_ofs, n);
+		for (i = 0; i + 4 <= n && runs < 8; ) {
+			size_t start, words = 0;
+
+			if (!memcmp(buf + i, img + i, 4)) {
+				i += 4;
+				continue;
+			}
+			start = i;
+			while (i + 4 <= n && memcmp(buf + i, img + i, 4)) {
+				i += 4;
+				words++;
+			}
+			runs++;
+			dev_err(scp->dev, "%s+%#zx (%zu bytes, %zu word(s)): region %08x %08x %08x %08x, image %08x %08x %08x %08x\n",
+				slices[s].name, start, words * 4, words,
+				get_unaligned_le32(buf + start),
+				get_unaligned_le32(buf + start + 4),
+				get_unaligned_le32(buf + start + 8),
+				get_unaligned_le32(buf + start + 12),
+				get_unaligned_le32(img + start),
+				get_unaligned_le32(img + start + 4),
+				get_unaligned_le32(img + start + 8),
+				get_unaligned_le32(img + start + 12));
+		}
+		dev_err(scp->dev, "%s: %zu byte(s) compared, %zu run(s) of damage%s\n",
+			slices[s].name, n, runs, runs == 8 ? " (first eight shown)" : "");
+	}
+	kfree(buf);
+}
+
 static void mt6785_scp_scan_dram_text(struct mtk_scp *scp)
 {
 	/* DRAM only: the loader region the driver already maps, and the reserved pool */
@@ -3321,6 +3405,16 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 		return -ENODEV;
 	}
 	memcpy_toio(scp->lk_base + MT6785_LK_FIRMWARE_OFS, scp_img, fw_len);
+	/*
+	 * Keep where those bytes came from, so the post-mortem can compare the region with
+	 * the image word by word and name the ranges something wrote over (see
+	 * mt6785_scp_diff_region()).
+	 */
+	mt6785_region_ref.img = scp->image;
+	mt6785_region_ref.fw_ofs = scp_img - scp->image;
+	mt6785_region_ref.fw_len = fw_len;
+	mt6785_region_ref.dram_ofs = dram - scp->image;
+	mt6785_region_ref.dram_len = dram_len;
 	memcpy_toio(scp->lk_base + scp->mtk_dram_ofs, dram, dram_len);
 	/* the loader is staged in that region as well, where LK puts it */
 	memcpy_toio(scp->lk_base, loader, loader_len);
