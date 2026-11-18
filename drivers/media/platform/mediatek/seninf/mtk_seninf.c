@@ -1071,7 +1071,16 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		unsigned int lanes = mtk_seninf_lanes(seninf);
 		struct { u32 off; u32 val; const char *what; } seq[] = {
 			{ 0x0a10, readl(inst + 0x0a10) | 0x100, "CSI2 +0x10 bit 8" },
-			{ 0x0a08, readl(inst + 0x0a08) & ~0x700, "CSI2 +0x08 mode bits cleared" },
+			/*
+			 * The HAL's mode-2 branch also sets bit 1 here
+			 * (hal_csirx_seninf_csi2_setting, libcam.halsensor.so :0x32784-:0x32794), and mode 2 is
+			 * the C-PHY path the OV64B40 needs - that is what csi2_enable now selects, together with
+			 * bit 0 of +0x04 below.
+			 */
+			{ 0x0a08, csi2_enable ? ((readl(inst + 0x0a08) & ~0x700) | 0x2) :
+				(readl(inst + 0x0a08) & ~0x700),
+			  csi2_enable ? "CSI2 +0x08 mode-2 bit 1 set" :
+					"CSI2 +0x08 mode bits cleared" },
 			{ 0x0a04, csi2_enable ? (readl(inst + 0x0a04) | 1) :
 				(readl(inst + 0x0a04) & ~1),
 			  csi2_enable ? "CSI2 +0x04 mode-2 enable ON" :

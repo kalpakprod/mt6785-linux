@@ -503,9 +503,18 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	 * so CD-PHY capable phys must be configured in DPHY mode
 	 */
 	if (port->type == CDPHY) {
-		mtk_phy_update_field(base + MIPI_RX_ANA00_CSIXA, RG_CSI0A_CPHY_EN, 0);
+		/*
+		 * The mode bit the in-tree header names RG_CSI0A_CPHY_EN
+		 * (phy-mtk-mipi-csi-0-5-rx-reg.h:18): 0 selects D-PHY, 1 selects C-PHY. Until now this
+		 * driver always cleared it, i.e. only D-PHY was ever possible.
+		 */
+		bool cphy = port->mode == CPHY;
+
+		mtk_phy_update_field(base + MIPI_RX_ANA00_CSIXA, RG_CSI0A_CPHY_EN, cphy);
 		mtk_phy_update_field(base + CSIXB_OFFSET + MIPI_RX_ANA00_CSIXA,
-				     RG_CSI0A_CPHY_EN, 0);
+				     RG_CSI0A_CPHY_EN, cphy);
+		dev_info(&phy->dev, "mode: %s (0x00 CPHY_EN %u on both halves)\n",
+			 cphy ? "C-PHY" : "D-PHY", cphy);
 	}
 
 	/*
@@ -675,6 +684,20 @@ static struct phy *mtk_mipi_cdphy_xlate(struct device *dev,
 			priv->mode = DPHY;
 			if (priv->num_lanes != 4) {
 				dev_err(dev, "Only 4D1C mode is supported for now!\n");
+				return ERR_PTR(-EINVAL);
+			}
+			break;
+		case PHY_TYPE_CPHY:
+			/*
+			 * C-PHY: three trios, no separate clock lane. The block is a combo, so the same
+			 * instance serves both modes; power_on selects the mode by the RG_CSI0A_CPHY_EN bit
+			 * and applies the C-PHY field set (mtk_mipi_phy_cphy_setup below). This is the mode
+			 * the OV64B40 on this board needs and the only one no trial has run.
+			 */
+			priv->mode = CPHY;
+			if (priv->num_lanes < 1 || priv->num_lanes > 3) {
+				dev_err(dev, "C-PHY takes 1 to 3 trios, this node says %u\n",
+					priv->num_lanes);
 				return ERR_PTR(-EINVAL);
 			}
 			break;
