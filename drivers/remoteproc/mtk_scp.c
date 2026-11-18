@@ -29,6 +29,9 @@
 #include "mtk_common.h"
 #include "remoteproc_internal.h"
 
+struct mtk_scp;
+static u32 mt6785_scp_crc_region(struct mtk_scp *scp, u32 ofs, size_t len);
+
 #define SECTION_NAME_IPI_BUFFER ".ipi_buffer"
 
 /**
