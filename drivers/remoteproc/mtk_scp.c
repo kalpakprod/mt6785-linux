@@ -1329,6 +1329,20 @@ static int scp_start(struct rproc *rproc)
 	 */
 	mt6785_scp_vol_lv(scp);
 	mt6785_scp_spm_request(scp, true);
+
+	/*
+	 * The protection has to be down before the core is released, and this is the one place
+	 * that covers every load path. mt6785_scp_after_load() releases it for the ELF firmware,
+	 * but the vendor container (scp-ext.img) is staged by mt6785_scp_stage_mtk_image() and
+	 * never reaches after_load() - which is what comb7 showed: the block stayed alive and
+	 * answered the AP while the core never ran (clk_sw 0x201, clk_en 0x0, TCM[0] 0x538
+	 * unchanged for two seconds, still -62), because the release happened with
+	 * INFRA_SLP_PROT bits 30/31 still set and the core's path to its own firmware held.
+	 * The vendor's order is protection down, then release (scp_awake.c:285-296, then
+	 * scp_helper.c:617); a second clear on the ELF path is a no-op.
+	 */
+	mt6785_scp_slp_prot_clear(scp);
+
 	scp->data->scp_reset_deassert(scp);
 
 	/*
@@ -2897,6 +2911,12 @@ static int mt6785_scp_slp_prot_clear(struct mtk_scp *scp)
 		     val & ~(MT6785_SCP_TO_INFRA_BIT | MT6785_SCP_TO_AUDIO_BIT));
 	/* the protection must be gone before the core is released */
 	wmb();
+
+	if (regmap_read(infracfg, MT6785_INFRACFG_SLP_PROT_SET, &val))
+		return 0;
+	dev_info(scp->dev, "sleep protect released: %#x = %#x (bits %#x must be 0)\n",
+		 MT6785_INFRACFG_SLP_PROT_SET, val,
+		 MT6785_SCP_TO_INFRA_BIT | MT6785_SCP_TO_AUDIO_BIT);
 
 	return 0;
 }
