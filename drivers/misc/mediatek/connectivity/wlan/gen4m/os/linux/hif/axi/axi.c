@@ -422,11 +422,16 @@ static int axiDmaSetup(struct platform_device *pdev,
 	 * register access happens either during this probe (the domain is on
 	 * then) or while a WMT function is on, and that path holds the domain
 	 * through the consys device (mtk_wcn_consys_hw_pwr_on() ->
-	 * pm_runtime_resume_and_get()). So the device comes up suspended.
+	 * pm_runtime_resume_and_get()). So the device comes out of probe ACTIVE
+	 * with no runtime-PM reference and stays active.
+	 *
+	 * The pm_runtime_put() this replaces ran with a usage count of zero:
+	 * rpm_drop_usage_count() warns "Runtime PM usage count underflow!" and
+	 * undoes the decrement (drivers/base/power/runtime.c), so it never
+	 * suspended anything - it only printed the warning lead note 21 lists.
 	 */
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-	pm_runtime_put(&pdev->dev);
 
 exit:
 	return ret;

@@ -444,13 +444,24 @@ static INT32 mtk_wmt_probe(struct platform_device *pdev)
 	 * trial 13 ("unsupported" for 18002000.consys) and why the connector MCU
 	 * never got a cold start after the first power-off.
 	 *
-	 * The idiom below leaves the device suspended: set_active() because the
-	 * genpd has already powered the domain for probe, then put() drops the
-	 * reference so the domain may be cut until a function powers on.
+	 * The device therefore comes out of probe ACTIVE and with no runtime-PM
+	 * reference: set_active() because the genpd has already powered the
+	 * domain for probe, then enable(). It stays that way - the domain is
+	 * held up - until a function powers on, and the power sequence owns the
+	 * domain from there (pwr_on: pm_runtime_resume_and_get(), pwr_off:
+	 * pm_runtime_put_sync(), a balanced pair).
+	 *
+	 * There used to be a pm_runtime_put() here. It could not work: the usage
+	 * count is zero at that point, so rpm_drop_usage_count() warns "Runtime
+	 * PM usage count underflow!" and *undoes* the decrement
+	 * (drivers/base/power/runtime.c), i.e. the device was never handed back
+	 * and the line only made the log claim it was - the two warnings lead
+	 * note 21 lists. Dropped rather than balanced with a get_noresume(): a
+	 * permanent reference would stop the balanced pair above from ever
+	 * idling the device, which is the one thing runtime PM is here for.
 	 */
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-	pm_runtime_put(&pdev->dev);
 
 	atomic_set(&g_probe_called, 1);
 
