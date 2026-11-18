@@ -3411,9 +3411,9 @@ static int mt6785_scp_stage_mtk_image(struct mtk_scp *scp, const struct firmware
 	 * mt6785_scp_diff_region()).
 	 */
 	mt6785_region_ref.img = scp->image;
-	mt6785_region_ref.fw_ofs = scp_img - scp->image;
+	mt6785_region_ref.fw_ofs = (const u8 *)scp_img - (const u8 *)scp->image;
 	mt6785_region_ref.fw_len = fw_len;
-	mt6785_region_ref.dram_ofs = dram - scp->image;
+	mt6785_region_ref.dram_ofs = (const u8 *)dram - (const u8 *)scp->image;
 	mt6785_region_ref.dram_len = dram_len;
 	memcpy_toio(scp->lk_base + scp->mtk_dram_ofs, dram, dram_len);
 	/* the loader is staged in that region as well, where LK puts it */
