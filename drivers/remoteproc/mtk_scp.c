@@ -1388,10 +1388,23 @@ static int scp_start(struct rproc *rproc)
 	 * disassembled at whatever PC shows.
 	 */
 	mt6785_scp_log_wdt_sleep(scp, "just after the release");
-	mt6785_scp_dram_probe_check(scp, "just after the release");
-	msleep(100);
-	mt6785_scp_log_wdt_sleep(scp, "100 ms after the release");
-	mt6785_scp_dram_probe_check(scp, "100 ms after the release");
+	/*
+	 * The copy's progress, sampled while it runs: the loop publishes its word index every 256
+	 * words, so a series of samples says whether the transfer moves and where it stops. The
+	 * deltas sum to a second, which is short compared with the two seconds the ready IPI gets.
+	 */
+	{
+		static const unsigned int deltas_ms[] = { 1, 4, 15, 30, 50, 900 };
+		static const char * const when[] = { "1 ms", "5 ms", "20 ms", "50 ms", "100 ms", "1 s" };
+		unsigned int i;
+
+		mt6785_scp_dram_probe_check(scp, "at the release");
+		for (i = 0; i < ARRAY_SIZE(deltas_ms); i++) {
+			msleep(deltas_ms[i]);
+			mt6785_scp_dram_probe_check(scp, when[i]);
+		}
+		mt6785_scp_log_wdt_sleep(scp, "1 s after the release");
+	}
 
 	/*
 	 * Nothing else reads the SCP's registers from here on: readiness is the ready IPI over
@@ -3456,10 +3469,12 @@ static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
  *
  *   1 = about to copy      2 = copy finished      3 = about to jump to the firmware
  *
- *   1e0: ldr r5,[pc] -> 0x610         movs r3,#1; str r3,[r5]
- *   1e6: ldr r0,[pc] -> 0x9fc00800    ldr r1,[pc] -> 0x800    ldr r2,[pc] -> 0x2ee00 words
- *   1ec: loop: ldr r3,[r0]; str r3,[r1]; adds r0,#4; adds r1,#4; subs r2,#1; bne loop
- *   1f8: movs r3,#2; str r3,[r5]      ldr r0,[pc] -> 0x801     movs r3,#3; str r3,[r5]; bx r0
+ *   1e0: ldr r5,[pc] -> 0x610 (progress), r7 -> 0x620 (word index), movs r3,#1, str
+ *   1e6: ldr r0 -> 0x9fc00800, r1 -> 0x800, r2 -> 0x2ee00 words, r6 -> 0
+ *   1f0: loop: ldr r3,[r0]; str r3,[r1]; adds r0,#4; adds r1,#4; adds r6,#1
+ *   1fa:       lsls r3,r6,#24; bne skip; str r6,[r7]   (every 256 words the index is published)
+ *   200: skip: subs r2,#1; bne loop
+ *   204: movs r3,#2; str r3,[r5]   ldr r0 -> 0x801   movs r3,#3; str r3,[r5]; bx r0
  *
  * Hand-encoded Thumb16, no assembler: ldr rX,[pc] = 0x48xx|X, ldr rX,[rY] = 0x68|Y<<3|X,
  * str rX,[rY] = 0x60|Y<<3|X, movs rX,#imm = 0x20|X<<8|imm, adds rX,#4 = 0x30|X<<8|4,
@@ -3473,15 +3488,18 @@ static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
  * loader would do happens while it is in place, and deleting its two calls is the revert.
  */
 static const u8 mt6785_scp_probe_code[] = {
-	0x08, 0x4d, 0x01, 0x23, 0x2b, 0x60, 0x08, 0x48, 0x08, 0x49, 0x09, 0x4a,
-	0x03, 0x68, 0x0b, 0x60, 0x04, 0x30, 0x04, 0x31, 0x01, 0x3a, 0xf9, 0xd1,
-	0x02, 0x23, 0x2b, 0x60, 0x05, 0x48, 0x03, 0x23, 0x2b, 0x60, 0x00, 0x47,
-	0x10, 0x06, 0x00, 0x00, 0x00, 0x08, 0xc0, 0x9f, 0x00, 0x08, 0x00, 0x00,
-	0x00, 0xee, 0x02, 0x00, 0x01, 0x08, 0x00, 0x00,
+	0x0b, 0x4d, 0x01, 0x23, 0x2b, 0x60, 0x0b, 0x4f, 0x00, 0x26, 0x0b, 0x48,
+	0x0b, 0x49, 0x0c, 0x4a, 0x03, 0x68, 0x0b, 0x60, 0x04, 0x30, 0x04, 0x31,
+	0x01, 0x36, 0x33, 0x06, 0x00, 0xd1, 0x3e, 0x60, 0x01, 0x3a, 0xf5, 0xd1,
+	0x02, 0x23, 0x2b, 0x60, 0x06, 0x48, 0x03, 0x23, 0x2b, 0x60, 0x00, 0x47,
+	0x10, 0x06, 0x00, 0x00, 0x20, 0x06, 0x00, 0x00, 0x00, 0x08, 0xc0, 0x9f,
+	0x00, 0x08, 0x00, 0x00, 0x00, 0xee, 0x02, 0x00, 0x01, 0x08, 0x00, 0x00,
 };
 
 #define MT6785_SCP_PROBE_OFS	0x1e0
 #define MT6785_SCP_PROBE_PROGRESS	0x610
+/* the copy's word index, published every 256 words so the AP can watch the transfer move */
+#define MT6785_SCP_PROBE_INDEX		0x620
 #define MT6785_SCP_PROBE_COPY_STARTED	1
 #define MT6785_SCP_PROBE_COPY_DONE	2
 #define MT6785_SCP_PROBE_JUMPING	3
@@ -3494,6 +3512,7 @@ static void mt6785_scp_dram_probe(struct mtk_scp *scp)
 	u32 vec = readl(scp->sram_base + 4);
 
 	writel(0, scp->sram_base + MT6785_SCP_PROBE_PROGRESS);
+	writel(0, scp->sram_base + MT6785_SCP_PROBE_INDEX);
 	/* the destination is spelled out so a stale word from a previous boot cannot be mistaken
 	 * for a copy that happened
 	 */
@@ -3513,17 +3532,23 @@ static void mt6785_scp_dram_probe_check(struct mtk_scp *scp, const char *when)
 	void __iomem *cfg = scp->cluster->reg_base;
 	void __iomem *clk = cfg + MT6785_SCP_CLK_BLOCK;
 	u32 progress = readl(scp->sram_base + MT6785_SCP_PROBE_PROGRESS);
+	u32 idx = readl(scp->sram_base + MT6785_SCP_PROBE_INDEX);
 	u32 dst = readl(scp->sram_base + MT6785_SCP_PROBE_DEST);
 	u32 src = readl(scp->lk_base + MT6785_LK_FIRMWARE_OFS);
 
-	dev_info(scp->dev, "copy probe %s: progress %u (%s), TCM %#x = %#x, the AP reads %#x there%s, clk_sw %#x clk_en %#x ctrl24 %#x\n",
+	dev_info(scp->dev, "copy probe %s: progress %u (%s), index %u words = %u bytes = source %#x, TCM %#x = %#x, the AP reads %#x there%s\n",
 		 when, progress,
 		 progress == MT6785_SCP_PROBE_JUMPING ? "jumped to the firmware" :
 		 progress == MT6785_SCP_PROBE_COPY_DONE ? "copy finished" :
 		 progress == MT6785_SCP_PROBE_COPY_STARTED ? "still copying (or died in the loop)" :
 		 "nothing",
+		 idx, idx * 4, MT6785_LK_REGION_PHYS + MT6785_LK_FIRMWARE_OFS + idx * 4,
 		 MT6785_SCP_PROBE_DEST, dst, src,
-		 dst && dst == src ? " (the copy is in the TCM)" : "",
+		 dst && dst == src ? " (the copy is in the TCM)" : "");
+	if (progress == MT6785_SCP_PROBE_COPY_STARTED && !idx && !dst)
+		dev_info(scp->dev, "copy probe %s: the loop has not reached its first 256-word boundary\n",
+			 when);
+	dev_info(scp->dev, "copy probe %s: clk_sw %#x clk_en %#x ctrl24 %#x\n", when,
 		 readl(clk + MT6785_SCP_CLK_SW_SEL),
 		 readl(clk + MT6785_SCP_CLK_ENABLE),
 		 readl(clk + MT6785_SCP_CLK_CTRL_24));
