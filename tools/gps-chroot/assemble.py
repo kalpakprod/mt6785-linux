@@ -88,12 +88,22 @@ def listdir(img, path):
     return names
 
 
+def mode_of(img, path):
+    m = re.search(r"Mode:\s+([0-7]+)", stat_of(img, path))
+    return int(m.group(1), 8) & 0o777 if m else None
+
+
 def dump(img, path, dest):
     if not exists(img, path):
         return False
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     debugfs(img, "dump %s %s" % (path, dest))
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        # debugfs writes the inode's contents but not always its mode: mnld
+        # arrived as 0644 and chroot answered "Permission denied".
+        mode = mode_of(img, path)
+        if mode is not None:
+            os.chmod(dest, mode)
         return True
     # A symlink dumps as an empty file: follow it once.
     m = re.search(r'Fast link dest: "(.+?)"', stat_of(img, path))
@@ -103,7 +113,12 @@ def dump(img, path, dest):
     base = os.path.dirname(path)
     real = target if target.startswith("/") else base + "/" + target
     debugfs(img, "dump %s %s" % (real, dest))
-    return os.path.exists(dest) and os.path.getsize(dest) > 0
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        mode = mode_of(img, real)
+        if mode is not None:
+            os.chmod(dest, mode)
+        return True
+    return False
 
 
 def needed(binary):

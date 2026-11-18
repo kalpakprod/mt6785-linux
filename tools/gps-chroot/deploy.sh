@@ -46,9 +46,27 @@ mkdir -p "$stage/bin" "$stage/lib" "$stage/etc" "$stage/scripts"
 "$zig" cc -target aarch64-linux-musl -nostdlib -shared -fPIC -O2 \
 	-Wall -Wextra -Werror -o "$stage/lib/libprops-shim.so" \
 	"$here/payload/src/props-shim.c"
+# Static, because it has to run inside the chroot where the only loader is
+# bionic's: it sets LD_PRELOAD for the daemon, which chroot(1) itself cannot do.
+"$zig" cc -target aarch64-linux-musl -O2 -Wall -Wextra -Werror -static -s \
+	-o "$stage/bin/run-mnld" "$here/payload/src/run-mnld.c"
 
 echo "3/4 staging the tree and the scripts"
 cp -a "$root" "$stage/root"
+
+# Modes in the archive, not left to the kernel's umask on extraction: every
+# executable the engine runs has to arrive executable. debugfs restores the
+# inode mode for most files but not for all of them (mnld arrived as 0644 and
+# chroot answered "Permission denied"), so the rule is applied here as well.
+for f in "$stage/root/vendor/bin/"* "$stage/bin/"*; do
+	if [ -f "$f" ]; then chmod 0755 "$f"; fi
+done
+for f in $(find "$stage/root" -type f ! -name '*.so' ! -name '*.xml' ! -name '*.props' \
+		! -name '*.txt' ! -name '*.sh' ! -name '*.conf'); do
+	header=$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+	if [ "$header" = 7f454c46 ]; then chmod 0755 "$f"; fi
+done
+chmod 0644 "$stage/root/system/lib64/libprops-shim.so" 2>/dev/null || true
 cp "$here/payload/gps.props" "$stage/etc/gps.props"
 cp "$here/payload/gps-engine.service" "$stage/gps-engine.service"
 cp "$here/payload/install.sh" "$stage/install.sh"
