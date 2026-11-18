@@ -945,6 +945,27 @@ static int imx355_start_streaming(struct imx355 *imx355)
 				 "stuck: the sensor never started");
 	}
 
+	/*
+	 * The MIPI transmitter's own registers, read again while the frames are running: if the sensor
+	 * counts frames and this block still holds the values the mode table set, then the transmit side
+	 * is as configured as any source says it can be. Three words are read that no vendor table ever
+	 * writes - 0x3050 (never written by imx355ofilmmipiraw_Sensor.c at all), 0x3060 (the long-exposure
+	 * multiplier, set only by write_shutter) and 0x0832 - so their values are printed as facts, not
+	 * compared with anything.
+	 */
+	{
+		u64 a = 0, b = 0, c = 0, d = 0, e = 0;
+
+		cci_read(imx355->regmap, CCI_REG8(0x3050), &a, NULL);
+		cci_read(imx355->regmap, CCI_REG8(0x3060), &b, NULL);
+		cci_read(imx355->regmap, CCI_REG8(0x0832), &c, NULL);
+		cci_read(imx355->regmap, CCI_REG8(0x0100), &d, NULL);
+		cci_read(imx355->regmap, CCI_REG16(0x0114), &e, NULL);
+		dev_info(imx355->dev,
+			 "DIAG tx: 0x0100 %02llx 0x0114 %02llx 0x3050 %02llx 0x3060 %02llx 0x0832 %02llx (vendor never writes 0x3050)\n",
+			 d, e, a, b, c);
+	}
+
 	return ret;
 }
 
