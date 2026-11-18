@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/goodix,gf3626-fp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Goodix GF3626 side fingerprint sensor (oswego_m family)
+
+maintainers:
+  - Poco M5s Linux port <noreply@example.invalid>
+
+description: |
+  The GF3626 is a capacitive fingerprint sensor that sits in the power button
+  of the phone (Goodix's oswego_m family). It is connected to the SoC over SPI,
+  with a reset line, an active-high interrupt line and its own 3.3 V supply.
+
+  The sensor is not driven from Linux: the fingerprint trusted application in
+  the Microtrust secure world owns the SPI controller and performs every sensor
+  transfer. The node describes only the wiring the normal world must set up --
+  the supply, the reset pulse and the interrupt that the secure world's
+  transfers are announced with.
+
+properties:
+  compatible:
+    const: goodix,gf3626-fp
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: |
+      Interrupt line from the sensor, edge triggered on the rising edge. Used
+      as the "a finger is on the sensor" notification for user space.
+
+  reset-gpios:
+    maxItems: 1
+    description: |
+      Reset line of the sensor, active low: holding it low resets the sensor,
+      the driver pulses it low for 15 ms and then releases it.
+
+  vfp-supply:
+    description: 3.3 V supply of the sensor (VFP).
+
+  spi-max-frequency:
+    maximum: 1000000
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - reset-gpios
+  - vfp-supply
+
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    spi {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      fingerprint@0 {
+        compatible = "goodix,gf3626-fp";
+        reg = <0>;
+        spi-max-frequency = <1000000>;
+        interrupt-parent = <&pio>;
+        interrupts = <5 IRQ_TYPE_EDGE_RISING>;
+        reset-gpios = <&pio 30 GPIO_ACTIVE_LOW>;
+        vfp-supply = <&mt6360_vfp>;
+      };
+    };
+
+...
