@@ -512,6 +512,7 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_SCP_LK_REGION_MIN	0x300000
 /* the TCM part of the vendor's scp record, and where its tail sits in the carve-out */
 #define MT6785_SCP_FIRMWARE_TCM_MAX	0xbb800
+#define MT6785_SCP_PROBE_OFS	0x1e0
 #define MT6785_SCP_REST_OFS		0x1c0000
 #define MT6785_LK_LOADER_SIZE		0x438
 #define MT6785_LK_FIRMWARE_SIZE		0xbb800
@@ -3705,7 +3706,6 @@ static const u8 mt6785_scp_probe_code[] = {
 	0x00, 0x08, 0x00, 0x00, 0x00, 0xee, 0x02, 0x00, 0x01, 0x08, 0x00, 0x00,
 };
 
-#define MT6785_SCP_PROBE_OFS	0x1e0
 #define MT6785_SCP_PROBE_PROGRESS	0x610
 /* the copy's word index, published every 256 words so the AP can watch the transfer move */
 #define MT6785_SCP_PROBE_INDEX		0x620
