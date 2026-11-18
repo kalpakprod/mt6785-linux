@@ -8,9 +8,11 @@
  * the SoC without the vendor ISP firmware. On MT6785 six engines sit at
  * 0x1a050000 + 0x1000 * n (live device tree camsv1@1a050000 ... camsv6@1a055000),
  * which is the ISP5-family block the cezanne MT6885 port described (there at
- * 0x1a090000); the register layout and every offset below are from that port's
- * drivers/camera/cezanne_camsv.c and its README, whose register map came from
- * the vendor HAL binary (libimageio_plat_drv.so, CAMSV_TOP_CTRL / CAMSV_BUF_CTRL).
+ * 0x1a090000). That port's drivers/camera/cezanne_camsv.c was the starting
+ * point, but its register offsets are the sibling SoC's; the offsets here are
+ * the MT6785 ones from this phone's own vendor driver, and the ones no source
+ * gives are gated instead of guessed - see struct camsv_regs and the stock
+ * register diff written up in scratch/wt/camera/REPORT.md.
  *
  * Scope of this first version, decided by the card (step 4) and the study
  * (poco-m5s/research/native/5-cameras.md section 4.5):
@@ -34,11 +36,13 @@
  *     runs before the timing generator is released.
  *  2. The IMGO error bits are level interrupts; an unmasked one storms the
  *     interrupt line, so they are reported once and then masked.
- *  3. Something writes to CAMSV_FRAME_WRITE_BASE once per frame. At 0 that is
- *     a write per frame to physical 0, so a scratch buffer is handed to it.
+ *  3. Something writes to the frame-write address register once per frame. At
+ *     zero that is a write per frame to physical 0, so the driver hands it a
+ *     scratch buffer.
  */
 
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
@@ -48,6 +52,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/seq_file.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <media/media-device.h>
@@ -55,56 +60,146 @@
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-dma-contig.h>
 
-#define CAMSV_MODULE_EN		0x0010
+/*
+ * Registers, with the MT6785 offsets.
+ *
+ * Source: drivers/misc/mediatek/cameraisp/src/mt6785/inc/cam_regs.h and its
+ * user camera_isp.c in the Lunaris/Xiaomi 4.19 tree
+ * (scratch/poco-lunaris-kernel) - the driver this phone's stock firmware runs.
+ * The line of every known offset is quoted beside it. MT6785 is the odd one
+ * out in its own family: MT6765, MT6853, MT6873 and MT6885 (the cezanne port
+ * this file was first built from) put the top bank at 0x0010..0x004c, the
+ * timing generator at 0x0130 and IMGO at 0x0420, while MT6785 puts the top
+ * bank at 0x0510, the timing generator at 0x0230 and IMGO at 0x0020. The
+ * stock register diff of 18.11.2026 says the same: 0x1a050510 reads
+ * 0x40000000, 0x1a050520 reads 0x2 and 0x1a05026c reads 0x102 - the module
+ * enable with nothing but the debug block on, the DMA reset status idle and
+ * the timing generator state idle - at offsets the sibling table never names.
+ *
+ * The rest of the map is not in the GPL drop: the vendor kernel touches only
+ * the registers named below, and the format, the packer, the DMA sizes and the
+ * frame-write address are programmed by the closed HAL. Those offsets are left
+ * unknown here, and start_streaming() refuses to run while one of them is
+ * missing instead of writing a sibling SoC's offset into a register that means
+ * something else on this one. The stock register snapshot of study 4.4 fills
+ * them in, and nothing else needs to change then.
+ */
+struct camsv_regs {
+	u32 module_en;		/* 0x0510, cam_regs.h:362 */
+	u32 int_en;		/* 0x0518, cam_regs.h:363 */
+	u32 int_status;		/* 0x051c, cam_regs.h:364 */
+	u32 sw_ctl;		/* 0x0520, cam_regs.h:365 */
+	u32 fbc_imgo_ctl1;	/* 0x0110, cam_regs.h:366 */
+	u32 fbc_imgo_ctl2;	/* 0x0114, cam_regs.h:367 */
+	u32 imgo_base;		/* 0x0020, cam_regs.h:368 */
+	u32 tg_sen_mode;	/* 0x0230, cam_regs.h:369 */
+	u32 tg_vf_con;		/* 0x0234, cam_regs.h:370 */
+	u32 tg_inter_st;	/* 0x026c, cam_regs.h:371 */
+	u32 tg_grab_pxl;
+	u32 tg_grab_lin;
+	u32 tg_path_cfg;
+	u32 imgo_base_msb;
+	u32 imgo_fbc;
+	u32 imgo_ofst;
+	u32 imgo_xsize;
+	u32 imgo_ysize;
+	u32 imgo_stride;
+	u32 imgo_err;
+	u32 fmt_sel;
+	u32 pak;
+	u32 clk_en;
+	u32 dma_db_en;
+	u32 frame_write;
+};
+
+#define CAMSV_REG_UNKNOWN	0xffffffffu
+
+static const struct camsv_regs mt6785_camsv_regs = {
+	.module_en	= 0x0510,
+	.int_en		= 0x0518,
+	.int_status	= 0x051c,
+	.sw_ctl		= 0x0520,
+	.fbc_imgo_ctl1	= 0x0110,
+	.fbc_imgo_ctl2	= 0x0114,
+	.imgo_base	= 0x0020,
+	.tg_sen_mode	= 0x0230,
+	.tg_vf_con	= 0x0234,
+	.tg_inter_st	= 0x026c,
+	.tg_grab_pxl	= CAMSV_REG_UNKNOWN,
+	.tg_grab_lin	= CAMSV_REG_UNKNOWN,
+	.tg_path_cfg	= CAMSV_REG_UNKNOWN,
+	.imgo_base_msb	= CAMSV_REG_UNKNOWN,
+	.imgo_fbc	= CAMSV_REG_UNKNOWN,
+	.imgo_ofst	= CAMSV_REG_UNKNOWN,
+	.imgo_xsize	= CAMSV_REG_UNKNOWN,
+	.imgo_ysize	= CAMSV_REG_UNKNOWN,
+	.imgo_stride	= CAMSV_REG_UNKNOWN,
+	.imgo_err	= CAMSV_REG_UNKNOWN,
+	.fmt_sel	= CAMSV_REG_UNKNOWN,
+	.pak		= CAMSV_REG_UNKNOWN,
+	.clk_en		= CAMSV_REG_UNKNOWN,
+	.dma_db_en	= CAMSV_REG_UNKNOWN,
+	.frame_write	= CAMSV_REG_UNKNOWN,
+};
+
+#define CAMSV_REG(camsv, name)	((camsv)->base + (camsv)->regs->name)
+
+/*
+ * Module enables. Only the IMGO DMA bit is in the MT6785 source, which reads
+ * it back with "& 0x10" (camera_isp.c:3462-3467); the timing generator and
+ * packer bits and the reserved 0x50000000 are the sibling SoC's and wait for
+ * the same snapshot as the offsets.
+ */
 #define   MODULE_TG_EN		BIT(0)
 #define   MODULE_PAK_EN		BIT(2)
 #define   MODULE_IMGO_EN	BIT(4)
 #define   MODULE_DEFAULT	0x50000000
-#define CAMSV_FMT_SEL		0x0014	/* 0 RAW8, 1 RAW10, 2 RAW12 */
-#define CAMSV_INT_EN		0x0018
-#define CAMSV_INT_STATUS	0x001c	/* read clear */
-#define   INT_VS1		BIT(0)
-#define   INT_TG_ERR		BIT(4)
-#define   INT_TG_GBERR		BIT(5)
-#define   INT_SOF		BIT(6)
-#define   INT_PASS1_DONE	(BIT(10) | BIT(11) | BIT(12))
-#define   INT_IMGO_ERR		BIT(16)
-#define   INT_IMGO_OVERRUN	BIT(17)
+
+/*
+ * Interrupt bits, cam_regs.h:69-83 (SV_*). The MT6885 port's values differ -
+ * it has SOF at bit 6 and pass1-done at bits 10..12 - so its mask would wait
+ * for a source this SoC never raises.
+ */
+#define   INT_VS1		BIT(0)	/* SV_VS1_ST */
+#define   INT_TG_ST1		BIT(1)	/* SV_TG_ST1 */
+#define   INT_TG_ST2		BIT(2)	/* SV_TG_ST2 */
+#define   INT_EXPDON		BIT(3)	/* SV_EXPDON_ST */
+#define   INT_TG_ERR		BIT(4)	/* SV_TG_ERR */
+#define   INT_TG_GBERR		BIT(5)	/* SV_TG_GBERR */
+#define   INT_SOF		BIT(7)	/* SV_SOF_INT_ST */
+#define   INT_HW_PASS1_DONE	BIT(10)	/* SV_HW_PASS1_DON_ST */
+#define   INT_IMGO_ERR		BIT(16)	/* SV_IMGO_ERR */
+#define   INT_IMGO_OVERRUN	BIT(17)	/* SV_IMGO_OVERRUN */
+#define   INT_SW_PASS1_DONE	BIT(20)	/* SV_SW_PASS1_DON_ST */
 #define   INT_ERRORS		(INT_TG_ERR | INT_TG_GBERR | INT_IMGO_ERR | \
 				 INT_IMGO_OVERRUN)
-#define CAMSV_SW_CTL		0x0020
+
+/*
+ * Reset handshake, camera_isp.c:5045-5060: write 4, then 0, then 1, and wait
+ * for a read of 3 - trigger set, status idle.
+ */
 #define   SW_RST_TRIG		BIT(0)
 #define   SW_RST_ST		BIT(1)	/* set: the DMA is idle */
 #define   SW_HW_RST		BIT(2)
-#define CAMSV_IMGO_FBC		0x002c	/* bit 0: RCNT_INC */
-#define CAMSV_CLK_EN		0x0030
-#define   CLK_EN_TG_PAK_DMA	0x8005
-#define CAMSV_PAK		0x004c	/* [4:0] mode, [6:5] pixel mode */
-#define   PAK_RAW8		8
-#define   PAK_RAW10_UNPACKED	13	/* 16 bits per pixel, LSB aligned */
-#define CAMSV_TG_SEN_MODE	0x0130
+
+/* Timing generator: CMOS enable (camera_isp.c:5066) and the state field
+ * (camera_isp.c:5003, 5061), which reads 1 when idle.
+ */
 #define   SEN_MODE_CMOS_EN	BIT(0)
 #define   SEN_MODE_TIME_STP_EN	BIT(16)
-#define CAMSV_TG_VF_CON		0x0134
-#define CAMSV_TG_GRAB_PXL	0x0138
-#define CAMSV_TG_GRAB_LIN	0x013c
-#define CAMSV_TG_PATH_CFG	0x0140
-#define CAMSV_TG_INTER_ST	0x016c
 #define   TG_STATE		GENMASK(13, 8)
 #define   TG_STATE_IDLE		0x100
-#define CAMSV_IMGO_BASE		0x0420
-#define CAMSV_IMGO_BASE_MSB	0x0424
-#define CAMSV_IMGO_OFST		0x0428
-#define CAMSV_IMGO_XSIZE	0x0430	/* bytes per line minus one */
-#define CAMSV_IMGO_YSIZE	0x0434
-#define CAMSV_IMGO_STRIDE	0x0438
-#define CAMSV_IMGO_ERR_STAT	0x0760
-#define CAMSV_DMA_DB_EN		0x0800	/* bit 0: per-frame address latch */
-#define CAMSV_FRAME_WRITE_BASE	0x0804	/* written once per frame */
-#define CAMSV_FBC_IMGO_CTL1	0x0a00
+
+/*
+ * Values for registers whose MT6785 offset is unknown, taken from the sibling
+ * SoCs the cezanne port documented: only the semantics are used, never their
+ * offset.
+ */
+#define   CLK_EN_TG_PAK_DMA	0x8005
+#define   PAK_RAW8		8
+#define   PAK_RAW10_UNPACKED	13	/* 16 bits per pixel, LSB aligned */
 #define   FBC_MODE		BIT(11)
 #define   FBC_EN		BIT(15)
-#define CAMSV_FBC_IMGO_CTL2	0x0a04	/* [15:8] frame write count */
 
 /* 64: what the software ISP and the GPU import linear buffers with */
 #define CAMSV_STRIDE(w)		ALIGN(w, 64)
@@ -145,6 +240,8 @@ struct camsv_buffer {
  * struct camsv_dev - one CAMSV engine
  * @dev: the platform device
  * @base: register window
+ * @regs: this SoC's register offsets, see struct camsv_regs
+ * @dbgfs: debugfs directory holding the register dump
  * @irq: the engine's interrupt
  * @clks: the engine's clock (cam_sv0 / cam_sv1 on MT6785)
  * @vdev: the video node
@@ -163,12 +260,14 @@ struct camsv_buffer {
  * @unwritten: completions dropped because the buffer was not written
  * @fmt: the selected format
  * @width, @height: the frame geometry, from the DT or from try_fmt
- * @scratch: the buffer CAMSV_FRAME_WRITE_BASE points at
+ * @scratch: the buffer the frame-write address register points at
  * @scratch_dma: its DMA address
  */
 struct camsv_dev {
 	struct device *dev;
 	void __iomem *base;
+	const struct camsv_regs *regs;
+	struct dentry *dbgfs;
 	int irq;
 	struct clk_bulk_data *clks;
 	int num_clks;
@@ -283,11 +382,11 @@ static void camsv_program_next(struct camsv_dev *camsv)
 	buf = list_first_entry(&camsv->queued, struct camsv_buffer, list);
 	list_move_tail(&buf->list, &camsv->inflight);
 	addr = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
-	writel(lower_32_bits(addr), camsv->base + CAMSV_IMGO_BASE);
-	writel(upper_32_bits(addr), camsv->base + CAMSV_IMGO_BASE_MSB);
+	writel(lower_32_bits(addr), CAMSV_REG(camsv, imgo_base));
+	writel(upper_32_bits(addr), CAMSV_REG(camsv, imgo_base_msb));
 	/* ask for the address to be latched at the next start of frame */
-	writel(readl(camsv->base + CAMSV_IMGO_FBC) | BIT(0),
-	       camsv->base + CAMSV_IMGO_FBC);
+	writel(readl(CAMSV_REG(camsv, imgo_fbc)) | BIT(0),
+	       CAMSV_REG(camsv, imgo_fbc));
 	camsv->latch_pending = true;
 }
 
@@ -306,7 +405,7 @@ static irqreturn_t camsv_irq(int irq, void *data)
 	 * reports "nobody cared" a hundred thousand times before disabling the
 	 * IRQ.
 	 */
-	st = readl(camsv->base + CAMSV_INT_STATUS);
+	st = readl(CAMSV_REG(camsv, int_status));
 	if (!st) {
 		spin_unlock(&camsv->qlock);
 		return IRQ_NONE;
@@ -327,10 +426,10 @@ static irqreturn_t camsv_irq(int irq, void *data)
 		if (!(camsv->errors & st))
 			dev_warn_ratelimited(camsv->dev,
 					     "error status %#x, IMGO %#x\n", st,
-					     readl(camsv->base + CAMSV_IMGO_ERR_STAT));
+					     readl(CAMSV_REG(camsv, imgo_err)));
 		camsv->errors |= st & INT_ERRORS;
-		writel(readl(camsv->base + CAMSV_INT_EN) & ~(st & INT_ERRORS),
-		       camsv->base + CAMSV_INT_EN);
+		writel(readl(CAMSV_REG(camsv, int_en)) & ~(st & INT_ERRORS),
+		       CAMSV_REG(camsv, int_en));
 	}
 
 	if (st & INT_SOF) {
@@ -339,7 +438,7 @@ static irqreturn_t camsv_irq(int irq, void *data)
 	}
 
 	/* completed frames arrive in the order the DMA was given them */
-	wcnt = readl(camsv->base + CAMSV_FBC_IMGO_CTL2) >> 8;
+	wcnt = readl(CAMSV_REG(camsv, fbc_imgo_ctl2)) >> 8;
 	n = wcnt - camsv->wcnt;
 	camsv->wcnt = wcnt;
 
@@ -379,45 +478,48 @@ static irqreturn_t camsv_irq(int irq, void *data)
  */
 static void camsv_hw_start(struct camsv_dev *camsv)
 {
-	void __iomem *base = camsv->base;
 	unsigned int line = camsv_line_bytes(camsv);
+	u32 st;
 
 	/* reset the block, and wait for the DMA to report itself idle */
-	writel(SW_HW_RST, base + CAMSV_SW_CTL);
-	writel(0, base + CAMSV_SW_CTL);
-	writel(SW_RST_TRIG, base + CAMSV_SW_CTL);
-	readl_poll_timeout(base + CAMSV_SW_CTL, line, line & SW_RST_ST, 10,
+	writel(SW_HW_RST, CAMSV_REG(camsv, sw_ctl));
+	writel(0, CAMSV_REG(camsv, sw_ctl));
+	writel(SW_RST_TRIG, CAMSV_REG(camsv, sw_ctl));
+	readl_poll_timeout(CAMSV_REG(camsv, sw_ctl), st, st & SW_RST_ST, 10,
 			   10000);
 
-	writel(SEN_MODE_TIME_STP_EN, base + CAMSV_TG_SEN_MODE);
-	writel(camsv->width << 16, base + CAMSV_TG_GRAB_PXL);
-	writel(camsv->height << 16, base + CAMSV_TG_GRAB_LIN);
-	writel(0, base + CAMSV_TG_PATH_CFG);
+	writel(SEN_MODE_TIME_STP_EN, CAMSV_REG(camsv, tg_sen_mode));
+	writel(camsv->width << 16, CAMSV_REG(camsv, tg_grab_pxl));
+	writel(camsv->height << 16, CAMSV_REG(camsv, tg_grab_lin));
+	writel(0, CAMSV_REG(camsv, tg_path_cfg));
 
-	readl(base + CAMSV_INT_STATUS);
-	writel(INT_VS1 | INT_SOF | INT_PASS1_DONE | INT_ERRORS,
-	       base + CAMSV_INT_EN);
+	readl(CAMSV_REG(camsv, int_status));
+	writel(INT_VS1 | INT_SOF | INT_HW_PASS1_DONE | INT_ERRORS,
+	       CAMSV_REG(camsv, int_en));
 
-	writel(camsv->fmt->raw8 ? 0 : 1, base + CAMSV_FMT_SEL);
-	writel(CLK_EN_TG_PAK_DMA, base + CAMSV_CLK_EN);
-	writel(camsv->fmt->raw8 ? PAK_RAW8 : PAK_RAW10_UNPACKED, base + CAMSV_PAK);
+	writel(camsv->fmt->raw8 ? 0 : 1, CAMSV_REG(camsv, fmt_sel));
+	writel(CLK_EN_TG_PAK_DMA, CAMSV_REG(camsv, clk_en));
+	writel(camsv->fmt->raw8 ? PAK_RAW8 : PAK_RAW10_UNPACKED,
+	       CAMSV_REG(camsv, pak));
 
-	writel(1, base + CAMSV_DMA_DB_EN);
-	writel(0, base + CAMSV_IMGO_OFST);
-	writel(line - 1, base + CAMSV_IMGO_XSIZE);
-	writel(camsv->height - 1, base + CAMSV_IMGO_YSIZE);
-	writel(CAMSV_STRIDE(line), base + CAMSV_IMGO_STRIDE);
+	writel(1, CAMSV_REG(camsv, dma_db_en));
+	writel(0, CAMSV_REG(camsv, imgo_ofst));
+	writel(line - 1, CAMSV_REG(camsv, imgo_xsize));
+	writel(camsv->height - 1, CAMSV_REG(camsv, imgo_ysize));
+	writel(CAMSV_STRIDE(line), CAMSV_REG(camsv, imgo_stride));
 	/* the per-frame write CAMSV does on its own goes to scratch memory */
-	writel(lower_32_bits(camsv->scratch_dma), base + CAMSV_FRAME_WRITE_BASE);
+	writel(lower_32_bits(camsv->scratch_dma),
+	       CAMSV_REG(camsv, frame_write));
 
 	writel(MODULE_DEFAULT | MODULE_TG_EN | MODULE_PAK_EN,
-	       base + CAMSV_MODULE_EN);
-	writel(SEN_MODE_TIME_STP_EN | SEN_MODE_CMOS_EN, base + CAMSV_TG_SEN_MODE);
+	       CAMSV_REG(camsv, module_en));
+	writel(SEN_MODE_TIME_STP_EN | SEN_MODE_CMOS_EN,
+	       CAMSV_REG(camsv, tg_sen_mode));
 	writel(MODULE_DEFAULT | MODULE_TG_EN | MODULE_PAK_EN | MODULE_IMGO_EN,
-	       base + CAMSV_MODULE_EN);
+	       CAMSV_REG(camsv, module_en));
 
-	writel(FBC_MODE, base + CAMSV_FBC_IMGO_CTL1);
-	writel(FBC_EN | FBC_MODE, base + CAMSV_FBC_IMGO_CTL1);
+	writel(FBC_MODE, CAMSV_REG(camsv, fbc_imgo_ctl1));
+	writel(FBC_EN | FBC_MODE, CAMSV_REG(camsv, fbc_imgo_ctl1));
 }
 
 /*
@@ -427,29 +529,29 @@ static void camsv_hw_start(struct camsv_dev *camsv)
  */
 static void camsv_hw_stop(struct camsv_dev *camsv)
 {
-	void __iomem *base = camsv->base;
 	u32 st;
 
-	writel(0, base + CAMSV_INT_EN);
-	readl(base + CAMSV_INT_STATUS);
-	writel(0, base + CAMSV_TG_VF_CON);
+	writel(0, CAMSV_REG(camsv, int_en));
+	readl(CAMSV_REG(camsv, int_status));
+	writel(0, CAMSV_REG(camsv, tg_vf_con));
 
-	if (readl_poll_timeout(base + CAMSV_TG_INTER_ST, st,
+	if (readl_poll_timeout(CAMSV_REG(camsv, tg_inter_st), st,
 			       (st & TG_STATE) == TG_STATE_IDLE, 1000,
 			       CAMSV_TG_IDLE_TIMEOUT_US))
 		dev_warn(camsv->dev, "timing generator not idle (%#x)\n", st);
 
-	writel(0, base + CAMSV_TG_SEN_MODE);
-	writel(0, base + CAMSV_SW_CTL);
-	writel(SW_RST_TRIG, base + CAMSV_SW_CTL);
-	if (readl_poll_timeout(base + CAMSV_SW_CTL, st, st & SW_RST_ST, 10, 10000))
+	writel(0, CAMSV_REG(camsv, tg_sen_mode));
+	writel(0, CAMSV_REG(camsv, sw_ctl));
+	writel(SW_RST_TRIG, CAMSV_REG(camsv, sw_ctl));
+	if (readl_poll_timeout(CAMSV_REG(camsv, sw_ctl), st, st & SW_RST_ST, 10,
+			       10000))
 		dev_warn(camsv->dev, "DMA reset timed out (%#x)\n", st);
 
-	writel(SW_HW_RST, base + CAMSV_SW_CTL);
-	writel(0, base + CAMSV_SW_CTL);
-	writel(MODULE_DEFAULT, base + CAMSV_MODULE_EN);
-	writel(0, base + CAMSV_FBC_IMGO_CTL1);
-	readl(base + CAMSV_INT_STATUS);
+	writel(SW_HW_RST, CAMSV_REG(camsv, sw_ctl));
+	writel(0, CAMSV_REG(camsv, sw_ctl));
+	writel(MODULE_DEFAULT, CAMSV_REG(camsv, module_en));
+	writel(0, CAMSV_REG(camsv, fbc_imgo_ctl1));
+	readl(CAMSV_REG(camsv, int_status));
 }
 
 /* -------------------------------------------------------------------------
@@ -519,11 +621,64 @@ static void camsv_return_buffers(struct camsv_dev *camsv,
 	spin_unlock_irqrestore(&camsv->qlock, flags);
 }
 
+/*
+ * The registers the capture path needs but whose MT6785 offset no source
+ * gives. Returns the first one still missing, NULL when the table is complete.
+ */
+static const char *camsv_regs_missing(const struct camsv_regs *r)
+{
+	const struct {
+		u32 ofs;
+		const char *name;
+	} needed[] = {
+		{ r->tg_grab_pxl, "TG_GRAB_PXL" },
+		{ r->tg_grab_lin, "TG_GRAB_LIN" },
+		{ r->tg_path_cfg, "TG_PATH_CFG" },
+		{ r->fmt_sel, "FMT_SEL" },
+		{ r->pak, "PAK" },
+		{ r->clk_en, "CLK_EN" },
+		{ r->dma_db_en, "DMA_DB" },
+		{ r->imgo_base_msb, "IMGO_BASE_MSB" },
+		{ r->imgo_ofst, "IMGO_OFST" },
+		{ r->imgo_xsize, "IMGO_XSIZE" },
+		{ r->imgo_ysize, "IMGO_YSIZE" },
+		{ r->imgo_stride, "IMGO_STRIDE" },
+		{ r->imgo_fbc, "IMGO_FBC" },
+		{ r->imgo_err, "IMGO_ERR_STAT" },
+		{ r->frame_write, "FRAME_WRITE_BASE" },
+	};
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(needed); i++)
+		if (needed[i].ofs == CAMSV_REG_UNKNOWN)
+			return needed[i].name;
+
+	return NULL;
+}
+
 static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct camsv_dev *camsv = vb2_get_drv_priv(q);
 	unsigned long flags;
+	const char *missing;
 	int ret;
+
+	/*
+	 * A wrong offset here is not a slow path, it is a write into a register
+	 * that means something else: the MT6885 layout puts the DMA base
+	 * address where this SoC has IMGO_... and the reverse, which can point
+	 * the DMA at physical 0 or trip the DEVAPC the vendor driver warns
+	 * about. Refuse and say what is missing.
+	 */
+	missing = camsv_regs_missing(camsv->regs);
+	if (missing) {
+		dev_err(camsv->dev, "cannot stream: no MT6785 offset for %s\n",
+			missing);
+		dev_err(camsv->dev,
+			"the stock register snapshot fills in what the closed HAL programs\n");
+		ret = -EOPNOTSUPP;
+		goto err_return;
+	}
 
 	ret = pm_runtime_resume_and_get(camsv->dev);
 	if (ret)
@@ -544,8 +699,8 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	 * the same way - it reads the status first and does nothing while its
 	 * clock is off (camera_isp.c, ISP_Irq_CAMSV).
 	 */
-	writel(0, camsv->base + CAMSV_INT_EN);
-	readl(camsv->base + CAMSV_INT_STATUS);
+	writel(0, CAMSV_REG(camsv, int_en));
+	readl(CAMSV_REG(camsv, int_status));
 
 	ret = request_irq(camsv->irq, camsv_irq, 0, dev_name(camsv->dev), camsv);
 	if (ret) {
@@ -557,7 +712,7 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	camsv_hw_start(camsv);
 
 	spin_lock_irqsave(&camsv->qlock, flags);
-	camsv->wcnt = readl(camsv->base + CAMSV_FBC_IMGO_CTL2) >> 8;
+	camsv->wcnt = readl(CAMSV_REG(camsv, fbc_imgo_ctl2)) >> 8;
 	camsv->errors = 0;
 	camsv->latch_pending = false;
 	camsv->skip = 1;
@@ -566,7 +721,7 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	camsv_program_next(camsv);	/* first buffer before the TG runs */
 	spin_unlock_irqrestore(&camsv->qlock, flags);
 
-	writel(1, camsv->base + CAMSV_TG_VF_CON);
+	writel(1, CAMSV_REG(camsv, tg_vf_con));
 	return 0;
 
 err_clock:
@@ -741,6 +896,64 @@ static const struct v4l2_file_operations camsv_fops = {
 };
 
 /* -------------------------------------------------------------------------
+ * Debugfs
+ */
+
+/*
+ * The engine's registers as offsets from the node's base, in the windows of
+ * both known layouts, so one boot can say which of them this silicon has and
+ * what the closed HAL leaves behind. Compare with the stock dump in
+ * poco-m5s/evidence/stock-session-2026-11/camera-streaming.txt, which lists
+ * absolute addresses from the same window. Reads only; the clocks and the
+ * power domain are on, because a register read of a gated block returns zero.
+ */
+static int camsv_regs_show(struct seq_file *s, void *unused)
+{
+	static const unsigned int windows[][2] = {
+		{ 0x0000, 0x0060 },	/* IMGO bank, then the sibling top bank */
+		{ 0x0100, 0x0120 },	/* frame write counter of both layouts */
+		{ 0x0200, 0x02b0 },	/* MT6785 timing generator */
+		{ 0x0420, 0x0440 },	/* IMGO bank of the sibling SoCs */
+		{ 0x0500, 0x0530 },	/* MT6785 top bank */
+		{ 0x0800, 0x0810 },	/* sibling DMA address latch */
+		{ 0x0a00, 0x0a10 },	/* sibling frame write counter */
+	};
+	struct camsv_dev *camsv = s->private;
+	unsigned int i, ofs;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(camsv->dev);
+	if (ret)
+		return ret;
+	ret = clk_bulk_prepare_enable(camsv->num_clks, camsv->clks);
+	if (ret)
+		goto out_pm;
+
+	for (i = 0; i < ARRAY_SIZE(windows); i++)
+		for (ofs = windows[i][0]; ofs < windows[i][1]; ofs += 4)
+			seq_printf(s, "%04x %08x\n", ofs,
+				   readl(camsv->base + ofs));
+
+	clk_bulk_disable_unprepare(camsv->num_clks, camsv->clks);
+out_pm:
+	pm_runtime_put(camsv->dev);
+	return ret;
+}
+
+static int camsv_regs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, camsv_regs_show, inode->i_private);
+}
+
+static const struct file_operations camsv_regs_fops = {
+	.owner		= THIS_MODULE,
+	.open		= camsv_regs_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+/* -------------------------------------------------------------------------
  * Probe
  */
 
@@ -780,6 +993,7 @@ static int camsv_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	camsv->dev = dev;
+	camsv->regs = &mt6785_camsv_regs;
 	spin_lock_init(&camsv->qlock);
 	INIT_LIST_HEAD(&camsv->queued);
 	INIT_LIST_HEAD(&camsv->inflight);
@@ -857,6 +1071,11 @@ static int camsv_probe(struct platform_device *pdev)
 		 dev_name(dev));
 	video_set_drvdata(&camsv->vdev, camsv);
 
+	camsv->dbgfs = debugfs_create_dir(dev_name(dev), NULL);
+	if (!IS_ERR(camsv->dbgfs))
+		debugfs_create_file("regs", 0444, camsv->dbgfs, camsv,
+				    &camsv_regs_fops);
+
 	pm_runtime_enable(dev);
 
 	ret = video_register_device(&camsv->vdev, VFL_TYPE_VIDEO, -1);
@@ -883,6 +1102,7 @@ static void camsv_remove(struct platform_device *pdev)
 {
 	struct camsv_dev *camsv = platform_get_drvdata(pdev);
 
+	debugfs_remove_recursive(camsv->dbgfs);
 	video_unregister_device(&camsv->vdev);
 	pm_runtime_disable(camsv->dev);
 	v4l2_device_unregister(&camsv->v4l2_dev);
