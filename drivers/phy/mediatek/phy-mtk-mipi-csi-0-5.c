@@ -253,15 +253,32 @@ static void mtk_mipi_phy_status_work(struct work_struct *work)
 			 readl(h + 0x80), readl(h + 0xa8));
 	}
 
-	for (sel = 0x18; sel <= 0x1b; sel++) {
-		u32 a, b;
+	/*
+	 * The whole debug selector range, not only the four codes the HAL's D-PHY helper builds: that
+	 * helper (hal_csirx_dphy_get_dbg_value, libcam.halsensor.so 0x337f0-0x3380c) packs one byte per
+	 * lane and steps by 0x18, starting at 0x18, and all four of its codes read zero here. Whatever
+	 * the lane monitor is, it answers to one of these selectors; only the non-zero ones are printed,
+	 * so a live monitor shows up as a nameable line instead of noise.
+	 */
+	{
+		unsigned int found = 0;
 
-		writel((readl(base + 0x80) & ~0xff00u) | (sel << 8), base + 0x80);
-		writel((readl(base + CSIXB_OFFSET + 0x80) & ~0xff00u) | (sel << 8),
-		       base + CSIXB_OFFSET + 0x80);
-		a = readl(base + 0x84);
-		b = readl(base + CSIXB_OFFSET + 0x84);
-		dev_info(port->dev, "status dbg sel 0x%02x: A 0x%08x B 0x%08x\n", sel, a, b);
+		for (sel = 0; sel <= 0x3f; sel++) {
+			u32 a, b;
+
+			writel((readl(base + 0x80) & ~0xff00u) | (sel << 8), base + 0x80);
+			writel((readl(base + CSIXB_OFFSET + 0x80) & ~0xff00u) | (sel << 8),
+			       base + CSIXB_OFFSET + 0x80);
+			a = readl(base + 0x84);
+			b = readl(base + CSIXB_OFFSET + 0x84);
+			if (!a && !b)
+				continue;
+			found++;
+			dev_info(port->dev, "status dbg sel 0x%02x: A 0x%08x B 0x%08x\n",
+				 sel, a, b);
+		}
+
+		dev_info(port->dev, "status dbg: %u of 64 selectors non-zero\n", found);
 	}
 }
 
