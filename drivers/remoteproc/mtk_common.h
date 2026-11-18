@@ -141,6 +141,7 @@
 #define MT6785_EMIMPU_READ_APC		2
 #define MT6785_EMIMPU_ALIGN_BITS	16
 /* LK's own programming of the SCP's window: region, range and both permission words */
+#define MT6785_EMIMPU_REGION_NUM	32
 #define MT6785_EMIMPU_SCP_REGION	6
 #define MT6785_EMIMPU_SCP_START		0x9fc00000
 #define MT6785_EMIMPU_SCP_END		0x9fefffff

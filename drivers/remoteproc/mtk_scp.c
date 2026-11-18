@@ -1371,9 +1371,22 @@ static int scp_start(struct rproc *rproc)
 	if (scp->data->scp_dump_regs == mt6785_scp_dump_regs)
 		dev_info(dev, "released the core: sw_rstn reads %#x (bit0 set is released)\n",
 			 readl(scp->cluster->reg_base + MT8183_SW_RSTN));
+
 	/*
-	 * Nothing reads the SCP's registers or its TCM from here on: the core owns the bus, and
-	 * the vendor's driver does not read it either. Readiness is the ready IPI over
+	 * Where the core is. cfg + 0xa8..0xc4 are the CM4's SP, LR, PSP and PC as the SCP's own
+	 * debug block latches them (scp_reg.h:22-30), the same four words the timeout path has
+	 * always printed *before* a release - 0xfffffffe there is the reset value. Two samples,
+	 * not a sweep: one immediately and one after 100 ms, the smallest disturbance that can
+	 * say whether the core ever started and where it stopped. The addresses are 0x800-based
+	 * (the loader copies the firmware to core 0x800 and jumps there), so the image can be
+	 * disassembled at whatever PC shows.
+	 */
+	mt6785_scp_log_wdt_sleep(scp, "just after the release");
+	msleep(100);
+	mt6785_scp_log_wdt_sleep(scp, "100 ms after the release");
+
+	/*
+	 * Nothing else reads the SCP's registers from here on: readiness is the ready IPI over
 	 * SCP_A_TO_HOST, counted in the interrupt handler.
 	 */
 
@@ -1444,6 +1457,7 @@ static int scp_start(struct rproc *rproc)
 					 MT6785_SCP_PROBE_POLLS * MT6785_SCP_PROBE_STEP_US / 1000);
 		}
 
+		mt6785_scp_log_wdt_sleep(scp, "at the timeout");
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
 		mt6785_scp_awake(scp, false);
@@ -3333,12 +3347,50 @@ static int mt6785_scp_check_windows(struct mtk_scp *scp)
  * and then set again to the same values (the vendor's own call shape, mpu_v1.c:222-223). If the
  * secure monitor does not implement the call, its return value says so and the boot continues.
  */
+static u32 mt6785_scp_mpu_read(u32 type, u32 region, u32 group)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(MT6785_EMIMPU_CONTROL, MT6785_EMIMPU_READ, type, region, group,
+		      0, 0, 0, &res);
+
+	return res.a0;
+}
+
+/*
+ * Every region the MPU holds, so the answer to "is the read call real" comes from the probe
+ * itself: LK programs at least a dozen regions (pl_lk.txt:1915-2206), and they must show up here.
+ * A sweep that prints nothing at all means the read call reports nothing on this phone - and then
+ * the set call next to it is a no-op to be judged the same way.
+ */
+static void mt6785_scp_mpu_dump(struct mtk_scp *scp, const char *when)
+{
+	unsigned int r, shown = 0;
+
+	for (r = 0; r < MT6785_EMIMPU_REGION_NUM; r++) {
+		u32 sa = mt6785_scp_mpu_read(MT6785_EMIMPU_READ_SA, r, 0);
+		u32 ea = mt6785_scp_mpu_read(MT6785_EMIMPU_READ_EA, r, 0);
+		u32 apc0 = mt6785_scp_mpu_read(MT6785_EMIMPU_READ_APC, r, 0);
+		u32 apc1 = mt6785_scp_mpu_read(MT6785_EMIMPU_READ_APC, r, 1);
+
+		if (!sa && !ea && !apc0 && !apc1)
+			continue;
+		shown++;
+		dev_info(scp->dev, "%s: MPU region %u = %#x..%#x apc0 %#x apc1 %#x\n",
+			 when, r, sa, ea, apc0, apc1);
+	}
+	dev_info(scp->dev, "%s: %u of %u MPU regions carry a value\n",
+		 when, shown, MT6785_EMIMPU_REGION_NUM);
+}
+
 static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
 {
 	struct arm_smccc_res res;
 	const u32 lk_apc[2] = { MT6785_EMIMPU_SCP_APC0, MT6785_EMIMPU_SCP_APC1 };
 	u32 sa, ea, apc[2];
 	int g;
+
+	mt6785_scp_mpu_dump(scp, "before the MPU set");
 
 	arm_smccc_smc(MT6785_EMIMPU_CONTROL, MT6785_EMIMPU_READ,
 		      MT6785_EMIMPU_READ_SA, MT6785_EMIMPU_SCP_REGION, 0, 0, 0, 0, &res);
@@ -3379,6 +3431,8 @@ static void mt6785_scp_mpu_probe(struct mtk_scp *scp)
 		dev_info(scp->dev, "EMI MPU set region %u group %d to %#x: returned %ld\n",
 			 MT6785_EMIMPU_SCP_REGION, g, lk_apc[g], (long)res.a0);
 	}
+
+	mt6785_scp_mpu_dump(scp, "after the MPU set");
 }
 
 static int mt6785_scp_clocks_on(struct mtk_scp *scp)
