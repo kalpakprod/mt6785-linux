@@ -224,6 +224,7 @@ static const struct v4l2_async_notifier_operations mtk_cam_core_nf_ops = {
 static const struct of_device_id mtk_cam_core_async_matches[] = {
 	{ .compatible = "sony,imx355" },
 	{ .compatible = "ovti,ov13b10" },
+	{ .compatible = "ovti,ov64b40" },
 	{ .compatible = "mediatek,mt6785-seninf" },
 	{ .compatible = "mediatek,mt6785-camsv" },
 	{ /* sentinel */ }
