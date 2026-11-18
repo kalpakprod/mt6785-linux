@@ -1343,17 +1343,6 @@ static int scp_start(struct rproc *rproc)
 	 */
 	mt6785_scp_slp_prot_clear(scp);
 
-	/*
-	 * The awake request, taken before the first read of a running SCP rather than after
-	 * the timeline: it is the vendor's guard around every access it makes to the core
-	 * (scp_awake.c:79-100, unlock at :162-178), and its acknowledgment is the firmware's
-	 * own ISR. comb9 took it at 1445 ms - after the firmware had already switched its clock
-	 * tree on at 1000 ms and the window had stopped answering - and it was never
-	 * acknowledged. From here it is held across the sampling and released when the ready IPI
-	 * arrives or the wait fails.
-	 */
-	mt6785_scp_awake(scp, true);
-
 	scp->data->scp_reset_deassert(scp);
 
 	/*
@@ -1367,62 +1356,6 @@ static int scp_start(struct rproc *rproc)
 		 readl(scp->cluster->reg_base + MT6785_SCP_PROBE_REG),
 		 MT6785_SCP_PROBE_VALUE,
 		 readl(scp->cluster->reg_base + MT8183_SW_RSTN));
-
-	/*
-	 * The awake request goes here, not before: its acknowledgment is the SCP firmware's ISR
-	 * clearing the bit (scp_awake.c:82-96), so a core still in reset cannot answer it. The
-	 * vendor takes it around every access it makes to a *running* SCP (scp_awake.c:79-100, the
-	 * unlock at :162-178), and holds it until the ready IPI has arrived or the wait failed.
-	 */
-	/*
-	 * When exactly the block stops answering: the probe word, once a millisecond, until
-	 * it stops reading back (cheap while the bus answers), together with the TCM's first
-	 * word - the loader's vector table, then the firmware's - to show how far the core
-	 * got. The first read that differs is the darkness: such a read costs the bus
-	 * timeout, so the loop stops there.
-	 */
-	{
-		void __iomem *cfg = scp->cluster->reg_base;
-		void __iomem *clk = cfg + MT6785_SCP_CLK_BLOCK;
-		unsigned int i;
-		u32 val = MT6785_SCP_PROBE_VALUE, tcm;
-		s64 start = ktime_get();
-
-		for (i = 0; i < MT6785_SCP_PROBE_POLLS; i++) {
-			val = readl(cfg + MT6785_SCP_PROBE_REG);
-			tcm = readl(scp->sram_base);
-			if (val != MT6785_SCP_PROBE_VALUE) {
-				dev_err(scp->dev, "bus dark after %lld us (probe %#x TCM[0] %#x)\n",
-					ktime_us_delta(ktime_get(), start), val, tcm);
-				break;
-			}
-			if (!(i % MT6785_SCP_PROBE_REPORT)) {
-				u32 ms = i * MT6785_SCP_PROBE_STEP_US / 1000;
-				u32 clk_sw = readl(clk + MT6785_SCP_CLK_SW_SEL);
-				u32 clk_en = readl(clk + MT6785_SCP_CLK_ENABLE);
-
-				dev_info(scp->dev, "%u ms: clk_sw %#x clk_en %#x ctrl24 %#x\n",
-					 ms, clk_sw, clk_en,
-					 readl(clk + MT6785_SCP_CLK_CTRL_24));
-				mt6785_scp_log_ulposc(scp, "timeline");
-				mt6785_scp_log_fmeter(scp, "timeline");
-				mt6785_scp_log_spm_handshake(scp, "timeline");
-				dev_info(scp->dev, "%u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
-					 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
-					 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
-					 readl(cfg + MT6785_SCP_WDT_REG),
-					 readl(cfg + MT6785_SCP_WDT_CTRL), tcm);
-			}
-			/*
-			 * 100 ms between samples, and this runs in process context, so
-			 * fsleep() is the right primitive for a delay this long.
-			 */
-			fsleep(MT6785_SCP_PROBE_STEP_US);
-		}
-		if (i == MT6785_SCP_PROBE_POLLS)
-			dev_info(scp->dev, "bus answered for the whole %u ms\n",
-				 MT6785_SCP_PROBE_POLLS * MT6785_SCP_PROBE_STEP_US / 1000);
-	}
 
 	/*
 	 * One read back, immediately: the core has just been released and cannot have taken the
@@ -1444,22 +1377,79 @@ static int scp_start(struct rproc *rproc)
 
 	if (ret == 0) {
 		dev_err(dev, "wait SCP initialization timeout!\n");
+
+		/*
+		 * The post-mortem is the first access to the block since the release, and it goes
+		 * under the vendor's awake request - which can only be taken now: its
+		 * acknowledgment is the firmware's own ISR (scp_awake.c:82-96), and
+		 * scp_awake_lock() refuses to send the request at all while is_scp_ready() is 0
+		 * (:68-72). comb11 is that rule measured from the other side: the request written
+		 * at the release sat unacknowledged for its whole second while the firmware was
+		 * still booting.
+		 */
+		mt6785_scp_awake(scp, true);
 		mt6785_scp_spm_request(scp, false);
-		mt6785_scp_awake(scp, false);
+		/*
+		 * When the block stopped answering: the probe word, once every 100 ms, together
+		 * with the TCM's first word - the loader's vector table, then the firmware's -
+		 * and the clock block's own state, which is what names the moment the firmware
+		 * switched its clock tree and what it switched to.
+		 */
+		{
+			void __iomem *cfg = scp->cluster->reg_base;
+			void __iomem *clk = cfg + MT6785_SCP_CLK_BLOCK;
+			unsigned int i;
+			u32 val = MT6785_SCP_PROBE_VALUE, tcm = 0;
+			s64 start = ktime_get();
+
+			for (i = 0; i < MT6785_SCP_PROBE_POLLS; i++) {
+				val = readl(cfg + MT6785_SCP_PROBE_REG);
+				tcm = readl(scp->sram_base);
+				if (val != MT6785_SCP_PROBE_VALUE) {
+					dev_err(scp->dev, "post-mortem: probe word %#x after %lld us (TCM[0] %#x)\n",
+						val, ktime_us_delta(ktime_get(), start), tcm);
+					break;
+				}
+				if (!(i % MT6785_SCP_PROBE_REPORT)) {
+					u32 ms = i * MT6785_SCP_PROBE_STEP_US / 1000;
+					u32 clk_sw = readl(clk + MT6785_SCP_CLK_SW_SEL);
+					u32 clk_en = readl(clk + MT6785_SCP_CLK_ENABLE);
+
+					dev_info(scp->dev, "post-mortem %u ms: clk_sw %#x clk_en %#x ctrl24 %#x\n",
+						 ms, clk_sw, clk_en,
+						 readl(clk + MT6785_SCP_CLK_CTRL_24));
+					mt6785_scp_log_ulposc(scp, "post-mortem");
+					mt6785_scp_log_fmeter(scp, "post-mortem");
+					mt6785_scp_log_spm_handshake(scp, "post-mortem");
+					dev_info(scp->dev, "post-mortem %u ms: sleep_dbg %#x cpu_sleep %#x wdt %#x/%#x TCM[0] %#x\n",
+						 ms, readl(clk + MT6785_SCP_SLEEP_DEBUG_REG),
+						 readl(cfg + MT6785_SCP_CPU_SLEEP_STATUS),
+						 readl(cfg + MT6785_SCP_WDT_REG),
+						 readl(cfg + MT6785_SCP_WDT_CTRL), tcm);
+				}
+				/*
+				 * 100 ms between samples, and this runs in process context, so
+				 * fsleep() is the right primitive for a delay this long.
+				 */
+				fsleep(MT6785_SCP_PROBE_STEP_US);
+			}
+			if (i == MT6785_SCP_PROBE_POLLS)
+				dev_info(scp->dev, "post-mortem: the block answered for the whole %u ms\n",
+					 MT6785_SCP_PROBE_POLLS * MT6785_SCP_PROBE_STEP_US / 1000);
+		}
+
 		if (scp->data->scp_dump_regs)
 			scp->data->scp_dump_regs(scp);
+		mt6785_scp_awake(scp, false);
 		ret = -ETIME;
 		goto stop;
 	}
 	if (ret == -ERESTARTSYS) {
 		dev_err(dev, "wait SCP interrupted by a signal!\n");
-		/* the awake lock is held from the release on, so it has to go back here too */
-		mt6785_scp_awake(scp, false);
 		goto stop;
 	}
 
 	mt6785_scp_spm_request(scp, false);
-	mt6785_scp_awake(scp, false);
 	clk_disable(scp->clk);
 	if (run->fw_ver[0])
 		dev_info(dev, "SCP is ready. FW version %s\n", run->fw_ver);
