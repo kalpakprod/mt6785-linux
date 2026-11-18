@@ -37,6 +37,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/phy/phy.h>
 #include <linux/seq_file.h>
+#include <linux/sysfs.h>
 #include <media/v4l2-async.h>
 #include <media/v4l2-subdev.h>
 
@@ -186,6 +187,10 @@ struct mtk_seninf {
 	/* The camsys gate window at 0x1a000000 (the device tree's clock-controller@1a000000): its
 	 * CG_CON word says which camera gates are open, which no clock API call shows. */
 	void __iomem *camsys;
+	/* Read-only views for the diagnostics: topckgen, infra and the pin controller's first window. */
+	void __iomem *topck;
+	void __iomem *infra;
+	void __iomem *pio;
 	/* The receiver instance this stream is on; every per-instance access uses it. */
 	void __iomem *inst;
 	/* Its zero-based index, 0..4, so late work can find the top route again. */
@@ -430,6 +435,55 @@ static u32 mtk_seninf_top_offset(unsigned int idx)
 	if (idx == 1 || idx == 5 || idx == 6)
 		return 0x64;
 	return 0x68;
+}
+
+/*
+ * Three axes the lead's ranked list asks for, all as runtime parameters so one boot prints one table.
+ *
+ *  topmux_all  the SENINF top mux word (0x0008) that says which receiver feeds which mux: our normal
+ *              path has never written it, and if no mux is sourced from the enabled receiver, the
+ *              CSI-2 block gets no input at all (counters 0, errors 0, no interrupt - exactly what
+ *              ten trials show). With this set, mux n is fed by receiver n and every mux is enabled.
+ *  csi2_enable the HAL sets bit 0 of the CSI-2 bank's +0x04 only in its "mode 2" path
+ *              (hal_csirx_seninf_csi2_setting, libcam.halsensor.so :0x32770-0x327cc); our driver has
+ *              only ever cleared it. Mode 2 is most plausibly the "CSI-2 feeds the capture engines"
+ *              path, which is ours.
+ *  gates       read-only dump of the topckgen, infra and pin-controller windows: the CSI-PHY
+ *              reference clock has no gate in this tree at all, and if it lives in one of those
+ *              windows under a name we never mapped, the analogue block would be clock-less while
+ *              still reporting "ready". Nothing here writes those windows.
+ */
+static bool topmux_all;
+module_param(topmux_all, bool, 0644);
+MODULE_PARM_DESC(topmux_all,
+		 "feed SENINF mux n from receiver n and enable every mux, before the sensor starts");
+
+static bool csi2_enable;
+module_param(csi2_enable, bool, 0644);
+MODULE_PARM_DESC(csi2_enable,
+		 "set bit 0 of the CSI-2 bank's +0x04 (the HAL's mode-2 enable) instead of clearing it");
+
+static bool gates;
+module_param(gates, bool, 0644);
+MODULE_PARM_DESC(gates,
+		 "print the topckgen, infra and pin-controller windows read-only at stream on");
+
+static void mtk_seninf_window(struct mtk_seninf *seninf, const char *what,
+			      void __iomem *w, phys_addr_t pa, unsigned int words)
+{
+	unsigned int i, j;
+
+	if (!w)
+		return;
+	for (i = 0; i < words; i += 8) {
+		char line[160];
+		int n = 0;
+
+		n += scnprintf(line + n, sizeof(line) - n, "%s 0x%08x", what, (u32)pa + 4 * i);
+		for (j = 0; j < 8 && i + j < words; j++)
+			n += scnprintf(line + n, sizeof(line) - n, " %08x", readl(w + 4 * (i + j)));
+		dev_info(seninf->dev, "%s\n", line);
+	}
 }
 
 /*
@@ -965,7 +1019,10 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 		struct { u32 off; u32 val; const char *what; } seq[] = {
 			{ 0x0a10, readl(inst + 0x0a10) | 0x100, "CSI2 +0x10 bit 8" },
 			{ 0x0a08, readl(inst + 0x0a08) & ~0x700, "CSI2 +0x08 mode bits cleared" },
-			{ 0x0a04, readl(inst + 0x0a04) & ~1, "CSI2 +0x04 (mode-2 enable off)" },
+			{ 0x0a04, csi2_enable ? (readl(inst + 0x0a04) | 1) :
+				(readl(inst + 0x0a04) & ~1),
+			  csi2_enable ? "CSI2 +0x04 mode-2 enable ON" :
+					"CSI2 +0x04 (mode-2 enable off)" },
 			{ 0x0ac0, readl(inst + 0x0ac0) | 0x80000000, "CSI2 +0xc0 bit 31" },
 			{ 0x0a00, (1u << lanes) - 1, "CSI2 lane mask" },
 			{ 0x0a18, 0x8000001a, "CSI2 debug port = packet counter" },
@@ -1005,6 +1062,29 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 top_off, before, readl(seninf->base + top_off), want,
 			 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
 			 readl(seninf->base + 0x68));
+	}
+
+	/* The top mux word and every mux enabled, plus the read-only window dumps. */
+	if (topmux_all) {
+		unsigned int inst_i;
+
+		writel(0x76543210, seninf->base + 0x0008);
+		for (inst_i = 0; inst_i < 5; inst_i++) {
+			void __iomem *i2c = seninf->base + 0x1000 * inst_i;
+
+			writel(readl(i2c + 0x0d00) | 0x1, i2c + 0x0d00);
+			writel(0x002b0000, i2c + 0x0d04);
+		}
+		dev_info(seninf->dev, "topmux: 0x0008 0x%08x (mux n <- receiver n), five muxes enabled\n",
+			 readl(seninf->base + 0x0008));
+	}
+	if (gates) {
+		mtk_seninf_window(seninf, "topck", seninf->topck, 0x10000000, 0x40);
+		mtk_seninf_window(seninf, "infra", seninf->infra, 0x10001000, 0x40);
+		mtk_seninf_window(seninf, "pio", seninf->pio, 0x10005000, 0x40);
+		dev_info(seninf->dev, "pins: mipi-sel gpiolib dir/val %d/%d\n",
+			 seninf->mipi_sel ? gpiod_get_direction(seninf->mipi_sel) : -1,
+			 seninf->mipi_sel ? gpiod_get_value_cansleep(seninf->mipi_sel) : -1);
 	}
 
 	if (stock_words) {
@@ -1176,6 +1256,11 @@ static int mtk_seninf_probe(struct platform_device *pdev)
 	seninf->camsys = devm_ioremap(dev, 0x1a000000, 0x1000);
 	if (!seninf->camsys)
 		dev_warn(dev, "cannot map the camsys window, gate state will not be logged\n");
+
+	/* Read-only: the clock parents and gates, and the pin controller's own registers. */
+	seninf->topck = devm_ioremap(dev, 0x10000000, 0x1000);
+	seninf->infra = devm_ioremap(dev, 0x10001000, 0x1000);
+	seninf->pio = devm_ioremap(dev, 0x10005000, 0x1000);
 
 	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(seninf->clks), seninf->clks);
 	if (ret)
