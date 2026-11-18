@@ -353,6 +353,72 @@ static void mtk_seninf_clock_state(struct mtk_seninf *seninf, const char *when)
 }
 
 /*
+ * The stock dump's SENINF words, and a way to replay them.
+ *
+ * Source: poco-m5s/evidence/stock-session-2026-11/camera-streaming.txt, taken on the phone running
+ * stock MIUI with its camera app in the foreground (the stock kernel's REGDUMP module reads
+ * /dev/mem). Every word below is a *configuration* word by classification - the status words of the
+ * same dump (instance CTRL/CTRL_EXT, the counters at +0xac8/+0xadc, the cam-mux IRQ status at
+ * 0x04a8) are deliberately left out, because they carry what happened, not what was set.
+ *
+ * seninf.stock_words=1 writes them over ours just before the sensor streams, and prints our own
+ * values for the whole stock address list in the same REGDUMP format, so the two files can be
+ * diffed word by word.
+ */
+static bool stock_words;
+module_param(stock_words, bool, 0644);
+MODULE_PARM_DESC(stock_words,
+		 "write the stock dump's seninf configuration words before the sensor starts");
+
+static const struct {
+	u32 off;
+	u32 val;
+	const char *what;
+} seninf_stock_words[] = {
+	{ 0x0008, 0x32100000, "top mux" },
+	{ 0x0010, 0x03020000, "top cam mux ctrl" },
+	{ 0x0014, 0x00000504, "top mux ctrl 1 (n3d a)" },
+	{ 0x0400, 0x03020000, "cam mux ctrl 0" },
+	{ 0x0410, 0x00000012, "cam mux enable: mux 1 and 4" },
+	{ 0x04a0, 0x8000030c, "cam mux irq enable" },
+	{ 0x4a10, 0x00000006, "instance 5 csi2 +0x10" },
+	{ 0x4d04, 0x001f0200, "instance 5 mux inten" },
+};
+
+/* Every address the stock dump holds for this window, in its order. */
+static const u32 seninf_stock_dump[] = {
+	0x0000, 0x0008, 0x0010, 0x0014, 0x0018, 0x001c, 0x0020, 0x0024,
+	0x0400, 0x0404, 0x0408, 0x0410, 0x04a0, 0x04a4, 0x04a8, 0x0504,
+	0x4000, 0x4004, 0x4008, 0x4010, 0x4200, 0x4204, 0x4210,
+	0x4a00, 0x4a08, 0x4a10, 0x4a18, 0x4a1c, 0x4a2c, 0x4ac8, 0x4adc,
+	0x4d00, 0x4d04, 0x4d3c,
+};
+
+static void mtk_seninf_stock_apply(struct mtk_seninf *seninf)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(seninf_stock_words); i++) {
+		u32 off = seninf_stock_words[i].off;
+
+		writel(seninf_stock_words[i].val, seninf->base + off);
+		dev_info(seninf->dev, "stock %s: +0x%04x = 0x%08x -> 0x%08x\n",
+			 seninf_stock_words[i].what, off, seninf_stock_words[i].val,
+			 readl(seninf->base + off));
+	}
+}
+
+static void mtk_seninf_stock_dump_words(struct mtk_seninf *seninf)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(seninf_stock_dump); i++)
+		dev_info(seninf->dev, "REGDUMP camera-streaming 0x%08x 0x%08x\n",
+			 (u32)seninf->base_pa + seninf_stock_dump[i],
+			 readl(seninf->base + seninf_stock_dump[i]));
+}
+
+/*
  * Which of the three top-route registers this receiver uses, from the HAL's masks
  * (hal_csirx_seninf_top_setting, libcam.halsensor.so 0x32910-0x3292c: 0x60 for indices 0, 3
  * and 4; 0x64 for 1, 5 and 6; 0x68 for the rest).
@@ -926,6 +992,11 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 top_off, before, readl(seninf->base + top_off), want,
 			 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
 			 readl(seninf->base + 0x68));
+	}
+
+	if (stock_words) {
+		mtk_seninf_stock_apply(seninf);
+		mtk_seninf_stock_dump_words(seninf);
 	}
 
 	mtk_seninf_clock_state(seninf, "stream on clocks");

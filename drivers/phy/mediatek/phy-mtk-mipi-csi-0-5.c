@@ -379,6 +379,53 @@ static void mtk_mipi_phy_decode(struct device *dev, void __iomem *base, const ch
 	}
 }
 
+/*
+ * The stock dump's analog words, replayed.
+ *
+ * Source: poco-m5s/evidence/stock-session-2026-11/camera-streaming.txt (stock MIUI, camera app in the
+ * foreground, read by the stock kernel's REGDUMP module): 0x11c84000..0x11c840a8 and
+ * 0x11c85000..0x11c850a8, the CSI2 pair. Both halves read the same word values on stock.
+ *
+ * phy.stock_analog=1 writes them over whatever this driver set, at the end of power-on, and prints
+ * our own values for the same address list in the REGDUMP format so the two can be diffed. Note what
+ * the values say: 0x11c84000 = 0x00800002 on stock is the same word our kernel reads with no camera
+ * driver loaded at all (the 18.11 diff), i.e. the closed HAL did not configure this pair for its
+ * streaming camera - so this replay is the test of that conclusion, not a known-good configuration.
+ */
+static bool stock_analog;
+module_param(stock_analog, bool, 0644);
+MODULE_PARM_DESC(stock_analog,
+		 "write the stock dump's analog words over this driver's at power on");
+
+static const struct {
+	u32 off;
+	u32 val;
+} mtk_mipi_stock_analog[] = {
+	{ 0x00, 0x00800002 }, { 0x04, 0x00084444 }, { 0x08, 0x10101010 },
+	{ 0x0c, 0x00001010 }, { 0x18, 0x88508850 }, { 0x1c, 0x88508850 },
+	{ 0x20, 0x88508850 }, { 0x24, 0x00000000 }, { 0x30, 0x10101010 },
+	{ 0x34, 0x0020000f }, { 0x3c, 0x10101010 }, { 0x40, 0x00000000 },
+	{ 0x80, 0x00000002 }, { 0xa8, 0x00000007 },
+};
+
+static void mtk_mipi_phy_stock_analog(struct device *dev, void __iomem *base)
+{
+	unsigned int i, half;
+
+	for (half = 0; half < 2; half++) {
+		void __iomem *h = base + half * CSIXB_OFFSET;
+
+		for (i = 0; i < ARRAY_SIZE(mtk_mipi_stock_analog); i++)
+			writel(mtk_mipi_stock_analog[i].val, h + mtk_mipi_stock_analog[i].off);
+
+		for (i = 0; i < ARRAY_SIZE(mtk_mipi_stock_analog); i++)
+			dev_info(dev, "REGDUMP camera-streaming 0x%08x 0x%08x\n",
+				 (u32)(0x11c84000 + half * CSIXB_OFFSET +
+				       mtk_mipi_stock_analog[i].off),
+				 readl(h + mtk_mipi_stock_analog[i].off));
+	}
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
@@ -503,6 +550,10 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	}
 
 	mtk_mipi_phy_decode(&phy->dev, base, "enables");
+
+	/* The stock dump's analog words over ours, when a trial asks for it. */
+	if (stock_analog)
+		mtk_mipi_phy_stock_analog(&phy->dev, base);
 
 	/* and the receivers of the lanes themselves, then the HAL's ready flag */
 	mtk_mipi_phy_lanes(&phy->dev, base, true);
