@@ -519,6 +519,10 @@ static int mt8195_scp_clk_get(struct mtk_scp *scp)
 #define MT6785_LK_DRAM_SIZE		0x59968
 /* the vendor's reboot handshake word: cfg + 0x64, ready-to-reboot = 0x34 (scp_reg.h:44-46) */
 #define MT6785_SCP_GPR_CM4_A_REBOOT	0x64
+/* a switch for one trial: the value to leave in that word before the release (NOTE 38) */
+static unsigned int mt6785_handshake;
+module_param_named(handshake, mt6785_handshake, uint, 0644);
+MODULE_PARM_DESC(handshake, "value to write to GPR_CM4_A_REBOOT before releasing the SCP (0 = leave it alone)");
 /* the AP->SCP doorbell and a scratch word the loader polls (vendor scp_reg.h:19-24, :44) */
 #define MT6785_SCP_GIPC_IN		0x28
 #define MT6785_SCP_GENERAL_REG6		0x68
@@ -1376,6 +1380,26 @@ static int scp_start(struct rproc *rproc)
 	 * SMC's id - the idle model the SCP maps to - is not spelled out in any source we hold.
 	 * So nothing is written: the register is reported with the rest of the SPM block.
 	 */
+	/*
+	 * NOTE 38 (a): the reboot handshake word, as a switch for one trial.
+	 *
+	 * LK leaves 0x34 in GPR_CM4_A_REBOOT ("ready to reboot") and the vendor's reset path
+	 * writes 1 there before a reboot; a live stock system reads 0x0
+	 * (stock-session-2026-11/scp-up.txt, 0x105c0064). If the firmware's early init takes a
+	 * different path when that word already holds 0x34, writing it before the release is the
+	 * whole difference - so it is a module parameter, off unless a trial asks for it:
+	 *
+	 *   modprobe mtk_scp handshake=0x34      (or scp.handshake=0x34 on the kernel command line)
+	 *
+	 * Nothing else in the driver writes this word before a normal release.
+	 */
+	if (mt6785_handshake) {
+		writel(mt6785_handshake, scp->cluster->reg_base + MT6785_SCP_GPR_CM4_A_REBOOT);
+		dev_info(scp->dev, "reboot handshake word set to %#x before the release (reads %#x), as the parameter asked\n",
+			 mt6785_handshake,
+			 readl(scp->cluster->reg_base + MT6785_SCP_GPR_CM4_A_REBOOT));
+	}
+
 	mt6785_scp_vol_lv(scp);
 
 	/*
