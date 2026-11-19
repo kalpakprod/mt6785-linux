@@ -135,6 +135,10 @@ module_param(probe_sensors, bool, 0644);
 MODULE_PARM_DESC(probe_sensors,
 		 "if a stream sees no packet after 500 ms, start the other sensor on this receiver once");
 
+static int cam_mux = 3;
+module_param(cam_mux, int, 0644);
+MODULE_PARM_DESC(cam_mux, "camera mux (0..10) whose source is set to this receiver's seninf mux; read at every stream on");
+
 static bool scan_ports = true;
 module_param(scan_ports, bool, 0644);
 MODULE_PARM_DESC(scan_ports,
@@ -1021,20 +1025,19 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 	/*
 	 * Only the writes disp62 saw hold are kept, at the cezanne layout this receiver answers on:
-	 * 0xa00 keeps the lane enables (0xf, and nothing else - SENINF1_CSI2_CTL on cezanne),
-	 * 0xa08 keeps 0x500 of the settle word, 0xa10 keeps 0x71f, 0xa18 keeps 0xa. The MT8183
-	 * writes that read back zero (0x200 pad_sel and the 0x80 pulse, 0x204, 0xa74, 0xb20, 0xa40,
-	 * 0xb10, 0x1c) are dropped: they are another receiver's field map.
+	 * 0xa00 keeps the lane enables (0xf, and nothing else - SENINF1_CSI2_CTL on cezanne).
+	 * comb45 (19.11) drops the rest of the MT8183 words that used to be here, because the HAL writes
+	 * none of them: 0xa08 = 0x500, 0xa10 = 0x71f (the HAL only sets bit 8 on the reset value 0x6;
+	 * 0x71f also set bits 9 and 10, which made the four lanes leave the resync stage unaligned: CSI-2
+	 * status 0xac8 showed frame-sync, ECC and multi-lane errors until 0xa10 was 0x106), 0xa18 = 0xa
+	 * (reset 0) and 0xd04 = 0x2b0000, which wiped the mux's reset bits 20:16 and its source nibble
+	 * (setSeninfMuxCtrl below writes the HAL's word).
 	 */
 	{
 		void __iomem *in = seninf->base + 0x1000 * seninf_idx;
 		struct { u32 off; u32 val; const char *what; } seq[] = {
 			{ 0x0a00, 0x0000000f, "CSI2 lane enables (sticky)" },
-			{ 0x0a08, 0x00000500, "CSI2 settle (sticky part 0x500)" },
-			{ 0x0a10, 0x0000071f, "CSI2 interrupt enable (sticky)" },
-			{ 0x0a18, 0x0000000a, "CSI2 debug select (sticky)" },
 			{ 0x0d00, 0x00000001, "seninf mux enable" },
-			{ 0x0d04, 0x002b0000, "seninf mux data type RAW10" },
 		};
 		unsigned int i;
 
@@ -1068,12 +1071,21 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 		{
 			void __iomem *cmux = seninf->base + 0x400;
-			unsigned int n = 3;	/* CAMSV0's camera mux */
+			unsigned int n = clamp(cam_mux, 0, 10);
+			void __iomem *sel = cmux + 4 * (n / 4);
+			unsigned int sh = 8 * (n % 4);
 
 			writel(readl(cmux + 0x10) | (1 << n), cmux + 0x10);
 			writel(readl(cmux + 0xa0) | (3 << (2 * n)), cmux + 0xa0);
 			writel(3 << (2 * n), cmux + 0xa8);
-			writel((readl(cmux) & ~0xf) | (n & 0xf), cmux);
+			/*
+			 * Camera mux n takes its source from nibble n of [0x400 + 4*(n/4)] at bit 8*(n%4)
+			 * (setSeninfCamTGMuxCtrl 0x30c60, jump table .rodata 0x11b1e: n = 3 is bits 27:24 of
+			 * 0x400, n = 4 bits 3:0 of 0x404). The value is the seninf mux index, the receiver's
+			 * own (top mux 0x14 keeps mux 4 <- SENINF5). Until comb45 this wrote the camera mux
+			 * number into cam mux 0's field.
+			 */
+			writel((readl(sel) & ~(0xfu << sh)) | ((seninf_idx & 0xf) << sh), sel);
 
 			dev_info(seninf->dev,
 				 "cam mux 0x%08llx: ctrl 0x%08x, en 0x%08x, src 0x%08x, sel 0x%08x\n",
@@ -1135,8 +1147,9 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 * the C-PHY path the OV64B40 needs - that is what csi2_enable now selects, together with
 			 * bit 0 of +0x04 below.
 			 */
-			{ 0x0a08, csi2_enable ? ((readl(inst + 0x0a08) & ~0x700) | 0x2) :
-				(readl(inst + 0x0a08) & ~0x700),
+			/* the HAL clears bits 7:0 first (:0x3277c), then 10:8 on the D-PHY path */
+			{ 0x0a08, csi2_enable ? ((readl(inst + 0x0a08) & ~0x7ff) | 0x2) :
+				(readl(inst + 0x0a08) & ~0x7ff),
 			  csi2_enable ? "CSI2 +0x08 mode-2 bit 1 set" :
 					"CSI2 +0x08 mode bits cleared" },
 			{ 0x0a04, csi2_enable ? (readl(inst + 0x0a04) | 1) :
@@ -1145,7 +1158,6 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 					"CSI2 +0x04 (mode-2 enable off)" },
 			{ 0x0ac0, readl(inst + 0x0ac0) | 0x80000000, "CSI2 +0xc0 bit 31" },
 			{ 0x0a00, (1u << lanes) - 1, "CSI2 lane mask" },
-			{ 0x0a18, 0x8000001a, "CSI2 debug port = packet counter" },
 		};
 		unsigned int i;
 
@@ -1197,6 +1209,27 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 top_off, before, readl(seninf->base + top_off), want,
 			 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
 			 readl(seninf->base + 0x68));
+	}
+
+	/*
+	 * SeninfDrvImp::setSeninfMuxCtrl (libcam.halsensor.so 0x31638), as configureMipi calls it for the
+	 * main stream (0x39f9c: source type 8): on the mux page [this+0xa8 + mux*8] = instance + 0xd00
+	 * (init .rodata 0x11a50/0x119b0/0x11890): +0x04 bits 3:0 = 8 (sources 1 and 8 map to themselves,
+	 * any other to 9), bits 9:8 = pixel mode (one pixel per clock here), +0x08 bits 16/17 = the
+	 * sync polarities (left at their reset 0), then a pulse of bits 1 and 2 of +0x00. Measured 19.11:
+	 * with this word the mux's size register reads 0x09a00cd0, 3280 x 2464, the IMX355's full frame,
+	 * and the CSI-2 status reads 0x324 (the value MediaTek's own seninf code treats as error-free).
+	 */
+	{
+		void __iomem *m = inst + 0x0d00;
+		u32 c1 = readl(m + 0x04), c0;
+
+		writel((c1 & ~0x30fu) | 0x8, m + 0x04);
+		c0 = readl(m);
+		writel(c0 | 0x6 | 0x1, m);
+		writel((c0 | 0x1) & ~0x6u, m);
+		dev_info(seninf->dev, "mux ctrl: +0xd04 0x%08x -> 0x%08x, +0xd00 0x%08x -> 0x%08x\n",
+			 c1, readl(m + 0x04), c0, readl(m));
 	}
 
 	/* The top mux word and every mux enabled, plus the read-only window dumps. */
