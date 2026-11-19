@@ -135,7 +135,7 @@ module_param(probe_sensors, bool, 0644);
 MODULE_PARM_DESC(probe_sensors,
 		 "if a stream sees no packet after 500 ms, start the other sensor on this receiver once");
 
-static int cam_mux = 3;
+static int cam_mux = 2;	/* measured: cam mux 2 feeds camsv1 at 0x1a050000 (comb45) */
 module_param(cam_mux, int, 0644);
 MODULE_PARM_DESC(cam_mux, "camera mux (0..10) whose source is set to this receiver's seninf mux; read at every stream on");
 

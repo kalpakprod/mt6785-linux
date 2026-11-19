@@ -58,6 +58,54 @@
 #define CAMSV_TG_INTER_ST		0x026c	/* cam_regs.h:378 */
 #define CAMSV_TG_TIME_STAMP		0x02a0	/* cam_regs.h:379 */
 
+/*
+ * The rest of the engine, from the stock HAL's CAMSV code (libimageio_plat_drv.so from this phone's
+ * vendor image: CAMSV_TG_CTRL::_config 0xb92b8, CAMSV_TOP_CTRL::_config 0xba218 / ::_enable 0xbb390,
+ * DMAO_CAMSV_B::_config 0xbc880 / ::_enable 0xbd5c8 / ::setBaseAddr 0xbda78, CAMSV_BUF_CTRL::_config
+ * 0xbee28 / ::_enable 0xbf0b0 / ::enqueueHwBuf 0xbfbd0; disassembly in scratch/native/5-cameras/
+ * hal-dis/camsv/). The order is the one of the mainline-style driver for the next MediaTek generation
+ * (scratch/native/5-cameras/tmp/cez-cam/cezanne_camsv.c, cam_hw_setup), whose block is the same
+ * engine at other offsets: TOP +0x500, TG +0x100, DMA -0x400 here.
+ */
+#define CAMSV_FMT_SEL			0x0514	/* TOP_CTRL: [x19+0x44] written whole; 1 = RAW10 */
+#define CAMSV_IMGO_FBC			0x052c	/* enqueueHwBuf 0xc0204: bit 0 = RCNT_INC */
+#define CAMSV_CLK_EN			0x0530	/* TOP_CTRL::_enable: bits 0, 2, 15 */
+#define CAMSV_PAK			0x054c	/* bits 2:0 mode, 5:4 pixel mode */
+#define CAMSV_TG_GRAB_PXL		0x0238	/* start | end << 16 */
+#define CAMSV_TG_GRAB_LIN		0x023c
+#define CAMSV_TG_PATH_CFG		0x0240
+#define CAMSV_IMGO_OFST			0x0028
+#define CAMSV_IMGO_XSIZE		0x0030	/* bytes per line - 1 */
+#define CAMSV_IMGO_YSIZE		0x0034	/* lines - 1 */
+#define CAMSV_IMGO_STRIDE		0x0038
+#define CAMSV_IMGO_CON			0x003c	/* DMAO config: 0x80000080 */
+#define CAMSV_IMGO_CON2			0x0040	/* 0x00020002 */
+#define CAMSV_IMGO_CON3			0x0044	/* 0x00020002 */
+#define CAMSV_DMA_ERR_CTL		0x03c4	/* TOP_CTRL writes all ones */
+#define CAMSV_DMA_DB_EN			0x0400	/* DMAO::_enable: bit 0, address latches at SOF */
+#define CAMSV_FRAME_WRITE_BASE		0x0404	/* per-frame header the engine writes; needs memory */
+#define CAMSV_SCRATCH_SIZE		SZ_64K
+
+#define CAMSV_SEN_MODE_CMOS_EN		BIT(0)
+#define CAMSV_SEN_MODE_TIME_STP_EN	BIT(16)
+#define CAMSV_MODULE_EN_DEFAULT		BIT(30)	/* TOP_CTRL ORs it in */
+#define CAMSV_CLK_EN_ALL		0x8005
+#define CAMSV_FBC_MODE			BIT(16)	/* union FBC_CTRL_1, cam_regs.h */
+#define CAMSV_FBC_BIT22			BIT(22)	/* BUF_CTRL::_enable sets it after FBC_EN */
+#define CAMSV_FMT_RAW10			1
+
+/* INT_STATUS bits as on the next generation's same engine (cezanne_camsv.c), read-clear. */
+#define CAMSV_INT_VS1			BIT(0)
+#define CAMSV_INT_TG_ERR		BIT(4)
+#define CAMSV_INT_TG_GBERR		BIT(5)
+#define CAMSV_INT_SOF			BIT(6)
+#define CAMSV_INT_PASS1_DONE		(BIT(10) | BIT(11) | BIT(12))
+#define CAMSV_INT_IMGO_ERR		BIT(16)
+#define CAMSV_INT_IMGO_OVERRUN		BIT(17)
+#define CAMSV_INT_MASK			(CAMSV_INT_VS1 | CAMSV_INT_TG_ERR | CAMSV_INT_TG_GBERR | \
+					 CAMSV_INT_SOF | CAMSV_INT_PASS1_DONE | CAMSV_INT_IMGO_ERR | \
+					 CAMSV_INT_IMGO_OVERRUN)
+
 /* FBC_IMGO_CTL1: FBC_EN is bit15 (union FBC_CTRL_1, cam_regs.h:383-390). */
 #define CAMSV_FBC_EN			BIT(15)
 
@@ -76,8 +124,8 @@
 
 #define CAMSV_MAX_WIDTH			4208
 #define CAMSV_MAX_HEIGHT		3120
-#define CAMSV_DEF_WIDTH			1920
-#define CAMSV_DEF_HEIGHT		1080
+#define CAMSV_DEF_WIDTH			3280	/* the IMX355 full frame, measured at the seninf mux */
+#define CAMSV_DEF_HEIGHT		2464
 
 /**
  * struct mtk_camsv - one capture engine
@@ -117,7 +165,45 @@ struct mtk_camsv {
 	struct v4l2_mbus_framefmt mbus_fmt;
 	struct vb2_v4l2_buffer *cur_buf;
 	u32 sequence;
+	void *scratch;
+	dma_addr_t scratch_dma;
+	struct list_head bufs;		/* queued to the driver, not yet given to the engine */
+	spinlock_t buf_lock;
+	u32 status_seen;
+	unsigned int sof_count, err_count;
+	u32 err_status;
 };
+
+/* RAW10 as the engine packs it: four pixels in five bytes, lines 64-byte aligned. */
+static unsigned int camsv_line_bytes(u32 w)
+{
+	return DIV_ROUND_UP(w * 10, 8);
+}
+
+static unsigned int camsv_stride(u32 w)
+{
+	return ALIGN(camsv_line_bytes(w), 64);
+}
+
+struct camsv_buf {
+	struct vb2_v4l2_buffer vb;
+	struct list_head list;
+};
+
+static inline struct camsv_buf *to_camsv_buf(struct vb2_v4l2_buffer *vb)
+{
+	return container_of(vb, struct camsv_buf, vb);
+}
+
+static struct vb2_v4l2_buffer *camsv_take_buf(struct mtk_camsv *camsv)
+{
+	struct camsv_buf *b = list_first_entry_or_null(&camsv->bufs, struct camsv_buf, list);
+
+	if (!b)
+		return NULL;
+	list_del(&b->list);
+	return &b->vb;
+}
 
 static inline struct mtk_camsv *to_camsv(struct video_device *vdev)
 {
@@ -185,41 +271,73 @@ static void camsv_hw_reset(struct mtk_camsv *camsv)
 
 static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 h)
 {
-	/*
-	 * The destination first (cam_regs.h:375, IMGO_BASE_ADDR), then the frame-buffer compression
-	 * word with its enable bit (cam_regs.h:373 and union FBC_CTRL_1), then the TG: SEN_MODE with
-	 * CMOS enable and the VF_CON start bit are what actually make the engine grab a frame
-	 * (cam_regs.h:376-377; the vendor starts the TG the same way, camera_isp.c:5056 and :3552).
-	 * Which bits of TG_SEN_MODE and TG_VF_CON the HAL wrote per sensor is not in the kernel, so
-	 * the enable bits are used alone and logged with their read-back.
-	 */
-	writel(lower_32_bits(base), camsv->base + CAMSV_IMGO_BASE_ADDR);
-	writel(CAMSV_FBC_EN, camsv->base + CAMSV_FBC_IMGO_CTL1);
-	writel(0, camsv->base + CAMSV_FBC_IMGO_CTL2);
+	void __iomem *sv = camsv->base;
 
-	/* The grab window the caller asked for: end coordinates, 16 bits each. */
-	writel((w << 16), camsv->base + CAMSV_TG_INTER_ST);
+	/* TG: timestamps on, the window from (0, 0) to (w, h), no path options */
+	writel(CAMSV_SEN_MODE_TIME_STP_EN, sv + CAMSV_TG_SEN_MODE);
+	writel(w << 16, sv + CAMSV_TG_GRAB_PXL);
+	writel(h << 16, sv + CAMSV_TG_GRAB_LIN);
+	writel(0, sv + CAMSV_TG_PATH_CFG);
 
-	writel(BIT(0), camsv->base + CAMSV_TG_SEN_MODE);	/* CMOS_EN */
-	writel(CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK | CAMSV_MODULE_EN_IMGO,
-	       camsv->base + CAMSV_MODULE_EN);
-	writel(CAMSV_INT_EN_ALL, camsv->base + CAMSV_INT_EN);
-	writel(BIT(0), camsv->base + CAMSV_TG_VF_CON);		/* VF start */
+	readl(sv + CAMSV_INT_STATUS);
+	writel(CAMSV_INT_MASK, sv + CAMSV_INT_EN);
+
+	/* TOP: RAW10, the engine's clocks, packer mode 0 at one pixel per clock */
+	writel(CAMSV_FMT_RAW10, sv + CAMSV_FMT_SEL);
+	writel(CAMSV_CLK_EN_ALL, sv + CAMSV_CLK_EN);
+	writel(readl(sv + CAMSV_PAK) & ~0x37u, sv + CAMSV_PAK);
+	writel(0xffffffff, sv + CAMSV_DMA_ERR_CTL);
+
+	/* IMGO: one frame per buffer, the engine's per-frame header into the scratch page */
+	writel(1, sv + CAMSV_DMA_DB_EN);
+	writel(0, sv + CAMSV_IMGO_OFST);
+	writel(camsv_line_bytes(w) - 1, sv + CAMSV_IMGO_XSIZE);
+	writel(h - 1, sv + CAMSV_IMGO_YSIZE);
+	writel(camsv_stride(w), sv + CAMSV_IMGO_STRIDE);
+	writel(0x80000080, sv + CAMSV_IMGO_CON);
+	writel(0x00020002, sv + CAMSV_IMGO_CON2);
+	writel(0x00020002, sv + CAMSV_IMGO_CON3);
+	writel(lower_32_bits(camsv->scratch_dma), sv + CAMSV_FRAME_WRITE_BASE);
+	writel(lower_32_bits(base), sv + CAMSV_IMGO_BASE_ADDR);
+
+	/* enables in the vendor's order: TG and packer, the TG's CMOS input, then IMGO */
+	writel(CAMSV_MODULE_EN_DEFAULT | CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK,
+	       sv + CAMSV_MODULE_EN);
+	writel(CAMSV_SEN_MODE_TIME_STP_EN | CAMSV_SEN_MODE_CMOS_EN, sv + CAMSV_TG_SEN_MODE);
+	writel(CAMSV_MODULE_EN_DEFAULT | CAMSV_MODULE_EN_TG | CAMSV_MODULE_EN_PAK |
+	       CAMSV_MODULE_EN_IMGO, sv + CAMSV_MODULE_EN);
+
+	/* FBC: mode, then enable (BUF_CTRL::_config / ::_enable), and hand over the first buffer */
+	writel(CAMSV_FBC_MODE, sv + CAMSV_FBC_IMGO_CTL1);
+	writel(CAMSV_FBC_MODE | CAMSV_FBC_EN | CAMSV_FBC_BIT22, sv + CAMSV_FBC_IMGO_CTL1);
+	writel(readl(sv + CAMSV_IMGO_FBC) | BIT(0), sv + CAMSV_IMGO_FBC);
+
+	writel(BIT(0), sv + CAMSV_TG_VF_CON);		/* VF start */
 
 	dev_info(camsv->dev,
-		 "engine armed: MODULE_EN 0x%08x INT_EN 0x%08x TG_SEN_MODE 0x%08x TG_VF_CON 0x%08x IMGO 0x%08x\n",
-		 readl(camsv->base + CAMSV_MODULE_EN),
-		 readl(camsv->base + CAMSV_INT_EN),
-		 readl(camsv->base + CAMSV_TG_SEN_MODE),
-		 readl(camsv->base + CAMSV_TG_VF_CON),
-		 readl(camsv->base + CAMSV_IMGO_BASE_ADDR));
+		 "engine armed %ux%u: MODULE_EN 0x%08x SEN_MODE 0x%08x VF 0x%08x GRAB 0x%08x/0x%08x XSIZE 0x%08x STRIDE 0x%08x FBC 0x%08x IMGO 0x%08x\n",
+		 w, h, readl(sv + CAMSV_MODULE_EN), readl(sv + CAMSV_TG_SEN_MODE),
+		 readl(sv + CAMSV_TG_VF_CON), readl(sv + CAMSV_TG_GRAB_PXL),
+		 readl(sv + CAMSV_TG_GRAB_LIN), readl(sv + CAMSV_IMGO_XSIZE),
+		 readl(sv + CAMSV_IMGO_STRIDE), readl(sv + CAMSV_FBC_IMGO_CTL1),
+		 readl(sv + CAMSV_IMGO_BASE_ADDR));
+}
+
+/* The next buffer: the address latches at the next SOF, RCNT_INC hands it to the FBC. */
+static void camsv_hw_next(struct mtk_camsv *camsv, dma_addr_t base)
+{
+	writel(lower_32_bits(base), camsv->base + CAMSV_IMGO_BASE_ADDR);
+	writel(readl(camsv->base + CAMSV_IMGO_FBC) | BIT(0), camsv->base + CAMSV_IMGO_FBC);
 }
 
 static void camsv_hw_stop(struct mtk_camsv *camsv)
 {
-	writel(0, camsv->base + CAMSV_TG_VF_CON);
-	writel(0, camsv->base + CAMSV_MODULE_EN);
 	writel(0, camsv->base + CAMSV_INT_EN);
+	readl(camsv->base + CAMSV_INT_STATUS);
+	writel(0, camsv->base + CAMSV_TG_VF_CON);
+	writel(0, camsv->base + CAMSV_TG_SEN_MODE);
+	writel(CAMSV_MODULE_EN_DEFAULT, camsv->base + CAMSV_MODULE_EN);
+	writel(0, camsv->base + CAMSV_FBC_IMGO_CTL1);
 }
 
 /* ---- vb2 ---- */
@@ -260,23 +378,23 @@ static void camsv_buf_queue(struct vb2_buffer *vb)
 {
 	struct mtk_camsv *camsv = vb2_get_drv_priv(vb->vb2_queue);
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+	unsigned long flags;
 
 	vbuf->field = V4L2_FIELD_NONE;
 
-	/* One buffer per frame: the engine owns one, the queue holds the rest. */
-	if (camsv->cur_buf)
-		return;
-
-	camsv->cur_buf = vbuf;
-
-	if (vb2_is_streaming(vb->vb2_queue)) {
-		dma_addr_t addr = vb2_dma_contig_plane_dma_addr(vb, 0);
-
-		dev_info(camsv->dev, "arm buffer %u at %pad, size %zu\n", vb->index,
-			 &addr, vb2_plane_size(vb, 0));
-		camsv_hw_start(camsv, addr, camsv->cur_fmt.fmt.pix.width,
-			       camsv->cur_fmt.fmt.pix.height);
+	/*
+	 * vb2 hands every buffer queued before STREAMON to this callback first and only then calls
+	 * start_streaming, so the list is the one source of buffers; the engine gets one at a time.
+	 * While streaming with the engine starved, the new buffer goes straight to it.
+	 */
+	spin_lock_irqsave(&camsv->buf_lock, flags);
+	if (vb2_start_streaming_called(vb->vb2_queue) && !camsv->cur_buf) {
+		camsv->cur_buf = vbuf;
+		camsv_hw_next(camsv, vb2_dma_contig_plane_dma_addr(vb, 0));
+	} else {
+		list_add_tail(&to_camsv_buf(vbuf)->list, &camsv->bufs);
 	}
+	spin_unlock_irqrestore(&camsv->buf_lock, flags);
 }
 
 static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
@@ -331,6 +449,9 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 
 	camsv->sequence = 0;
 	camsv->irq_count = 0;
+	camsv->sof_count = 0;
+	camsv->err_count = 0;
+	camsv->err_status = 0;
 	camsv->cur_buf = NULL;
 	camsv_hw_reset(camsv);
 
@@ -341,14 +462,16 @@ static int camsv_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (camsv->stream_dump)
 		camsv_dump_engine(camsv);
 
-	writel(CAMSV_INT_EN_ALL, camsv->base + CAMSV_INT_EN);
-
 	dev_info(camsv->dev, "stream on: %u buffers, %ux%u, INT_EN 0x%08x (0x%08llx)\n", count,
 		 camsv->cur_fmt.fmt.pix.width, camsv->cur_fmt.fmt.pix.height,
 		 readl(camsv->base + CAMSV_INT_EN),
 		 (unsigned long long)camsv->base_pa + CAMSV_INT_EN);
 
 	/* A buffer queued before streamon starts the engine, the rest follow one per frame. */
+	camsv->status_seen = 0;
+	spin_lock_irq(&camsv->buf_lock);
+	camsv->cur_buf = camsv_take_buf(camsv);
+	spin_unlock_irq(&camsv->buf_lock);
 	if (camsv->cur_buf) {
 		dma_addr_t addr = vb2_dma_contig_plane_dma_addr(&camsv->cur_buf->vb2_buf, 0);
 
@@ -371,7 +494,7 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 {
 	struct mtk_camsv *camsv = vb2_get_drv_priv(q);
 
-	struct vb2_v4l2_buffer *buf, *tmp;
+	struct vb2_v4l2_buffer *buf;
 
 	{
 		struct media_pad *remote =
@@ -396,17 +519,19 @@ static void camsv_stop_streaming(struct vb2_queue *q)
 	 * buffer from queued_list, so this walk terminates; an index-based accessor would not (it
 	 * returns the same buffer for ever, which is what made a killed stream spin in the kernel).
 	 */
-	list_for_each_entry_safe(buf, tmp, &camsv->queue.queued_list,
-				 vb2_buf.queued_entry)
+	spin_lock_irq(&camsv->buf_lock);
+	while ((buf = camsv_take_buf(camsv)))
 		vb2_buffer_done(&buf->vb2_buf, VB2_BUF_STATE_ERROR);
-
 	buf = camsv->cur_buf;
 	camsv->cur_buf = NULL;
+	spin_unlock_irq(&camsv->buf_lock);
 	if (buf)
 		vb2_buffer_done(&buf->vb2_buf, VB2_BUF_STATE_ERROR);
 
-	dev_info(camsv->dev, "stream off, %u frames, %u interrupts\n", camsv->sequence,
-		 camsv->irq_count);
+	dev_info(camsv->dev, "stream off, %u frames, %u interrupts, %u SOF, %u errors (status 0x%08x, all seen 0x%08x), TG 0x%08x, FBC 0x%08x/0x%08x\n",
+		 camsv->sequence, camsv->irq_count, camsv->sof_count, camsv->err_count,
+		 camsv->err_status, camsv->status_seen, readl(camsv->base + CAMSV_TG_INTER_ST),
+		 readl(camsv->base + CAMSV_FBC_IMGO_CTL1), readl(camsv->base + CAMSV_FBC_IMGO_CTL2));
 
 	pm_runtime_put_autosuspend(camsv->dev);
 }
@@ -437,8 +562,8 @@ static int camsv_enum_fmt(struct file *file, void *priv, struct v4l2_fmtdesc *f)
 	if (f->index)
 		return -EINVAL;
 
-	f->pixelformat = V4L2_PIX_FMT_SBGGR10;
-	strscpy(f->description, "10-bit Bayer BGGR", sizeof(f->description));
+	f->pixelformat = V4L2_PIX_FMT_SGRBG10P;
+	strscpy(f->description, "10-bit Bayer GRBG packed", sizeof(f->description));
 
 	return 0;
 }
@@ -458,8 +583,13 @@ static int camsv_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 
 	pix->width = clamp_t(u32, pix->width, 16, CAMSV_MAX_WIDTH) & ~1U;
 	pix->height = clamp_t(u32, pix->height, 16, CAMSV_MAX_HEIGHT) & ~1U;
-	pix->pixelformat = V4L2_PIX_FMT_SBGGR10;
-	pix->bytesperline = pix->width * 2;
+	/*
+	 * RAW10 packed by the engine, four pixels in five bytes (FMT_SEL 1, packer mode 0); the IMX355
+	 * reads out GRBG. Whether the byte order is the MIPI one this fourcc names or MediaTek's own
+	 * bit stream is checked on a captured frame, not assumed.
+	 */
+	pix->pixelformat = V4L2_PIX_FMT_SGRBG10P;
+	pix->bytesperline = camsv_stride(pix->width);
 	pix->sizeimage = pix->bytesperline * pix->height;
 	pix->field = V4L2_FIELD_NONE;
 	pix->colorspace = V4L2_COLORSPACE_RAW;
@@ -522,34 +652,33 @@ static irqreturn_t mtk_camsv_irq(int irq, void *data)
 
 	camsv->irq_count++;
 
-	status = readl(camsv->base + CAMSV_INT_STATUS);
+	status = readl(camsv->base + CAMSV_INT_STATUS);	/* read-clear */
 	if (!status)
 		return IRQ_NONE;
 
-	writel(status, camsv->base + CAMSV_INT_STATUS);
+	camsv->status_seen |= status;
+	if (status & CAMSV_INT_SOF)
+		camsv->sof_count++;
+	if (status & (CAMSV_INT_TG_ERR | CAMSV_INT_TG_GBERR | CAMSV_INT_IMGO_ERR |
+		      CAMSV_INT_IMGO_OVERRUN)) {
+		camsv->err_count++;
+		camsv->err_status |= status;
+	}
 
-	/* Complete the buffer the engine was writing and hand the next one to it. */
-	if (camsv->cur_buf) {
+	/* Frame written: complete it and give the engine the next queued buffer. */
+	spin_lock(&camsv->buf_lock);
+	if ((status & CAMSV_INT_PASS1_DONE) && camsv->cur_buf) {
 		struct vb2_v4l2_buffer *done = camsv->cur_buf;
-		struct vb2_v4l2_buffer *next;
+		struct vb2_v4l2_buffer *next = camsv_take_buf(camsv);
 
-		camsv->cur_buf = NULL;
+		camsv->cur_buf = next;
+		if (next)
+			camsv_hw_next(camsv, vb2_dma_contig_plane_dma_addr(&next->vb2_buf, 0));
 		done->vb2_buf.timestamp = ktime_get_ns();
 		done->sequence = camsv->sequence++;
 		vb2_buffer_done(&done->vb2_buf, VB2_BUF_STATE_DONE);
-
-		next = list_first_entry_or_null(&camsv->queue.queued_list,
-						struct vb2_v4l2_buffer, vb2_buf.queued_entry);
-		if (next && next->vb2_buf.state == VB2_BUF_STATE_QUEUED) {
-			dma_addr_t addr = vb2_dma_contig_plane_dma_addr(&next->vb2_buf, 0);
-
-			camsv->cur_buf = next;
-			camsv_hw_start(camsv, addr, camsv->cur_fmt.fmt.pix.width,
-				       camsv->cur_fmt.fmt.pix.height);
-		}
 	}
-
-	dev_dbg(camsv->dev, "frame done, INT_STATUS 0x%08x\n", status);
+	spin_unlock(&camsv->buf_lock);
 
 	return IRQ_HANDLED;
 }
@@ -613,7 +742,14 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	camsv->tg_clk = devm_clk_get_optional(dev, "tg");
 	camsv->gals_clk = devm_clk_get_optional(dev, "gals");
 
+	/* the engine writes a per-frame header to FRAME_WRITE_BASE: give it memory, not address 0 */
+	camsv->scratch = dmam_alloc_coherent(dev, CAMSV_SCRATCH_SIZE, &camsv->scratch_dma, GFP_KERNEL);
+	if (!camsv->scratch)
+		return -ENOMEM;
+
 	mutex_init(&camsv->vdev_lock);
+	INIT_LIST_HEAD(&camsv->bufs);
+	spin_lock_init(&camsv->buf_lock);
 	platform_set_drvdata(pdev, camsv);
 
 	camsv->cur_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -632,7 +768,7 @@ static int mtk_camsv_probe(struct platform_device *pdev)
 	camsv->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC |
 				       V4L2_BUF_FLAG_TSTAMP_SRC_SOE;
 	camsv->queue.drv_priv = camsv;
-	camsv->queue.buf_struct_size = sizeof(struct vb2_v4l2_buffer);
+	camsv->queue.buf_struct_size = sizeof(struct camsv_buf);
 	camsv->queue.ops = &camsv_queue_ops;
 	camsv->queue.mem_ops = &vb2_dma_contig_memops;
 	camsv->queue.dev = dev;
