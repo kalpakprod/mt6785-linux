@@ -1087,6 +1087,31 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 */
 			writel((readl(sel) & ~(0xfu << sh)) | ((seninf_idx & 0xf) << sh), sel);
 
+			/*
+			 * The cam mux checker: pixel mode in bits 1:0 of 0x500 + 0x10n
+			 * (setCamMuxChkPixelMode 0x30a38) and the expected size, width | height << 16,
+			 * at 0x504 + 0x10n (setSeninfCamMuxSrc 0x30f84-0x30fbc). Every checker resets to
+			 * 2 (measured comb49); the receiver mux and the camsv run one pixel per clock, and
+			 * a mismatch is the IMGO error the camsv raised every frame (0x360 = 0xffff8288,
+			 * the value the cezanne bring-up saw in 2-pixel mode).
+			 */
+			{
+				struct media_pad *remote = mtk_seninf_upstream(seninf);
+				struct v4l2_subdev_format f = { .which = V4L2_SUBDEV_FORMAT_ACTIVE };
+
+				writel(readl(cmux + 0x100 + 0x10 * n) & ~0x3u, cmux + 0x100 + 0x10 * n);
+				if (!IS_ERR(remote)) {
+					f.pad = remote->index;
+					if (!v4l2_subdev_call_state_active(media_entity_to_v4l2_subdev(remote->entity),
+									  pad, get_fmt, &f))
+						writel(f.format.width | f.format.height << 16,
+						       cmux + 0x104 + 0x10 * n);
+				}
+				dev_info(seninf->dev, "cam mux %u checker: mode 0x%08x, size 0x%08x (%ux%u)\n",
+					 n, readl(cmux + 0x100 + 0x10 * n), readl(cmux + 0x104 + 0x10 * n),
+					 f.format.width, f.format.height);
+			}
+
 			dev_info(seninf->dev,
 				 "cam mux 0x%08llx: ctrl 0x%08x, en 0x%08x, src 0x%08x, sel 0x%08x\n",
 				 (unsigned long long)seninf->base_pa + 0x400,
