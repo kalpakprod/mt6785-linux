@@ -60,6 +60,30 @@
 #define SENINF_CSI2_INT_STATUS		0x0A14
 #define SENINF_CSI2_LNRD_FSM		0x0A2C
 #define SENINF_CSI2_FRAME_LINE_NUM	0x0A30
+/*
+ * The C-PHY digital block, resolved from the HAL's own constructor.
+ *
+ * SeninfDrvImp::init (libcam.halsensor.so 0x2e580) fills the per-port pointers with a vector add of a
+ * .rodata offset table onto the SENINF mapping base taken from [this+0x38]: the table holds 0x3000,
+ * 0x7000 and 0xb000 for the three C-PHY objects stored at [this+0x120], [0x128] and [0x130]
+ * (file offsets 0x118d0 and 0x119a0), and 0x2000, 0x6000, 0xa000 for the D-PHY wrappers at
+ * [this+0x138...]. So port p's C-PHY block is SENINF + 0x3000 + 0x4000 * p - inside this device's
+ * window, not a separate one, which is why no C-PHY register window exists in the device tree.
+ *
+ * The HAL then writes two things there: hal_csirx_cphy_init (0x32198) sets bit 4 of +0x18, and
+ * hal_csirx_cphy_setting (0x33108) sets bits 0, 1 and 2 of +0x00 and clears bit 3, with the bits
+ * repeated for the one- and two-trio cases. Both are reproduced verbatim below, read back and logged.
+ */
+#define SENINF_CPHY_OBJ(port)		(0x3000 + 0x4000 * (port))
+
+static int cphy_setup;
+module_param(cphy_setup, int, 0644);
+MODULE_PARM_DESC(cphy_setup,
+		 "1 = program the HAL's C-PHY digital block for the streaming port before the sensor starts");
+
+/* Pads: 0, 1 and 3 are sensors, 2 is the source towards the capture engines. */
+#define MTK_SENINF_PAD_SOURCE		2
+
 #define SENINF_MUX_IRQ_STATUS		0x0D18
 #define SENINF_MUX_SIZE			0x0D30
 
@@ -210,15 +234,32 @@ struct mtk_seninf {
 	struct mtk_cam_core *cam;
 };
 
+/*
+ * The pad count is the subdev's, not a constant: a kernel without the fourth pad (before the C-PHY
+ * sensor existed) must refuse pad 3 instead of indexing past its array - that NULL deref in the 500 ms
+ * worker is what hung the phone on 19.11 (poco-m5s/evidence/comb7/comb36-cphy-pass-oops.txt).
+ */
+static unsigned int mtk_seninf_pads(const struct mtk_seninf *seninf)
+{
+	return seninf->sd.entity.num_pads;
+}
+
+/* A sink pad that exists and is a sensor (never the source pad 2), or ERR. */
+static struct media_pad *mtk_seninf_sink_pad(struct mtk_seninf *seninf, unsigned int pad)
+{
+	if (pad >= mtk_seninf_pads(seninf) || pad == MTK_SENINF_PAD_SOURCE) {
+		dev_err(seninf->dev, "pad %u is not a sensor pad (this kernel has %u pads, source is %u)\n",
+			pad, mtk_seninf_pads(seninf), MTK_SENINF_PAD_SOURCE);
+		return ERR_PTR(-EINVAL);
+	}
+
+	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
+}
+
 /* The upstream pad of this stream: the sink pad the parameter names, or the first one. */
 static struct media_pad *mtk_seninf_upstream(struct mtk_seninf *seninf)
 {
-	unsigned int pad = sensor_pad < 0 ? 0 : sensor_pad;
-
-	if (pad >= 4)
-		return ERR_PTR(-EINVAL);
-
-	return media_pad_remote_pad_unique(&seninf->sd.entity.pads[pad]);
+	return mtk_seninf_sink_pad(seninf, sensor_pad < 0 ? 0 : sensor_pad);
 }
 
 static int mtk_seninf_runtime_resume(struct device *dev)
@@ -332,6 +373,22 @@ static int mtk_seninf_regs_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(mtk_seninf_regs);
 
+static int mtk_seninf_pads_show(struct seq_file *s, void *unused)
+{
+	struct mtk_seninf *seninf = s->private;
+	unsigned int i;
+
+	seq_printf(s, "pads %u source %u\n", mtk_seninf_pads(seninf),
+		   MTK_SENINF_PAD_SOURCE);
+	for (i = 0; i < mtk_seninf_pads(seninf); i++)
+		seq_printf(s, "pad %u %s\n", i,
+			   seninf->sd.entity.pads[i].flags & MEDIA_PAD_FL_SINK ?
+			   "sink" : "source");
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mtk_seninf_pads);
+
 static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 {
 	seninf->debugfs = debugfs_create_dir(dev_name(seninf->dev), NULL);
@@ -344,6 +401,8 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
 			    &mtk_seninf_regs_fops);
 	debugfs_create_file("clear", 0200, seninf->debugfs, seninf,
 			    &mtk_seninf_clear_fops);
+	debugfs_create_file("pads", 0444, seninf->debugfs, seninf,
+			    &mtk_seninf_pads_fops);
 }
 
 /*
@@ -352,6 +411,33 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
  * the camsys CG_CON word. A mux parked on the 26 MHz crystal, or a gate bit still closed while the
  * driver thinks it enabled it, would look exactly like "no packets" from the receiver side.
  */
+static void mtk_seninf_cphy_program(struct mtk_seninf *seninf, unsigned int port,
+				    unsigned int trios)
+{
+	void __iomem *obj = seninf->base + SENINF_CPHY_OBJ(port);
+	u32 v = readl(obj);
+
+	/* hal_csirx_cphy_setting, in its own order: 0x1, 0x2, 0x4 set, 0x8 cleared. */
+	v |= BIT(0);
+	v |= BIT(1);
+	v |= BIT(2);
+	v &= ~BIT(3);
+	/* the one- and two-trio cases repeat bits 0-2 (:0x331ac-:0x331c0). */
+	if (trios < 3) {
+		v |= BIT(0);
+		v |= BIT(1);
+	}
+	writel(v, obj);
+
+	/* hal_csirx_cphy_init: bit 4 of +0x18. */
+	writel(readl(obj + 0x18) | BIT(4), obj + 0x18);
+
+	dev_info(seninf->dev,
+		 "cphy obj 0x%08x (port %u, %u trios): +0x00 0x%08x +0x18 0x%08x\n",
+		 (u32)(seninf->base_pa + SENINF_CPHY_OBJ(port)), port, trios,
+		 readl(obj), readl(obj + 0x18));
+}
+
 static void mtk_seninf_clock_state(struct mtk_seninf *seninf, const char *when)
 {
 	unsigned long gate = seninf->clks[0].clk ? clk_get_rate(seninf->clks[0].clk) : 0;
@@ -674,10 +760,22 @@ static void mtk_seninf_probe_other_sensor(struct mtk_seninf *seninf)
 	void __iomem *in = seninf_inst(seninf);
 	u32 level = 0, keep;
 
-	cur = media_pad_remote_pad_unique(&seninf->sd.entity.pads[cur_pad]);
-	other = media_pad_remote_pad_unique(&seninf->sd.entity.pads[other_pad]);
-	if (IS_ERR(cur) || IS_ERR(other))
+	/*
+	 * Pad 3 is the C-PHY sensor: it has no D-PHY sibling that shares the MIPI switch, and probing
+	 * "the other sensor" from it would start a D-PHY part on a port configured for trios.
+	 */
+	if (cur_pad == 3 || other_pad == 3) {
+		dev_info(seninf->dev, "probe: pad %u has no D-PHY sibling, skipped\n", cur_pad);
 		return;
+	}
+
+	cur = mtk_seninf_sink_pad(seninf, cur_pad);
+	other = mtk_seninf_sink_pad(seninf, other_pad);
+	if (IS_ERR(cur) || IS_ERR(other)) {
+		dev_info(seninf->dev, "probe: no upstream sensor on pad %u or %u, skipped\n",
+			 cur_pad, other_pad);
+		return;
+	}
 
 	cur_src = media_entity_to_v4l2_subdev(cur->entity);
 	other_src = media_entity_to_v4l2_subdev(other->entity);
@@ -1125,6 +1223,13 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 top_off, before, readl(seninf->base + top_off), want,
 			 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
 			 readl(seninf->base + 0x68));
+	}
+
+	/* The C-PHY digital block of the streaming port, when a trial asks for it. */
+	if (cphy_setup) {
+		unsigned int trios = mtk_seninf_lanes(seninf);
+
+		mtk_seninf_cphy_program(seninf, port, trios);
 	}
 
 	/* The top mux word and every mux enabled, plus the read-only window dumps. */

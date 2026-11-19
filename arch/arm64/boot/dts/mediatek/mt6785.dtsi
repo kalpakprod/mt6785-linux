@@ -2125,7 +2125,13 @@
 			 * gives this SoC; the second window is what lanes, termination and settling
 			 * are programmed in.
 			 */
-			reg = <0 0x1a040000 0 0x5000>;
+			/*
+			 * 0x13000, not 0x5000: the HAL maps this block as 19 pages and its per-port
+			 * C-PHY blocks sit at +0x3000 + 0x4000*n (the offset table it adds to this base
+			 * holds 0x3000, 0x7000, 0xb000), so the window has to reach 0x13000 to hold
+			 * them all. The device tree's own SENINF_MAP_LENGTH_REG is 0xA000.
+			 */
+			reg = <0 0x1a040000 0 0x13000>;
 			mediatek,cam = <&cam>;
 			/*
 			 * All three analog ports: the port a sensor lands on is a HAL setting, and
