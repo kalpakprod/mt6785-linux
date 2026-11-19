@@ -1091,9 +1091,9 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 * The cam mux checker: pixel mode in bits 1:0 of 0x500 + 0x10n
 			 * (setCamMuxChkPixelMode 0x30a38) and the expected size, width | height << 16,
 			 * at 0x504 + 0x10n (setSeninfCamMuxSrc 0x30f84-0x30fbc). Every checker resets to
-			 * 2 (measured comb49); the receiver mux and the camsv run one pixel per clock, and
-			 * a mismatch is the IMGO error the camsv raised every frame (0x360 = 0xffff8288,
-			 * the value the cezanne bring-up saw in 2-pixel mode).
+			 * 2 (measured comb49); the receiver mux and the camsv run one pixel per clock. comb50
+			 * measured the checker then agreeing with the frame (0x528 = 0x09a00cd0); it did not
+			 * end the camsv's IMGO error, which was the packer mode (comb51, isolated comb52iso).
 			 */
 			{
 				struct media_pad *remote = mtk_seninf_upstream(seninf);
