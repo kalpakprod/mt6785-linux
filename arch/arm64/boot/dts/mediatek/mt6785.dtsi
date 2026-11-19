@@ -2126,12 +2126,12 @@
 			 * are programmed in.
 			 */
 			/*
-			 * 0x13000, not 0x5000: the HAL maps this block as 19 pages and its per-port
-			 * C-PHY blocks sit at +0x3000 + 0x4000*n (the offset table it adds to this base
-			 * holds 0x3000, 0x7000, 0xb000), so the window has to reach 0x13000 to hold
-			 * them all. The device tree's own SENINF_MAP_LENGTH_REG is 0xA000.
+			 * 0x10000, not 0x5000: the per-port C-PHY blocks sit at +0x3000 + 0x4000*n (the
+			 * HAL's offset table holds 0x3000, 0x7000, 0xb000), so the window has to reach
+			 * 0xc000. The HAL maps 0x13000, but the CAMSV capture block begins at 0x1a050000
+			 * and its region must stay free, so this window ends exactly there.
 			 */
-			reg = <0 0x1a040000 0 0x13000>;
+			reg = <0 0x1a040000 0 0x10000>;
 			mediatek,cam = <&cam>;
 			/*
 			 * All three analog ports: the port a sensor lands on is a HAL setting, and
