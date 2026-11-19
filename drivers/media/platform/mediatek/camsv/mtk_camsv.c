@@ -640,8 +640,8 @@ static int camsv_enum_fmt(struct file *file, void *priv, struct v4l2_fmtdesc *f)
 	if (f->index)
 		return -EINVAL;
 
-	f->pixelformat = V4L2_PIX_FMT_SGRBG10P;
-	strscpy(f->description, "10-bit Bayer GRBG packed", sizeof(f->description));
+	f->pixelformat = V4L2_PIX_FMT_SRGGB10P;
+	strscpy(f->description, "10-bit Bayer RGGB, MediaTek packed", sizeof(f->description));
 
 	return 0;
 }
@@ -662,11 +662,13 @@ static int camsv_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	pix->width = clamp_t(u32, pix->width, 16, CAMSV_MAX_WIDTH) & ~1U;
 	pix->height = clamp_t(u32, pix->height, 16, CAMSV_MAX_HEIGHT) & ~1U;
 	/*
-	 * RAW10 packed by the engine, four pixels in five bytes (FMT_SEL 1, packer mode 0); the IMX355
-	 * reads out GRBG. Whether the byte order is the MIPI one this fourcc names or MediaTek's own
-	 * bit stream is checked on a captured frame, not assumed.
+	 * RAW10 packed by the engine (FMT_SEL 1, packer mode 1): MediaTek's little-endian bit stream,
+	 * four pixels in five bytes, lines 64-byte aligned. comb51 decoded the IMX355's colour-bar test
+	 * pattern with it: black level 64, eight bars in the standard order, R at (0,0) - RGGB, the code
+	 * the sensor reports (MEDIA_BUS_FMT_SRGGB10_1X10). The fourcc is the closest V4L2 name; its
+	 * MIPI byte layout differs from this bit stream, which userspace must unpack as MediaTek's.
 	 */
-	pix->pixelformat = V4L2_PIX_FMT_SGRBG10P;
+	pix->pixelformat = V4L2_PIX_FMT_SRGGB10P;
 	pix->bytesperline = camsv_stride(pix->width);
 	pix->sizeimage = pix->bytesperline * pix->height;
 	pix->field = V4L2_FIELD_NONE;
