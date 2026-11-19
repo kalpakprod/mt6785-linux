@@ -2089,31 +2089,36 @@
 		csi_rx_phy: phy@11c80000 {
 			compatible = "mediatek,mt8365-csi-rx";
 			/*
-			 * Two halves, as the stock tree describes them: CSI0A at 0x11c80000 and CSI0B at
-			 * 0x11c81000, each 0x1000 (the vendor nodes mipi_rx_ana_csi0a/csi0b), and the
-			 * same split the upstream PHY addresses (MIPI_RX_ANA00_CSI0B = 0x1000 in the
-			 * ChromeOS register header). One window covers both.
+			 * 0x4000 per CSI port, not 0x2000: the vendor kernel's own seninf driver maps the
+			 * analogue block as one window of 0xC000 at 0x11c80000 (seninf_cfg.h:12-16,
+			 * SENINF_MAP_BASE_ANA/LENGTH_ANA) and the HAL addresses the four pages of a port as
+			 * +0x0000 (A), +0x1000 (B), +0x2000 (D-PHY digital) and +0x3000 (C-PHY) - offsets
+			 * 0x2000/0x6000/0xa000 and 0x3000/0x7000/0xb000 for the three ports, read out of the
+			 * .rodata table its constructor adds to that base (libcam.halsensor.so 0x118d0,
+			 * 0x119a0). The six 0x1000 nodes the vendor device tree names are aliases inside
+			 * those three regions, not the functional split.
 			 */
-			reg = <0 0x11c80000 0 0x2000>;
+			reg = <0 0x11c80000 0 0x4000>;
 			num-lanes = <4>;
 			#phy-cells = <1>;
 		};
 
 		/*
-		 * The other two analog ports, the same pair of halves each and the same window size:
-		 * CSI1A/CSI1B at 0x11c82000/0x11c83000 and CSI2A/CSI2B at 0x11c84000/0x11c85000
-		 * (vendor mt6785.dts:1497-1525, mipi_rx_ana_csi1a/csi1b and csi2a/csi2b).
+		 * The other two ports, one 0x4000 region each (see the comment above): 0x11c84000 and
+		 * 0x11c88000. Together the three cover the 0xC000 the vendor kernel maps for the
+		 * analogue block, so the D-PHY digital page (+0x2000) and the C-PHY page (+0x3000) of
+		 * every port are inside a window this driver can reach.
 		 */
-		csi_rx_phy1: phy@11c82000 {
+		csi_rx_phy1: phy@11c84000 {
 			compatible = "mediatek,mt8365-csi-rx";
-			reg = <0 0x11c82000 0 0x2000>;
+			reg = <0 0x11c84000 0 0x4000>;
 			num-lanes = <4>;
 			#phy-cells = <1>;
 		};
 
-		csi_rx_phy2: phy@11c84000 {
+		csi_rx_phy2: phy@11c88000 {
 			compatible = "mediatek,mt8365-csi-rx";
-			reg = <0 0x11c84000 0 0x2000>;
+			reg = <0 0x11c88000 0 0x4000>;
 			num-lanes = <4>;
 			#phy-cells = <1>;
 		};

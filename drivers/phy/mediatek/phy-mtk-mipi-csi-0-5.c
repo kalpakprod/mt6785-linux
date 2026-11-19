@@ -489,6 +489,50 @@ static void mtk_mipi_phy_lane_roles(struct device *dev, void __iomem *base)
 		 readl(base + CSIXB_OFFSET + 0x00));
 }
 
+/*
+ * The C-PHY page of this port, with the stock HAL's two writes and nothing else.
+ *
+ * Where the page is: the vendor kernel maps the analogue block as one window of 0xC000 at
+ * 0x11C80000 (los-mt6785, drivers/misc/mediatek/imgsensor/src/mt6785/seninf/seninf_cfg.h:12-16,
+ * SENINF_MAP_BASE_ANA / SENINF_MAP_LENGTH_ANA), and the HAL addresses a port's four pages inside it
+ * as +0x0000 (A), +0x1000 (B), +0x2000 (D-PHY digital) and +0x3000 (C-PHY). The offsets are the
+ * .rodata table SeninfDrvImp::init (libcam.halsensor.so 0x2e580) adds to that base: 0x2000, 0x6000,
+ * 0xa000 for the D-PHY wrappers and 0x3000, 0x7000, 0xb000 for the C-PHY objects. This node covers
+ * one 0x4000 region, so the page is 0x3000 above its own base.
+ *
+ * What is written, from the HAL: hal_csirx_cphy_setting (0x33108) sets bits 0, 1 and 2 of +0x00 and
+ * clears bit 3, repeating bits 0-2 for the one- and two-trio cases; hal_csirx_cphy_init (0x32198)
+ * sets bit 4 of +0x18. The read-back is checked and a mismatch is logged loudly - the previous
+ * attempt at this wrote into the SENINF window by mistake and read zeros, and a silent zero is what
+ * wasted a trial.
+ */
+#define MIPI_RX_CPHY_PAGE		0x3000
+#define MIPI_RX_CPHY_SETTING_BITS	(BIT(0) | BIT(1) | BIT(2))
+#define MIPI_RX_CPHY_INIT_BITS		BIT(4)
+
+static void mtk_mipi_phy_cphy(struct device *dev, void __iomem *base, unsigned int trios)
+{
+	void __iomem *page = base + MIPI_RX_CPHY_PAGE;
+	u32 v, want, got;
+
+	v = readl(page + 0x00);
+	v |= MIPI_RX_CPHY_SETTING_BITS;
+	v &= ~BIT(3);
+	if (trios < 3)
+		v |= BIT(0) | BIT(1);
+	want = v;
+	writel(want, page + 0x00);
+	got = readl(page + 0x00);
+	dev_info(dev, "cphy +0x00: wrote 0x%08x reads 0x%08x%s\n", want, got,
+		 got == want ? "" : "  MISMATCH");
+
+	want = readl(page + 0x18) | MIPI_RX_CPHY_INIT_BITS;
+	writel(want, page + 0x18);
+	got = readl(page + 0x18);
+	dev_info(dev, "cphy +0x18: wrote 0x%08x reads 0x%08x%s\n", want, got,
+		 got == want ? "" : "  MISMATCH");
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
@@ -621,6 +665,10 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 		dev_info(&phy->dev, "clock mode enabled on every lane\n");
 	}
 
+	/* The C-PHY page of this port, when the port is in C-PHY mode. */
+	if (port->type == CDPHY && port->mode == CPHY)
+		mtk_mipi_phy_cphy(&phy->dev, base, port->num_lanes);
+
 	/* The lane-role permutations a trial asks for, then the state as it stands. */
 	mtk_mipi_phy_lane_roles(&phy->dev, base);
 	mtk_mipi_phy_decode(&phy->dev, base, "enables");
@@ -691,7 +739,7 @@ static struct phy *mtk_mipi_cdphy_xlate(struct device *dev,
 			/*
 			 * C-PHY: three trios, no separate clock lane. The block is a combo, so the same
 			 * instance serves both modes; power_on selects the mode by the RG_CSI0A_CPHY_EN bit
-			 * and applies the C-PHY field set (mtk_mipi_phy_cphy_setup below). This is the mode
+			 * and its page is programmed by mtk_mipi_phy_cphy() below. This is the mode
 			 * the OV64B40 on this board needs and the only one no trial has run.
 			 */
 			priv->mode = CPHY;

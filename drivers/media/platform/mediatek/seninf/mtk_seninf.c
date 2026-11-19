@@ -60,27 +60,6 @@
 #define SENINF_CSI2_INT_STATUS		0x0A14
 #define SENINF_CSI2_LNRD_FSM		0x0A2C
 #define SENINF_CSI2_FRAME_LINE_NUM	0x0A30
-/*
- * The C-PHY digital block, resolved from the HAL's own constructor.
- *
- * SeninfDrvImp::init (libcam.halsensor.so 0x2e580) fills the per-port pointers with a vector add of a
- * .rodata offset table onto the SENINF mapping base taken from [this+0x38]: the table holds 0x3000,
- * 0x7000 and 0xb000 for the three C-PHY objects stored at [this+0x120], [0x128] and [0x130]
- * (file offsets 0x118d0 and 0x119a0), and 0x2000, 0x6000, 0xa000 for the D-PHY wrappers at
- * [this+0x138...]. So port p's C-PHY block is SENINF + 0x3000 + 0x4000 * p - inside this device's
- * window, not a separate one, which is why no C-PHY register window exists in the device tree.
- *
- * The HAL then writes two things there: hal_csirx_cphy_init (0x32198) sets bit 4 of +0x18, and
- * hal_csirx_cphy_setting (0x33108) sets bits 0, 1 and 2 of +0x00 and clears bit 3, with the bits
- * repeated for the one- and two-trio cases. Both are reproduced verbatim below, read back and logged.
- */
-#define SENINF_CPHY_OBJ(port)		(0x3000 + 0x4000 * (port))
-
-static int cphy_setup;
-module_param(cphy_setup, int, 0644);
-MODULE_PARM_DESC(cphy_setup,
-		 "1 = program the HAL's C-PHY digital block for the streaming port before the sensor starts");
-
 /* Pads: 0, 1 and 3 are sensors, 2 is the source towards the capture engines. */
 #define MTK_SENINF_PAD_SOURCE		2
 
@@ -411,33 +390,6 @@ static void mtk_seninf_debugfs_init(struct mtk_seninf *seninf)
  * the camsys CG_CON word. A mux parked on the 26 MHz crystal, or a gate bit still closed while the
  * driver thinks it enabled it, would look exactly like "no packets" from the receiver side.
  */
-static void mtk_seninf_cphy_program(struct mtk_seninf *seninf, unsigned int port,
-				    unsigned int trios)
-{
-	void __iomem *obj = seninf->base + SENINF_CPHY_OBJ(port);
-	u32 v = readl(obj);
-
-	/* hal_csirx_cphy_setting, in its own order: 0x1, 0x2, 0x4 set, 0x8 cleared. */
-	v |= BIT(0);
-	v |= BIT(1);
-	v |= BIT(2);
-	v &= ~BIT(3);
-	/* the one- and two-trio cases repeat bits 0-2 (:0x331ac-:0x331c0). */
-	if (trios < 3) {
-		v |= BIT(0);
-		v |= BIT(1);
-	}
-	writel(v, obj);
-
-	/* hal_csirx_cphy_init: bit 4 of +0x18. */
-	writel(readl(obj + 0x18) | BIT(4), obj + 0x18);
-
-	dev_info(seninf->dev,
-		 "cphy obj 0x%08x (port %u, %u trios): +0x00 0x%08x +0x18 0x%08x\n",
-		 (u32)(seninf->base_pa + SENINF_CPHY_OBJ(port)), port, trios,
-		 readl(obj), readl(obj + 0x18));
-}
-
 static void mtk_seninf_clock_state(struct mtk_seninf *seninf, const char *when)
 {
 	unsigned long gate = seninf->clks[0].clk ? clk_get_rate(seninf->clks[0].clk) : 0;
@@ -1223,13 +1175,6 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			 top_off, before, readl(seninf->base + top_off), want,
 			 readl(seninf->base + 0x60), readl(seninf->base + 0x64),
 			 readl(seninf->base + 0x68));
-	}
-
-	/* The C-PHY digital block of the streaming port, when a trial asks for it. */
-	if (cphy_setup) {
-		unsigned int trios = mtk_seninf_lanes(seninf);
-
-		mtk_seninf_cphy_program(seninf, port, trios);
 	}
 
 	/* The top mux word and every mux enabled, plus the read-only window dumps. */
