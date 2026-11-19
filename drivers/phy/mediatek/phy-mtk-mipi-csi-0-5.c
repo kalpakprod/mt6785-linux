@@ -537,6 +537,95 @@ static void mtk_mipi_phy_cphy(struct device *dev, void __iomem *base, unsigned i
 		 got == want ? "" : "  MISMATCH");
 }
 
+/*
+ * hal_csirx_phyA_init (libcam.halsensor.so 0x32208-0x32514), all 45 read-modify-writes in the HAL's order,
+ * on both halves of a full port. Each row is { offset, and-mask, or-mask }, copied from the disassembly.
+ * Applied to the reset values this gives, for both halves: 0x04 00084444, 0x08 10101010, 0x0c 00001010,
+ * 0x18/0x1c/0x20 83548354 (83558355 once the lane receivers are on), 0x30/0x3c 01080808 (computed 19.11
+ * and compared with the phone: comb42 had bits 2 and 18 of 0x18/0x1c and bit 18 of 0x20 clear).
+ * The HAL ends with Efuse(), which trims 0x08/0x0c from the efuse words; not ported yet.
+ */
+static const u32 mtk_hal_phya_init[][3] = {
+	{ 0x04, 0xfffffff8, 0x00000004 },
+	{ 0x04, 0xffffff8f, 0x00000040 },
+	{ 0x04, 0xfffff8ff, 0x00000400 },
+	{ 0x04, 0xffff8fff, 0x00004000 },
+	{ 0x04, 0xfff0ffff, 0x00080000 },
+	{ 0x18, 0xffffffcf, 0x00000010 },
+	{ 0x18, 0xffcfffff, 0x00100000 },
+	{ 0x1c, 0xffffffcf, 0x00000010 },
+	{ 0x1c, 0xffcfffff, 0x00100000 },
+	{ 0x20, 0xffffffcf, 0x00000010 },
+	{ 0x20, 0xffcfffff, 0x00100000 },
+	{ 0x18, 0xffffff3f, 0x00000040 },
+	{ 0x18, 0xff3fffff, 0x00400000 },
+	{ 0x1c, 0xffffff3f, 0x00000040 },
+	{ 0x1c, 0xff3fffff, 0x00400000 },
+	{ 0x20, 0xffffff3f, 0x00000040 },
+	{ 0x20, 0xff3fffff, 0x00400000 },
+	{ 0x18, 0xffffffff, 0x00000004 },
+	{ 0x18, 0xffffffff, 0x00040000 },
+	{ 0x1c, 0xffffffff, 0x00000004 },
+	{ 0x1c, 0xffffffff, 0x00040000 },
+	{ 0x20, 0xffffffff, 0x00000004 },
+	{ 0x20, 0xffffffff, 0x00040000 },
+	{ 0x18, 0xfffff0ff, 0x00000300 },
+	{ 0x18, 0xf0ffffff, 0x03000000 },
+	{ 0x1c, 0xfffff0ff, 0x00000300 },
+	{ 0x1c, 0xf0ffffff, 0x03000000 },
+	{ 0x20, 0xfffff0ff, 0x00000300 },
+	{ 0x20, 0xf0ffffff, 0x03000000 },
+	{ 0x08, 0xffffffe0, 0x00000010 },
+	{ 0x08, 0xffffe0ff, 0x00001000 },
+	{ 0x08, 0xffe0ffff, 0x00100000 },
+	{ 0x08, 0xe0ffffff, 0x10000000 },
+	{ 0x0c, 0xffffffe0, 0x00000010 },
+	{ 0x0c, 0xffffe0ff, 0x00001000 },
+	{ 0x30, 0xffffffe0, 0x00000008 },
+	{ 0x30, 0xffffe0ff, 0x00000800 },
+	{ 0x30, 0xffe0ffff, 0x00080000 },
+	{ 0x3c, 0xffffffe0, 0x00000008 },
+	{ 0x3c, 0xffffe0ff, 0x00000800 },
+	{ 0x3c, 0xffe0ffff, 0x00080000 },
+	{ 0x28, 0xffffffff, 0x00000001 },
+	{ 0x34, 0xffffffff, 0x00000001 },
+	{ 0x30, 0xe0ffffff, 0x01000000 },
+	{ 0x3c, 0xe0ffffff, 0x01000000 },
+};
+
+static void mtk_mipi_phy_hal_phya_init(void __iomem *h)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(mtk_hal_phya_init); i++) {
+		void __iomem *r = h + mtk_hal_phya_init[i][0];
+
+		writel((readl(r) & mtk_hal_phya_init[i][1]) | mtk_hal_phya_init[i][2], r);
+	}
+}
+
+/* The analogue half as the HAL leaves it (computed from its writes on the reset values), against ours. */
+static void mtk_mipi_phy_hal_check(struct device *dev, void __iomem *base)
+{
+	static const u32 want[2][16] = {
+		{ 0x00801a4e, 0x00084444, 0x10101010, 0x00001010, 0x80808080, 0x00000080, 0x83558355, 0x83558355, 0x83558355, 0x00000000, 0x0020000f, 0x00000000, 0x01080808, 0x0020000f, 0x00000000, 0x01080808 },
+		{ 0x0080124e, 0x00084444, 0x10101010, 0x00001010, 0x80808080, 0x00000080, 0x83558355, 0x83558355, 0x83558355, 0x00000000, 0x0020000f, 0x00000000, 0x01080808, 0x0020000f, 0x00000000, 0x01080808 },
+	};
+	unsigned int half, i, bad = 0;
+
+	for (half = 0; half < 2; half++)
+		for (i = 0; i < 16; i++) {
+			u32 got = readl(base + half * CSIXB_OFFSET + i * 4);
+
+			if (got != want[half][i]) {
+				bad++;
+				dev_info(dev, "hal check %s +0x%02x: hal %08x ours %08x  DIFF\n",
+					 half ? "B" : "A", i * 4, want[half][i], got);
+			}
+		}
+	dev_info(dev, "hal check: %u of 32 analogue words differ from the HAL's state\n", bad);
+}
+
 static int mtk_mipi_phy_power_on(struct phy *phy)
 {
 	struct mtk_mipi_cdphy_port *port = phy_get_drvdata(phy);
@@ -614,8 +703,12 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	/* End ANA EQ tuning */
 	mtk_phy_set_bits(base + MIPI_RX_ANA40_CSIXA, 0x90);
 
-	mtk_phy_update_field(base + MIPI_RX_ANA24_CSIXA, RG_CSIXA_RESERVE, 0x40);
-	mtk_phy_update_field(base + CSIXB_OFFSET + MIPI_RX_ANA24_CSIXA, RG_CSIXA_RESERVE, 0x40);
+	/*
+	 * The HAL's analogue init (replaces MT8365's RG_CSIXA_RESERVE = 0x40 in 0x24, which the MT6785 HAL
+	 * never writes: 0x24 stays at its reset value 0 on stock).
+	 */
+	mtk_mipi_phy_hal_phya_init(base);
+	mtk_mipi_phy_hal_phya_init(base + CSIXB_OFFSET);
 	mtk_phy_update_field(base + MIPI_RX_WRAPPER80_CSIXA, CSR_CSI_RST_MODE, 0);
 	mtk_phy_update_field(base + CSIXB_OFFSET + MIPI_RX_WRAPPER80_CSIXA, CSR_CSI_RST_MODE, 0);
 	/* ANA power on */
@@ -694,6 +787,8 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 
 	/* and the receivers of the lanes themselves, then the HAL's ready flag */
 	mtk_mipi_phy_lanes(&phy->dev, base, true);
+	if (!(port->type == CDPHY && port->mode == CPHY))
+		mtk_mipi_phy_hal_check(&phy->dev, base);
 
 		mtk_mipi_phy_dump(&phy->dev, base, "after");
 
