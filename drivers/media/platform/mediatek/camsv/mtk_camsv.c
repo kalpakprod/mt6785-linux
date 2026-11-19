@@ -107,6 +107,7 @@
 #define CAMSV_FBC_MODE			BIT(16)	/* union FBC_CTRL_1, cam_regs.h */
 #define CAMSV_FBC_BIT22			BIT(22)	/* BUF_CTRL::_enable sets it after FBC_EN */
 #define CAMSV_FMT_RAW10			1
+#define CAMSV_PAK_RAW10			1
 
 /* INT_STATUS bits of this chip (cam_regs.h:80-92), read-clear (camera_isp.c:8074-8076). */
 #define CAMSV_INT_VS1			BIT(0)
@@ -366,11 +367,19 @@ static void camsv_hw_start(struct mtk_camsv *camsv, u32 w, u32 h)
 	readl(sv + CAMSV_INT_STATUS);
 	writel(CAMSV_INT_MASK, sv + CAMSV_INT_EN);
 
-	/* TOP: RAW10, the engine's clocks, packer mode 0 at one pixel per clock */
+	/*
+	 * TOP, as CAMSV_TOP_CTRL::_config does it: FMT_SEL, then per format (jump table .rodata
+	 * 0x2e0de) the packer mode in PAK[2:0] - FMT_SEL 1 (RAW10) gives mode 1 (0xbb20c-0xbb388),
+	 * FMT_SEL 0 mode 0, FMT_SEL 2 mode 2 - and the pixel mode in PAK[5:4] (0 = one pixel);
+	 * then 0x3b0 bit 31 cleared, 0x3c4 all ones, 0x018 |= 0x61000000 (0xbaf78-0xbb048).
+	 * comb46-50 ran packer mode 0 under FMT_SEL 1: an IMGO error every frame, nothing written.
+	 */
 	writel(CAMSV_FMT_RAW10, sv + CAMSV_FMT_SEL);
 	writel(CAMSV_CLK_EN_ALL, sv + CAMSV_CLK_EN);
-	writel(readl(sv + CAMSV_PAK) & ~0x37u, sv + CAMSV_PAK);
+	writel((readl(sv + CAMSV_PAK) & ~0x37u) | CAMSV_PAK_RAW10, sv + CAMSV_PAK);
+	writel(readl(sv + 0x03b0) & ~BIT(31), sv + 0x03b0);
 	writel(0xffffffff, sv + CAMSV_DMA_ERR_CTL);
+	writel(readl(sv + 0x0018) | 0x61000000, sv + 0x0018);
 
 	/* IMGO: one frame per buffer, the engine's per-frame header into the scratch page */
 	writel(1, sv + CAMSV_DMA_DB_EN);
