@@ -83,7 +83,14 @@
 #define CAMSV_IMGO_OFST			0x0028
 #define CAMSV_IMGO_XSIZE		0x0030	/* bytes per line - 1 */
 #define CAMSV_IMGO_YSIZE		0x0034	/* lines - 1 */
-#define CAMSV_IMGO_STRIDE		0x0038
+#define CAMSV_IMGO_STRIDE		0x0038	/* 15:0 bytes, 18:16 bus size, 24 bus size enable */
+#define CAMSV_IMGO_CROP			0x0048	/* x in bus words | y << 16 */
+/*
+ * DMAO_CAMSV_B::_config (0xbca14-0xbcc94) always ORs BIT(24) and the bus size BusSizeCal()
+ * returns: tables at 0x2e0f8 by pixel mode, 1 (16-bit) for one pixel per clock with any format
+ * but 7. comb47 without it: IMGO_ERR on every frame, SOF at 30 fps, nothing written.
+ */
+#define CAMSV_STRIDE_BUS_16		(BIT(24) | (1 << 16))
 #define CAMSV_IMGO_CON			0x003c	/* DMAO config: 0x80000080 */
 #define CAMSV_IMGO_CON2			0x0040	/* 0x00020002 */
 #define CAMSV_IMGO_CON3			0x0044	/* 0x00020002 */
@@ -312,7 +319,8 @@ static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 
 	writel(0, sv + CAMSV_IMGO_OFST);
 	writel(camsv_line_bytes(w) - 1, sv + CAMSV_IMGO_XSIZE);
 	writel(h - 1, sv + CAMSV_IMGO_YSIZE);
-	writel(camsv_stride(w), sv + CAMSV_IMGO_STRIDE);
+	writel(camsv_stride(w) | CAMSV_STRIDE_BUS_16, sv + CAMSV_IMGO_STRIDE);
+	writel(0, sv + CAMSV_IMGO_CROP);
 	writel(0x80000080, sv + CAMSV_IMGO_CON);
 	writel(0x00020002, sv + CAMSV_IMGO_CON2);
 	writel(0x00020002, sv + CAMSV_IMGO_CON3);
