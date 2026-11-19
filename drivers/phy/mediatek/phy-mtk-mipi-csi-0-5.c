@@ -285,73 +285,77 @@ static void mtk_mipi_phy_status_work(struct work_struct *work)
 }
 
 /*
- * The per-lane clock assignment of the HAL's own D-PHY path, which nothing in this driver carries.
- * hal_csirx_dphy_setting (libcam.halsensor.so 0x32ed8) branches on the lane count and, for three
- * lanes or more, sets bits 8, 9, 10 and 11 of 0x00 (:0x32f74-0x32fa0) and the fields bits 10:8 = 1,
- * bits 2:0 = 2, bits 13:12 = 3 and bits 22:20 = 4 of 0x04 (:0x32f28-0x32f70). The values this
- * driver writes there come from the MT8365 field map instead, and the ChromeOS 4D1C word it applies
- * to bits 5..12 of 0x00 is that SoC's lane order, not this one's.
+ * The D-PHY wrapper page of this port: +0x2000 inside its 0x4000 analogue region.
  *
- * Bit 0 of 0x00 is part of the same HAL step and is left out here on purpose: the in-tree header
- * names it RG_CSI0A_CPHY_EN (phy-mtk-mipi-csi-0-5-rx-reg.h:18), so writing it would switch the port
- * to C-PHY and no D-PHY frame could arrive. That one bit is the open question, not a guess to flash.
+ * Where it is: SeninfDrvImp::init (libcam.halsensor.so 0x2e6d4-0x2e7a0) adds the .rodata pairs
+ * 0x119a0 {0xb000, 0x2000} and 0x11a90 {0x6000, 0xa000} to the analogue mapping (0x11C80000) and
+ * stores them at [this+0x130..0x148]; hal_csirx_dphy_init and hal_csirx_dphy_setting pick
+ * [this+0x138] (ana+0x2000) for CSI0/0A/0B, [this+0x140] (ana+0x6000) for CSI1/1A/1B and
+ * [this+0x148] (ana+0xa000) for CSI2/2A/2B. Checked on the phone 19.11: with no camera driver
+ * the three ports read the same four-page pattern at 0x11c80000, 0x11c84000 and 0x11c88000
+ * (A, B, this page, the C-PHY page), and this page of port 2 stayed at its reset values while
+ * comb41 streamed, i.e. nothing had programmed it. Until comb42 these writes went to the A and B
+ * analogue pages (base + 0x0000/0x1000), whose 0x00/0x04/0x20..0x2c are other registers.
  */
-static void mtk_mipi_phy_lane_clock(struct device *dev, void __iomem *base,
-				    unsigned int lanes)
+#define MIPI_RX_DPHY_PAGE	0x2000
+#define MIPI_RX_CPHY_PAGE_OFF	0x3000
+
+/* hal_csirx_dphy_init (0x32078): 0x20..0x2c, bits 23:16 = 0x20, bits 11:8 = 4, bit 29. */
+static void mtk_mipi_phy_dphy_init_bank(struct device *dev, void __iomem *base)
 {
-	unsigned int half;
+	void __iomem *w = base + MIPI_RX_DPHY_PAGE;
+	unsigned int off;
 
-	if (lanes < 3) {
-		dev_info(dev, "lane clock: %u lanes, the HAL branch is not applied\n", lanes);
-		return;
+	for (off = 0x20; off <= 0x2c; off += 4) {
+		u32 v = readl(w + off);
+
+		v = (v & ~0xff0000u) | (0x20u << 16);
+		v = (v & ~0xf00u) | 0x400u;
+		v |= BIT(29);
+		writel(v, w + off);
 	}
-
-	for (half = 0; half < 2; half++) {
-		void __iomem *h = base + half * CSIXB_OFFSET;
-		u32 a0 = readl(h + 0x00);
-		u32 a4 = readl(h + 0x04);
-
-		a0 |= 0x100 | 0x200 | 0x400 | 0x800;
-		a4 &= ~((0x7u << 16) | (0x7u << 8) | 0x7u | (0x3u << 12));
-		a4 |= (0x1u << 8) | 0x2u | (0x3u << 12);
-		a4 &= ~(0x7u << 20);
-		a4 |= 0x4u << 20;
-
-		writel(a0, h + 0x00);
-		writel(a4, h + 0x04);
-
-		dev_info(dev, "lane clock %s: 0x00 -> %08x, 0x04 -> %08x\n",
-			 half ? "B" : "A", a0, a4);
-	}
+	dev_info(dev, "dphy page init: 0x20 %08x 0x24 %08x 0x28 %08x 0x2c %08x\n",
+		 readl(w + 0x20), readl(w + 0x24), readl(w + 0x28), readl(w + 0x2c));
 }
 
 /*
- * The block of four registers the HAL writes next to the lane clock assignment, and the only part
- * of its D-PHY setup this driver still lacked: hal_csirx_dphy_init (libcam.halsensor.so 0x32078)
- * writes the same three fields into 0x20, 0x24, 0x28 and 0x2c for every port - bits 23:16 = 0x20
- * (:0x320b0-:0x3212c), bits 11:8 = 4 (:0x320f0-:0x3212c) and bit 29 (:0x32130-:0x3215c).
- * Four registers, three lanes worth of receive settings, written per half.
+ * setSeninfCsiMipi (0x3261c-0x3265c), between dphy_init and the CSI-2 setting, for every sensor:
+ * bit 4 of +0x18 of the port's C-PHY page ([this+0x120/0x128/0x130] = ana+0x3000/0x7000/0xb000).
  */
-static void mtk_mipi_phy_dphy_init_bank(struct device *dev, void __iomem *base)
+static void mtk_mipi_phy_cphy_page_bit4(struct device *dev, void __iomem *base)
 {
-	unsigned int half, off;
+	void __iomem *c = base + MIPI_RX_CPHY_PAGE_OFF;
+	u32 want = readl(c + 0x18) | BIT(4);
 
-	for (half = 0; half < 2; half++) {
-		void __iomem *h = base + half * CSIXB_OFFSET;
+	writel(want, c + 0x18);
+	dev_info(dev, "cphy page +0x18: wrote %08x reads %08x%s\n", want, readl(c + 0x18),
+		 readl(c + 0x18) == want ? "" : "  MISMATCH");
+}
 
-		for (off = 0x20; off <= 0x2c; off += 4) {
-			u32 v = readl(h + off);
+/*
+ * hal_csirx_dphy_setting (0x32ed8), the branch a full port (CSI0/1/2) always takes
+ * (:0x32f18-0x32fb8 and :0x330c4-0x330e8):
+ *   +0x04: bits 18:16 = 0, bits 10:8 = 1, bits 2:0 = 2, bits 14:12 = 3, bits 22:20 = 4, bit 31
+ *   +0x00: bits 8, 9, 10, 11 and 0 set, bit 1 clear
+ * On this page bit 0 is not the analogue RG_CSI0A_CPHY_EN: it is the HAL's own D-PHY step.
+ */
+static void mtk_mipi_phy_dphy_setting(struct device *dev, void __iomem *base)
+{
+	void __iomem *w = base + MIPI_RX_DPHY_PAGE;
+	u32 a4 = readl(w + 0x04), a0 = readl(w + 0x00), w4, w0;
 
-			v = (v & ~0xff0000u) | (0x20u << 16);
-			v = (v & ~0xf00u) | 0x400u;
-			v |= BIT(29);
-			writel(v, h + off);
-		}
-
-		dev_info(dev, "dphy init bank %s: 0x20 %08x 0x24 %08x 0x28 %08x 0x2c %08x\n",
-			 half ? "B" : "A", readl(h + 0x20), readl(h + 0x24),
-			 readl(h + 0x28), readl(h + 0x2c));
-	}
+	a4 &= ~((0x7u << 16) | (0x7u << 8) | 0x7u | (0x7u << 12) | (0x7u << 20));
+	a4 |= (0x1u << 8) | 0x2u | (0x3u << 12) | (0x4u << 20) | BIT(31);
+	a0 |= 0x100 | 0x200 | 0x400 | 0x800 | BIT(0);
+	a0 &= ~BIT(1);
+	writel(a4, w + 0x04);
+	writel(a0, w + 0x00);
+	w4 = readl(w + 0x04);
+	w0 = readl(w + 0x00);
+	dev_info(dev, "dphy page +0x00: wrote %08x reads %08x%s\n",
+		 a0, w0, w0 == a0 ? "" : "  MISMATCH");
+	dev_info(dev, "dphy page +0x04: wrote %08x reads %08x%s\n",
+		 a4, w4, w4 == a4 ? "" : "  MISMATCH");
 }
 
 /*
@@ -629,9 +633,15 @@ static int mtk_mipi_phy_power_on(struct phy *phy)
 	mtk_mipi_phy_vendor_ana(&phy->dev, base, "A");
 	mtk_mipi_phy_vendor_ana(&phy->dev, base + CSIXB_OFFSET, "B");
 
-	/* And the lane-clock assignment the HAL derives from the lane count. */
-	mtk_mipi_phy_lane_clock(&phy->dev, base, port->num_lanes);
+	/*
+	 * The HAL's D-PHY page steps, in its order (setSeninfCsiMipi 0x325e8): dphy_init, the C-PHY
+	 * page's bit 4, then (after the CSI-2 and top settings, which live in SENINF) dphy_setting.
+	 * C-PHY mode takes the HAL's C-PHY setting instead of dphy_setting.
+	 */
 	mtk_mipi_phy_dphy_init_bank(&phy->dev, base);
+	mtk_mipi_phy_cphy_page_bit4(&phy->dev, base);
+	if (!(port->type == CDPHY && port->mode == CPHY))
+		mtk_mipi_phy_dphy_setting(&phy->dev, base);
 
 	/*
 	 * Two debug overrides for a trial, both off by default: dphy.cphy forces the C-PHY select bit
