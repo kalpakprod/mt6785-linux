@@ -203,6 +203,7 @@ struct mtk_seninf {
 	void __iomem *inst;
 	/* Its zero-based index, 0..4, so late work can find the top route again. */
 	unsigned int cur_idx;
+	unsigned int cur_port;	/* the HAL CSI port (0..2) of the running stream */
 	/* The block's physical base, so logs can name absolute addresses. */
 	phys_addr_t base_pa;
 	struct dentry *debugfs;
@@ -468,15 +469,20 @@ static void mtk_seninf_stock_dump_words(struct mtk_seninf *seninf)
 }
 
 /*
- * Which of the three top-route registers this receiver uses, from the HAL's masks
- * (hal_csirx_seninf_top_setting, libcam.halsensor.so 0x32910-0x3292c: 0x60 for indices 0, 3
- * and 4; 0x64 for 1, 5 and 6; 0x68 for the rest).
+ * Which of the three top-route registers a CSI port uses (hal_csirx_seninf_top_setting,
+ * libcam.halsensor.so 0x328a0-0x3292c). The HAL indexes them by the CSI *port* enum, the first word of
+ * the port record ([[x1+0x8]+0x0], the same word phyA_setting uses to pick the CSI0/1/2 analogue
+ * pages), not by the receiver index, which is the second word (+0x4, used by seninf_setting): masks
+ * 0x19 (CSI0, CSI0A, CSI0B) -> 0x60, 0x62 (CSI1, CSI1A, CSI1B) -> 0x64, the rest (CSI2, CSI2A,
+ * CSI2B) -> 0x68. Until comb44 this took the receiver index, so PORT_2 (receiver 4) landed on
+ * CSI0's 0x60 and CSI2's route stayed 0; measured 19.11: writing 0x68 bit 0 by hand made RAW10 line
+ * headers of 0x1004 bytes (3280 pixels, the IMX355's line) appear in receiver 5.
  */
-static u32 mtk_seninf_top_offset(unsigned int idx)
+static u32 mtk_seninf_top_offset(unsigned int csi_port)
 {
-	if (idx == 0 || idx == 3 || idx == 4)
+	if (BIT(csi_port) & 0x19)
 		return 0x60;
-	if (idx == 1 || idx == 5 || idx == 6)
+	if (BIT(csi_port) & 0x62)
 		return 0x64;
 	return 0x68;
 }
@@ -628,7 +634,7 @@ static void mtk_seninf_sweep(void)
 			unsigned int idx = csi_ports[p].seninf_index;
 			unsigned int ph = csi_ports[p].phy_index;
 			void __iomem *in = seninf_sweep->base + 0x1000 * idx;
-			u32 top = mtk_seninf_top_offset(idx);
+			u32 top = mtk_seninf_top_offset(p);
 
 			if (seninf_sweep->phy[ph] && p != live) {
 				if (phy_set_mode_ext(seninf_sweep->phy[ph],
@@ -833,7 +839,7 @@ static void mtk_seninf_late_counters(struct work_struct *work)
 	 */
 	if (!readl(seninf_inst(seninf) + SENINF_CSI2_PACKET_CNT)) {
 		void __iomem *in = seninf_inst(seninf);
-		u32 top = mtk_seninf_top_offset(seninf->cur_idx);
+		u32 top = mtk_seninf_top_offset(seninf->cur_port);
 		u32 mask = readl(in + 0x0a00);
 		int cur, flipped;
 
@@ -940,6 +946,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 
 	seninf->inst = inst;
 	seninf->cur_idx = seninf_idx;
+	seninf->cur_port = port;
 	seninf->inst_pa = seninf->base_pa + 0x1000 * seninf_idx;
 	int ret;
 
@@ -1153,17 +1160,32 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 	}
 
 	/*
-	 * The route from the analog port into this receiver. Only the HAL knows it:
-	 * SeninfDrvImp::hal_csirx_seninf_top_setting (libcam.halsensor.so 0x328a0) picks one of
-	 * three registers by receiver index - 0x60 for indices 0, 3 and 4, 0x64 for 1, 5 and 6,
-	 * 0x68 for the rest (:0x32910-0x3292c, test masks 0x19 and 0x62) - and its normal path
-	 * writes "clear bit 1, set bit 0" into it (:0x3294c-0x32960). SENINF5 is index 4, so it
-	 * is 0x60 here. The routing block is [this+0x38], the SENINF window itself (:0x328a8).
-	 * Nothing in this port ever wrote those three registers, and they were not in the 18.11
-	 * stock dump's address list either, which is why they were never suspected.
+	 * hal_csirx_seninf_setting (libcam.halsensor.so 0x32870-0x32898), called by setSeninfCsiMipi
+	 * between the CSI-2 programming above and the top route below: on the receiver's 0x200 page
+	 * ([this+0x48 + idx*8], built in init() as the SENINF base + 0x200 + idx*0x1000, .rodata
+	 * 0x11ae0/0x11a40/0x11980) it sets bit 0 of +0x10 and then bit 0 of +0x00. This driver never did,
+	 * so the receiver stayed disabled: 0x200/0x210 read 0 on every instance and the CSI-2 status
+	 * at +0xac8 stayed 0. Measured 19.11 on comb43: both bits stick when written, and with them
+	 * (and the CSI2 route below) the receiver reports packets.
 	 */
 	{
-		u32 top_off = mtk_seninf_top_offset(seninf_idx);
+		u32 b210 = readl(inst + 0x0210), b200;
+
+		writel(b210 | 0x1, inst + 0x0210);
+		b200 = readl(inst + 0x0200);
+		writel(b200 | 0x1, inst + 0x0200);
+		dev_info(seninf->dev, "seninf_setting: +0x210 0x%08x -> 0x%08x, +0x200 0x%08x -> 0x%08x\n",
+			 b210, readl(inst + 0x0210), b200, readl(inst + 0x0200));
+	}
+
+	/*
+	 * The route from the analog port into the receivers: hal_csirx_seninf_top_setting
+	 * (libcam.halsensor.so 0x328a0) picks one of three registers by CSI port (see
+	 * mtk_seninf_top_offset) and its D-PHY path writes "clear bit 1, set bit 0" into it
+	 * (:0x32968-0x32978 for CSI2). The routing block is [this+0x38], the SENINF window itself.
+	 */
+	{
+		u32 top_off = mtk_seninf_top_offset(port);
 		u32 before, want;
 
 		before = readl(seninf->base + top_off);
@@ -1226,7 +1248,7 @@ static int mtk_seninf_s_stream(struct v4l2_subdev *sd, int enable)
 			unsigned int idx = csi_ports[i].seninf_index;
 			unsigned int ph = csi_ports[i].phy_index;
 			void __iomem *in = seninf->base + 0x1000 * idx;
-			u32 top = mtk_seninf_top_offset(idx);
+			u32 top = mtk_seninf_top_offset(i);
 			int ret2;
 
 			if (seninf->phy[ph] && ph != phy_idx) {
