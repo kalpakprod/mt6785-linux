@@ -69,6 +69,12 @@
  */
 #define CAMSV_FMT_SEL			0x0514	/* TOP_CTRL: [x19+0x44] written whole; 1 = RAW10 */
 #define CAMSV_IMGO_FBC			0x052c	/* enqueueHwBuf 0xc0204: bit 0 = RCNT_INC */
+/*
+ * With FBC on, the DMA takes each frame's address from the FBC queue, not from IMGO_BASE_ADDR:
+ * enqueueHwBuf (0xc0148-0xc0204) writes the buffer to 0x118, its header to 0x404, then RCNT_INC.
+ * comb46 measured it: with only 0x020 set the engine wrote at 0 + offset (IOMMU faults, larb 6 port 11).
+ */
+#define CAMSV_FBC_IMGO_ENQ_ADDR		0x0118
 #define CAMSV_CLK_EN			0x0530	/* TOP_CTRL::_enable: bits 0, 2, 15 */
 #define CAMSV_PAK			0x054c	/* bits 2:0 mode, 5:4 pixel mode */
 #define CAMSV_TG_GRAB_PXL		0x0238	/* start | end << 16 */
@@ -94,17 +100,22 @@
 #define CAMSV_FBC_BIT22			BIT(22)	/* BUF_CTRL::_enable sets it after FBC_EN */
 #define CAMSV_FMT_RAW10			1
 
-/* INT_STATUS bits as on the next generation's same engine (cezanne_camsv.c), read-clear. */
+/* INT_STATUS bits of this chip (cam_regs.h:80-92), read-clear (camera_isp.c:8074-8076). */
 #define CAMSV_INT_VS1			BIT(0)
 #define CAMSV_INT_TG_ERR		BIT(4)
 #define CAMSV_INT_TG_GBERR		BIT(5)
-#define CAMSV_INT_SOF			BIT(6)
-#define CAMSV_INT_PASS1_DONE		(BIT(10) | BIT(11) | BIT(12))
+#define CAMSV_INT_SOF			BIT(7)
+#define CAMSV_INT_HW_PASS1_DONE		BIT(10)
+#define CAMSV_INT_PASS1_DONE		BIT(20)	/* SW pass1 done: the vendor dequeues on it (:8153) */
 #define CAMSV_INT_IMGO_ERR		BIT(16)
 #define CAMSV_INT_IMGO_OVERRUN		BIT(17)
 #define CAMSV_INT_MASK			(CAMSV_INT_VS1 | CAMSV_INT_TG_ERR | CAMSV_INT_TG_GBERR | \
-					 CAMSV_INT_SOF | CAMSV_INT_PASS1_DONE | CAMSV_INT_IMGO_ERR | \
+					 CAMSV_INT_SOF | CAMSV_INT_HW_PASS1_DONE | CAMSV_INT_PASS1_DONE | \
+					 CAMSV_INT_IMGO_ERR | CAMSV_INT_IMGO_OVERRUN)
+#define CAMSV_INT_ERRS			(CAMSV_INT_TG_ERR | CAMSV_INT_TG_GBERR | CAMSV_INT_IMGO_ERR | \
 					 CAMSV_INT_IMGO_OVERRUN)
+/* the vendor masks an error that repeats too often so it cannot hold the CPU (:8079-8104) */
+#define CAMSV_ERR_STORM			64
 
 /* FBC_IMGO_CTL1: FBC_EN is bit15 (union FBC_CTRL_1, cam_regs.h:383-390). */
 #define CAMSV_FBC_EN			BIT(15)
@@ -269,6 +280,14 @@ static void camsv_hw_reset(struct mtk_camsv *camsv)
 /* ---- register programming, cezanne map ---- */
 
 
+/* One buffer into the FBC queue (enqueueHwBuf): its address, its frame header, then RCNT_INC. */
+static void camsv_hw_next(struct mtk_camsv *camsv, dma_addr_t base)
+{
+	writel(lower_32_bits(base), camsv->base + CAMSV_FBC_IMGO_ENQ_ADDR);
+	writel(lower_32_bits(camsv->scratch_dma), camsv->base + CAMSV_FRAME_WRITE_BASE);
+	writel(readl(camsv->base + CAMSV_IMGO_FBC) | BIT(0), camsv->base + CAMSV_IMGO_FBC);
+}
+
 static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 h)
 {
 	void __iomem *sv = camsv->base;
@@ -297,7 +316,6 @@ static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 
 	writel(0x80000080, sv + CAMSV_IMGO_CON);
 	writel(0x00020002, sv + CAMSV_IMGO_CON2);
 	writel(0x00020002, sv + CAMSV_IMGO_CON3);
-	writel(lower_32_bits(camsv->scratch_dma), sv + CAMSV_FRAME_WRITE_BASE);
 	writel(lower_32_bits(base), sv + CAMSV_IMGO_BASE_ADDR);
 
 	/* enables in the vendor's order: TG and packer, the TG's CMOS input, then IMGO */
@@ -310,24 +328,17 @@ static void camsv_hw_start(struct mtk_camsv *camsv, dma_addr_t base, u32 w, u32 
 	/* FBC: mode, then enable (BUF_CTRL::_config / ::_enable), and hand over the first buffer */
 	writel(CAMSV_FBC_MODE, sv + CAMSV_FBC_IMGO_CTL1);
 	writel(CAMSV_FBC_MODE | CAMSV_FBC_EN | CAMSV_FBC_BIT22, sv + CAMSV_FBC_IMGO_CTL1);
-	writel(readl(sv + CAMSV_IMGO_FBC) | BIT(0), sv + CAMSV_IMGO_FBC);
+	camsv_hw_next(camsv, base);
 
 	writel(BIT(0), sv + CAMSV_TG_VF_CON);		/* VF start */
 
 	dev_info(camsv->dev,
-		 "engine armed %ux%u: MODULE_EN 0x%08x SEN_MODE 0x%08x VF 0x%08x GRAB 0x%08x/0x%08x XSIZE 0x%08x STRIDE 0x%08x FBC 0x%08x IMGO 0x%08x\n",
+		 "engine armed %ux%u: MODULE_EN 0x%08x SEN_MODE 0x%08x VF 0x%08x GRAB 0x%08x/0x%08x XSIZE 0x%08x STRIDE 0x%08x FBC 0x%08x ENQ 0x%08x\n",
 		 w, h, readl(sv + CAMSV_MODULE_EN), readl(sv + CAMSV_TG_SEN_MODE),
 		 readl(sv + CAMSV_TG_VF_CON), readl(sv + CAMSV_TG_GRAB_PXL),
 		 readl(sv + CAMSV_TG_GRAB_LIN), readl(sv + CAMSV_IMGO_XSIZE),
 		 readl(sv + CAMSV_IMGO_STRIDE), readl(sv + CAMSV_FBC_IMGO_CTL1),
-		 readl(sv + CAMSV_IMGO_BASE_ADDR));
-}
-
-/* The next buffer: the address latches at the next SOF, RCNT_INC hands it to the FBC. */
-static void camsv_hw_next(struct mtk_camsv *camsv, dma_addr_t base)
-{
-	writel(lower_32_bits(base), camsv->base + CAMSV_IMGO_BASE_ADDR);
-	writel(readl(camsv->base + CAMSV_IMGO_FBC) | BIT(0), camsv->base + CAMSV_IMGO_FBC);
+		 readl(sv + CAMSV_FBC_IMGO_ENQ_ADDR));
 }
 
 static void camsv_hw_stop(struct mtk_camsv *camsv)
@@ -659,10 +670,15 @@ static irqreturn_t mtk_camsv_irq(int irq, void *data)
 	camsv->status_seen |= status;
 	if (status & CAMSV_INT_SOF)
 		camsv->sof_count++;
-	if (status & (CAMSV_INT_TG_ERR | CAMSV_INT_TG_GBERR | CAMSV_INT_IMGO_ERR |
-		      CAMSV_INT_IMGO_OVERRUN)) {
+	if (status & CAMSV_INT_ERRS) {
 		camsv->err_count++;
 		camsv->err_status |= status;
+		if (camsv->err_count == CAMSV_ERR_STORM) {
+			writel(readl(camsv->base + CAMSV_INT_EN) & ~CAMSV_INT_ERRS,
+			       camsv->base + CAMSV_INT_EN);
+			dev_warn(camsv->dev, "error interrupts masked after %u (0x%08x), %u frames\n",
+				 camsv->err_count, camsv->err_status, camsv->sequence);
+		}
 	}
 
 	/* Frame written: complete it and give the engine the next queued buffer. */

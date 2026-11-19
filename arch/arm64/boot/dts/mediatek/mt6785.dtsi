@@ -2193,8 +2193,9 @@
 		/*
 		 * Raw capture engine: window and interrupt from the vendor device tree
 		 * (camsv1..6 at 0x1a050000 + 0x1000*n, IRQs from 0x117), the camsys gate
-		 * CLK_CAM_SV0 for the first engine, the camera larb's IOMMU port
-		 * M4U_PORT_CAM_IMGO (larb 6 port 0), and the CAM domain.
+		 * CLK_CAM_SV0 for the first engine, the camera larb's IOMMU port and the CAM
+		 * domain. The port is the one this engine's DMA was measured on: comb46's
+		 * IOMMU faults came from larb 6 port 11 (M4U_PORT_CAM_SOCO), not port 0.
 		 */
 		camsv1: capture@1a050000 {
 			compatible = "mediatek,mt6785-camsv";
@@ -2210,7 +2211,7 @@
 			clocks = <&camsys CLK_CAM_SV0>, <&camsys CLK_CAM_MAIN>,
 				 <&camsys CLK_CAM_TG>, <&camsys CLK_CAM_GALS>;
 			clock-names = "sv", "main", "tg", "gals";
-			iommus = <&iommu M4U_PORT_CAM_IMGO>;
+			iommus = <&iommu M4U_PORT_CAM_SOCO>;
 			power-domains = <&spm MT6785_POWER_DOMAIN_CAM>;
 			status = "disabled";
 
