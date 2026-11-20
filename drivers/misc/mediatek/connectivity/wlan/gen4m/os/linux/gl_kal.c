@@ -8691,11 +8691,20 @@ int kalExternalAuthRequest(IN struct ADAPTER *prAdapter,
 	}
 
 	ndev = wlanGetNetDev(prGlueInfo, uBssIndex);
+	/*
+	 * Zero the whole struct: since 6.4 it carries mld_addr, which
+	 * cfg80211_external_auth_request() sends as NL80211_ATTR_MLD_ADDR when
+	 * non-zero, so stack garbage would tell the supplicant this is an MLO
+	 * link. And use the nl80211 value of the SAE AKM (00-0F-AC:8), not the
+	 * driver's byte-swapped RSN_AKM_SUITE_SAE: cfg80211 documents
+	 * WLAN_AKM_SUITE_SAE here and keeps a big-endian hack only for it.
+	 */
+	kalMemZero(&params, sizeof(params));
 	params.action = NL80211_EXTERNAL_AUTH_START;
 	COPY_MAC_ADDR(params.bssid, prBssDesc->aucBSSID);
 	COPY_SSID(params.ssid.ssid, params.ssid.ssid_len,
 		  prBssDesc->aucSSID, prBssDesc->ucSSIDLen);
-	params.key_mgmt_suite = RSN_AKM_SUITE_SAE;
+	params.key_mgmt_suite = WLAN_AKM_SUITE_SAE;
 	DBGLOG(AIS, INFO, "[WPA3] "MACSTR" %s %d %d %02x-%02x-%02x-%02x",
 	       params.bssid, params.ssid.ssid,
 	       params.ssid.ssid_len, params.action,
