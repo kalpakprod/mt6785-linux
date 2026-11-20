@@ -220,7 +220,8 @@ static void mtk_scpd_trace_md(struct scpsys_domain *pd, const char *what, int re
 	struct regmap *infra;
 	bool on;
 
-	if (strcmp(pd->genpd.name, "md"))
+	/* conn too: its power-off can stop at the first bus-protect step (20.11) */
+	if (strcmp(pd->genpd.name, "md") && strcmp(pd->genpd.name, "conn"))
 		return;
 
 	regmap_read(scpsys->base, pd->data->ctl_offs, &con);
@@ -241,8 +242,8 @@ static void mtk_scpd_trace_md(struct scpsys_domain *pd, const char *what, int re
 	on = scpsys_domain_is_on(pd);
 
 	dev_info(scpsys->dev,
-		 "md-trace %-24s: PWR_CON(%#x)=%#x PWR_STATUS=%#x PWR_STATUS_2ND=%#x is_on=%d PROTECTEN=%#x PROTECT_STA=%#x PROTECTEN_1=%#x ret=%d\n",
-		 what, pd->data->ctl_offs, con, sta, sta2, on, en, sta1, en1, ret);
+		 "%s-trace %-24s: PWR_CON(%#x)=%#x PWR_STATUS=%#x PWR_STATUS_2ND=%#x is_on=%d PROTECTEN=%#x PROTECT_STA=%#x PROTECTEN_1=%#x ret=%d\n",
+		 pd->genpd.name, what, pd->data->ctl_offs, con, sta, sta2, on, en, sta1, en1, ret);
 }
 
 

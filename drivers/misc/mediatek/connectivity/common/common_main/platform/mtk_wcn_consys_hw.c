@@ -88,6 +88,8 @@ UINT8 __iomem *pEmibaseaddr;
 P_WMT_CONSYS_IC_OPS wmt_consys_ic_ops;
 
 struct platform_device *g_pdev;
+/* the probe-time runtime-PM reference on the conn domain, until the first power-on (see probe) */
+static bool g_conn_boot_ref;
 
 #ifdef ALLOCATE_CONNSYS_EMI_FROM_KO
 phys_addr_t gConEmiPhyBase;
@@ -456,11 +458,34 @@ static INT32 mtk_wmt_probe(struct platform_device *pdev)
 	 * PM usage count underflow!" and *undoes* the decrement
 	 * (drivers/base/power/runtime.c), i.e. the device was never handed back
 	 * and the line only made the log claim it was - the two warnings lead
-	 * note 21 lists. Dropped rather than balanced with a get_noresume(): a
-	 * permanent reference would stop the balanced pair above from ever
-	 * idling the device, which is the one thing runtime PM is here for.
+	 * note 21 lists. A permanent reference would stop the balanced pair
+	 * above from ever idling the device; the reference below is not
+	 * permanent, it is handed to the first power-on.
 	 */
 	pm_runtime_set_active(&pdev->dev);
+	/*
+	 * Hold the domain the loader left on until the first power-on takes the
+	 * reference over (20.11, trial comb59). Without it the device idles right
+	 * after probe and genpd powers CONN off on its own. On a block nobody has
+	 * initialised that cannot complete: the first bus-protect step
+	 * (TOPAXI_PROTECTEN bits 13|18) is set, bit 18 never acknowledges in
+	 * TOPAXI_PROTECTEN_STA1, scpsys_power_off() returns the timeout without
+	 * undoing the step, and genpd keeps the domain "on". The conn side is
+	 * then cut off from the AP: every conn register reads 0 and the MCU never
+	 * boots (pm_genpd conn/idle_states: 7 rejected power-offs; PROTECTEN
+	 * 0x0 at 6.5 s, 0x90042000 at the power-on). Wi-Fi then worked only when
+	 * it was switched on before that idle (three boots at <10 s), never after
+	 * (four boots at 14.7-84 s).
+	 *
+	 * The vendor never powers CONN off except through its own ordered
+	 * sequence after a power-on (MCU reset, CCU_CONFIG cleared, the domain
+	 * dropped while the CCIF4 clock is still on, then the clock: vendor
+	 * mt6785.c consys_hw_power_ctrl(), and begonia's consys_power_off()). So
+	 * this reference is handed to the first mtk_wcn_consys_hw_pwr_on() and
+	 * from then on the pwr_on/pwr_off pair owns the domain as before.
+	 */
+	pm_runtime_get_noresume(&pdev->dev);
+	g_conn_boot_ref = true;
 	pm_runtime_enable(&pdev->dev);
 
 	atomic_set(&g_probe_called, 1);
@@ -495,7 +520,10 @@ static void mtk_wmt_shutdown(struct platform_device *pdev)
 	 * mtk_wcn_consys_hw_pwr_on() and dropped in mtk_wcn_consys_hw_pwr_off(), so a
 	 * powered block shows as an active device here.
 	 */
-	if (pm_runtime_active(&pdev->dev)) {
+	if (g_conn_boot_ref) {
+		/* never powered on by this driver: the block is as the loader left it */
+		WMT_PLAT_PR_INFO("CONSYS shutdown: never powered on here, left as the loader left it\n");
+	} else if (pm_runtime_active(&pdev->dev)) {
 		INT32 co_clock = mtk_wcn_consys_co_clock_type();
 
 		/* The same value the WMT layer passes on a normal power-off
@@ -516,6 +544,10 @@ static void mtk_wmt_shutdown(struct platform_device *pdev)
 static void mtk_wmt_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
+	if (g_conn_boot_ref) {
+		g_conn_boot_ref = false;
+		pm_runtime_put_noidle(&pdev->dev);
+	}
 
 #ifdef CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH
 	if (wmt_consys_ic_ops->consys_ic_dedicated_log_path_deinit)
@@ -959,7 +991,10 @@ INT32 mtk_wcn_consys_hw_pwr_on(UINT32 co_clock_type)
 	 * (vendor mt6785.c:596) and is what makes every power-on a cold start
 	 * once the matching put in pwr_off() has let genpd cut the domain.
 	 */
-	if (g_pdev) {
+	if (g_pdev && g_conn_boot_ref) {
+		/* the probe-time reference becomes this power-on's (see probe) */
+		g_conn_boot_ref = false;
+	} else if (g_pdev) {
 		INT32 rpm = pm_runtime_resume_and_get(&g_pdev->dev);
 
 		if (rpm) {
