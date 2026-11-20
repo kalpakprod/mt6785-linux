@@ -160,10 +160,22 @@
 /*
  * The board file still carries the vendor's inert placeholder for the SCP
  * (`scp { compatible = "mediatek,scp"; }`), which no mainline driver claims and
- * which has no registers: replace it with the node above.
+ * which has no registers: the node above replaces it, and the placeholder comes
+ * back under another name for the loader. The stock LK looks the node up by this
+ * compatible before it starts the kernel (platform_fdt_scp(), MediaTek LK
+ * platform/mt6785/mt_scp.c) to write its status, "disabled" when it did not load
+ * the SCP itself; when the node is missing, platform_atag_append() fails and
+ * mt_boot asserts, so the phone resets in the loader on every boot (measured
+ * 20.11.26, poco-m5s/evidence/comb60-cold). It must not be the real node: the
+ * loader would disable it. kexec boots skip this loader step.
  */
 &{/} {
 	/delete-node/ scp;
+
+	scp-loader {
+		compatible = "mediatek,scp";
+		status = "disabled";
+	};
 };
 
 /*
