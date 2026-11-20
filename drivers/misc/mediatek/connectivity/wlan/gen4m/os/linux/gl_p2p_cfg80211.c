@@ -1411,7 +1411,7 @@ int mtk_p2p_cfg80211_start_ap(struct wiphy *wiphy,
 	uint8_t *pucBuffer = (uint8_t *) NULL;
 	uint8_t ucRoleIdx = 0;
 	struct cfg80211_chan_def *chandef;
-	struct RF_CHANNEL_INFO rRfChnlInfo;
+	struct RF_CHANNEL_INFO rRfChnlInfo = {};
 
 	/* RF_CHANNEL_INFO_T rRfChnlInfo; */
 /* P_IE_SSID_T prSsidIE = (P_IE_SSID_T)NULL; */
@@ -1661,7 +1661,7 @@ static int mtk_p2p_cfg80211_start_radar_detection_impl(struct wiphy *wiphy,
 	struct MSG_P2P_DFS_CAC *prP2pDfsCacMsg =
 		(struct MSG_P2P_DFS_CAC *) NULL;
 	uint8_t ucRoleIdx = 0;
-	struct RF_CHANNEL_INFO rRfChnlInfo;
+	struct RF_CHANNEL_INFO rRfChnlInfo = {};
 
 	do {
 		if ((wiphy == NULL) || (chandef == NULL))
@@ -1799,7 +1799,7 @@ int mtk_p2p_cfg80211_channel_switch(struct wiphy *wiphy,
 		(struct MSG_P2P_SET_NEW_CHANNEL *) NULL;
 	uint8_t *pucBuffer = (uint8_t *) NULL;
 	uint8_t ucRoleIdx = 0;
-	struct RF_CHANNEL_INFO rRfChnlInfo;
+	struct RF_CHANNEL_INFO rRfChnlInfo = {};
 	uint8_t ucBssIdx = 0;
 	uint32_t u4Len = 0;
 
@@ -3142,7 +3142,7 @@ int mtk_p2p_cfg80211_set_channel(IN struct wiphy *wiphy,
 {
 	int32_t i4Rslt = -EINVAL;
 	struct GLUE_INFO *prGlueInfo = (struct GLUE_INFO *) NULL;
-	struct RF_CHANNEL_INFO rRfChnlInfo;
+	struct RF_CHANNEL_INFO rRfChnlInfo = {};
 	uint8_t ucRoleIdx = 0;
 	struct net_device *dev = NULL;
 
