@@ -713,6 +713,27 @@ static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 		 * time out while conn registers still answer - so say so out loud
 		 * instead of carrying on silently.
 		 */
+		/*
+		 * Diagnostic (20.11.26, comb61): the vendor budget is 11 polls of
+		 * 20 ms and then it carries on silently. One comb61 boot missed it
+		 * with the MCU core running (CPUPCR moving, 0x18002600 = 0x4fd0).
+		 * Keep watching for up to 2 s more and say when, or whether, the
+		 * handshake arrives, with CPUPCR samples, to tell "slow" from "stuck".
+		 */
+		if (consys_ver_id != 0x1D1E) {
+			UINT32 extra, pc[4] = {0};
+
+			for (extra = 0; extra < 100 && consys_ver_id != 0x1D1E; extra++) {
+				msleep(20);
+				consys_ver_id = CONSYS_REG_READ(conn_reg.mcu_base + 0x600);
+				if (extra < 4)
+					pc[extra] = CONSYS_REG_READ(conn_reg.mcu_conn_hif_on_base +
+								    CONSYS_CPUPCR_OFFSET);
+			}
+			WMT_PLAT_PR_ERR("MCU handshake %s after %u extra polls (%u ms late): 0x18002600=0x%x CPUPCR 0x%x 0x%x 0x%x 0x%x\n",
+					consys_ver_id == 0x1D1E ? "LATE" : "never",
+					extra, extra * 20, consys_ver_id, pc[0], pc[1], pc[2], pc[3]);
+		}
 		if (consys_ver_id != 0x1D1E) {
 			WMT_PLAT_PR_ERR(
 				"connector MCU did not boot: 0x18002600=0x%x after %u polls\n",
