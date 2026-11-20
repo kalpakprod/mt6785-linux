@@ -36,6 +36,7 @@
 */
 #include <connectivity_build_in_adapter.h>
 #include <linux/clk.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/regmap.h>
 #include <linux/memblock.h>
@@ -92,6 +93,7 @@
 ********************************************************************************
 */
 static INT32 consys_clock_buffer_ctrl(MTK_WCN_BOOL enable);
+static VOID consys_power_snapshot(const char *tag);
 static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable);
 static VOID consys_hw_spm_clk_gating_enable(VOID);
 static INT32 consys_hw_power_ctrl(MTK_WCN_BOOL enable);
@@ -616,6 +618,45 @@ static VOID consys_set_if_pinmux(MTK_WCN_BOOL enable)
 		iounmap(consys_if_pinmux_driving_base);
 }
 
+/*
+ * Log-only snapshot of the state a CONNSYS power-on depends on, so a boot where
+ * the MCU never answers can be compared with one where it does (two of six
+ * trial boots on 19-20.11 read 0 from every conn register). Reads only:
+ * SPM PWR_STATUS/_2ND (0x160/0x164, CONN = bit 1) and CONN_PWR_CON (0x320),
+ * INFRACFG_AO TOPAXI_PROTECTEN/_STA1 (0x220/0x228) and _1/_1_STA1 (0x250/0x258)
+ * (CONN bus protect: bits 13, 14, 18 and _1 bit 10, mt6785-pm-domains.h),
+ * PERICFG CCU_CONFIG (CON_PWR_ON = bit 0), TOP_RGU SW_RST (0x18, MCU = bit 12),
+ * pwrap DCXO_ENABLE (0x1000d190, CONN = bit 1), and the conn side itself.
+ */
+static VOID consys_power_snapshot(const char *tag)
+{
+	void __iomem *pw = ioremap(0x1000d190, 4);
+	UINT32 dcxo = pw ? readl(pw) : 0xdeadbeef;
+
+	if (pw)
+		iounmap(pw);
+	WMT_PLAT_PR_ERR("snapshot %s: SPM STA=0x%08x/0x%08x CONN_PWR_CON=0x%08x | PROT=0x%08x/0x%08x PROT_1=0x%08x/0x%08x | CCU=0x%08x RGU=0x%08x DCXO_EN=0x%08x\n",
+		tag,
+		conn_reg.spm_base ? CONSYS_REG_READ(conn_reg.spm_base + 0x160) : 0,
+		conn_reg.spm_base ? CONSYS_REG_READ(conn_reg.spm_base + 0x164) : 0,
+		conn_reg.spm_base ? CONSYS_REG_READ(conn_reg.spm_base + 0x320) : 0,
+		conn_reg.topckgen_base ? CONSYS_REG_READ(conn_reg.topckgen_base + 0x220) : 0,
+		conn_reg.topckgen_base ? CONSYS_REG_READ(conn_reg.topckgen_base + 0x228) : 0,
+		conn_reg.topckgen_base ? CONSYS_REG_READ(conn_reg.topckgen_base + 0x250) : 0,
+		conn_reg.topckgen_base ? CONSYS_REG_READ(conn_reg.topckgen_base + 0x258) : 0,
+		conn_reg.infra_ao_pericfg_base ? CONSYS_REG_READ(conn_reg.infra_ao_pericfg_base +
+			INFRASYS_COMMON_AP2MD_PCCIF4_AP_PERI_AP_CCU_CONFIG) : 0,
+		conn_reg.ap_rgu_base ? CONSYS_REG_READ(conn_reg.ap_rgu_base + CONSYS_CPU_SW_RST_OFFSET) : 0,
+		dcxo);
+	/* conn side: only when SPM says the domain is on, else the read can hang the bus */
+	if (conn_reg.spm_base && (CONSYS_REG_READ(conn_reg.spm_base + 0x160) & BIT(1)) &&
+	    conn_reg.mcu_conn_hif_on_base && conn_reg.mcu_base)
+		WMT_PLAT_PR_ERR("snapshot %s: conn 0x18007000=0x%08x 0x18002600=0x%08x 0x1800216c=0x%08x\n",
+			tag, CONSYS_REG_READ(conn_reg.mcu_conn_hif_on_base),
+			CONSYS_REG_READ(conn_reg.mcu_base + 0x600),
+			CONSYS_REG_READ(conn_reg.mcu_base + 0x16c));
+}
+
 static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 {
 	UINT32 consys_ver_id = 0;
@@ -638,6 +679,7 @@ static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 		 * power-on, the first (working) one included, to tell "the MCU
 		 * never ran" from "the MCU ran and later stopped".
 		 */
+		consys_power_snapshot("before MCU reset");
 		WMT_PLAT_PR_ERR("MCU state before reset: 0x18002600=0x%x, 0x18004154=0x%x\n",
 				CONSYS_REG_READ(conn_reg.mcu_base + 0x600),
 				conn_reg.mcu_conn_hif_pdma_base ?
@@ -687,6 +729,7 @@ static VOID consys_hw_reset_bit_set(MTK_WCN_BOOL enable)
 					CONSYS_REG_READ(conn_reg.mcu_base + 0x16c),
 					CONSYS_REG_READ(conn_reg.mcu_conn_hif_on_base +
 							CONSYS_CPUPCR_OFFSET));
+			consys_power_snapshot("MCU did not boot");
 		}
 		else
 			WMT_PLAT_PR_ERR("connector MCU booted: 0x18002600=0x1d1e, 0x18004154=0x%x\n",
@@ -710,6 +753,7 @@ static INT32 consys_hw_power_ctrl(MTK_WCN_BOOL enable)
 #endif
 
 	if (enable) {
+		consys_power_snapshot("power_ctrl entry");
 #if CONSYS_PWR_ON_OFF_API_AVAILABLE
 		iRet = clk_prepare_enable(clk_infracfg_ao_ccif4_ap_cg);
 		if (iRet) {
