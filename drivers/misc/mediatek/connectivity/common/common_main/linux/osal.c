@@ -394,7 +394,10 @@ INT32 osal_thread_stop(P_OSAL_THREAD pThread)
 
 	if ((pThread) && (pThread->pThread)) {
 		iRet = kthread_stop(pThread->pThread);
-		/* pThread->pThread = NULL; */
+		/* the task is gone once kthread_stop() returns: a later stop or
+		 * destroy of this thread must not touch it again
+		 */
+		pThread->pThread = NULL;
 		return iRet;
 	}
 	return -1;
