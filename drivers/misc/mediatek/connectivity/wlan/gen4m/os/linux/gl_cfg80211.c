@@ -1302,9 +1302,18 @@ int mtk_cfg80211_connect(struct wiphy *wiphy,
 	prWpaInfo->ucRSNMfpCap = RSN_AUTH_MFP_DISABLED;
 #endif
 
+	/*
+	 * WPA3 (SAE) is RSN too. Since Linux 5.2 supplicants (iwd, wpa_supplicant)
+	 * mark an SAE connect with NL80211_WPA_VERSION_3 instead of _2; the 4.x
+	 * vendor kernels this driver came from had no such flag, so it fell to
+	 * DISABLED, the auth mode became AUTO_SWITCH and the driver sent its own
+	 * open/shared Authentication instead of asking userspace for SAE
+	 * (EXTERNAL_AUTH): status 13, then 43/53 from WPA3 access points.
+	 */
 	if (sme->crypto.wpa_versions & NL80211_WPA_VERSION_1)
 		prWpaInfo->u4WpaVersion = IW_AUTH_WPA_VERSION_WPA;
-	else if (sme->crypto.wpa_versions & NL80211_WPA_VERSION_2)
+	else if (sme->crypto.wpa_versions &
+		 (NL80211_WPA_VERSION_2 | NL80211_WPA_VERSION_3))
 		prWpaInfo->u4WpaVersion =
 			IW_AUTH_WPA_VERSION_WPA2;
 	else
