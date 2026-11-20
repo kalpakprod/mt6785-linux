@@ -404,11 +404,30 @@ static const struct drm_panel_funcs s6e8fc0_panel_funcs = {
 	.get_modes = s6e8fc0_get_modes,
 };
 
+/*
+ * The brightness is a DCS write, so it can reach the panel only while the panel
+ * is on and the DSI link is in video mode, i.e. between drm_panel_enable() and
+ * drm_panel_disable(). Outside that window it stays in bl->props and
+ * drm_panel_enable() sends it through backlight_enable() once the panel is up.
+ * Without this check a brightness restore at boot (systemd-backlight) or any
+ * sysfs write during an unblank went out in the middle of the panel's init
+ * sequence and broke it (20.11, poco-m5s/evidence/comb64-boot-a/).
+ */
+static bool s6e8fc0_bl_can_send(struct backlight_device *bl)
+{
+	struct s6e8fc0_ctx *ctx = mipi_dsi_get_drvdata(bl_get_data(bl));
+
+	return ctx->panel.enabled;
+}
+
 static int s6e8fc0_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	u16 brightness = backlight_get_brightness(bl);
 	int ret;
+
+	if (!s6e8fc0_bl_can_send(bl))
+		return 0;
 
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
@@ -426,6 +445,9 @@ static int s6e8fc0_bl_get_brightness(struct backlight_device *bl)
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	u16 brightness;
 	int ret;
+
+	if (!s6e8fc0_bl_can_send(bl))
+		return bl->props.brightness;
 
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
