@@ -761,6 +761,13 @@ static void mtk_dsi_dump_state(struct mtk_dsi *dsi)
 			 readl(dsi->regs + dsi->driver_data->reg_cmdq_off + 4 * i));
 }
 
+/* a completion bit, whether still in the register or already taken by mtk_dsi_irq() */
+static u32 mtk_dsi_done_bits(struct mtk_dsi *dsi, u32 irq_flag)
+{
+	return (readl(dsi->regs + DSI_INTSTA) | READ_ONCE(dsi->irq_data)) &
+	       irq_flag;
+}
+
 static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 				     unsigned int timeout)
 {
@@ -781,9 +788,20 @@ static s32 mtk_dsi_wait_for_irq_done(struct mtk_dsi *dsi, u32 irq_flag,
 		 * (ddp_dsi.c:6575). The same register, same mask, polled from the
 		 * CPU with the command queue's one-second budget.
 		 */
-		if (!readl_poll_timeout(dsi->regs + DSI_INTSTA, status,
-					status & irq_flag, 10, 1000000)) {
-			mtk_dsi_mask(dsi, DSI_INTSTA, status & irq_flag, 0);
+		/*
+		 * The interrupt handler stays registered and CMD_DONE stays enabled,
+		 * and once the line does fire (after a blank/unblank it does) the
+		 * handler acknowledges INTSTA and records the bit in irq_data before
+		 * this loop reads it. Polling INTSTA alone then waits out the whole
+		 * second for a flag that was already taken: 20.11, EXIT_SLEEP_MODE
+		 * on unblank failed with -ETIME on every kernel from 05017eba5 on,
+		 * and passed on the interrupt-plus-register wait before it. So the
+		 * completion counts from either owner.
+		 */
+		if (!read_poll_timeout(mtk_dsi_done_bits, status, status, 10,
+				       1000000, false, dsi, irq_flag)) {
+			mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
+			mtk_dsi_irq_data_clear(dsi, status);
 			return 1;
 		}
 
