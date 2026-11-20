@@ -641,6 +641,27 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	priv->data = of_device_get_match_data(dev);
 	platform_set_drvdata(pdev, priv);
 
+	/*
+	 * A bootloader that keeps the display running hands the OVL over with its
+	 * interrupts enabled: the MT6785 loader leaves INTEN 0x1e and INTSTA
+	 * 0x4003. Requesting the line then takes interrupts before the CRTC has
+	 * registered its vblank callback; the handler answers IRQ_NONE, and once
+	 * 100000 of those pile up the core disables the line for good ("irq 279:
+	 * nobody cared ... Disabling IRQ #279"), so every later vblank wait times
+	 * out. Seen on 20.11 in two of ~70 loader boots of the Poco M5s, IRQ count
+	 * exactly 100000 (poco-m5s/evidence/comb64-boot-a/). Mask and acknowledge
+	 * what the loader left, as the vendor's ovl_stop() does, before taking
+	 * the line; mtk_ovl_enable_vblank() enables the frame-done interrupt once
+	 * there is someone to tell. The OVL keeps scanning out the loader's
+	 * picture, only its interrupts stop.
+	 */
+	ret = clk_prepare_enable(priv->clk);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to enable ovl clk\n");
+	writel(0, priv->regs + DISP_REG_OVL_INTEN);
+	writel(0, priv->regs + DISP_REG_OVL_INTSTA);
+	clk_disable_unprepare(priv->clk);
+
 	ret = devm_request_irq(dev, irq, mtk_disp_ovl_irq_handler,
 			       IRQF_TRIGGER_NONE, dev_name(dev), priv);
 	if (ret < 0)
