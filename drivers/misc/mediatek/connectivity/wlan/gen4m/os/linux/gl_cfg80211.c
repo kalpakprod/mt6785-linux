@@ -7329,6 +7329,33 @@ void mtk_cfg_mgmt_frame_register(struct wiphy *wiphy,
 	}
 }
 
+#if KERNEL_VERSION(5, 8, 0) <= CFG80211_VERSION_CODE
+/*
+ * Since 5.8 cfg80211 no longer calls mgmt_frame_register once per frame type;
+ * it hands the driver one bitmap of subtypes per interface through
+ * update_mgmt_frame_registrations. Without this op the driver never learnt of
+ * a registration, u4OsMgmtFrameFilter stayed 0 and kalIndicateRxMgmtFrame()
+ * dropped every frame meant for userspace ("The cfg80211 hasn't do mgmt
+ * register!"), among them the AP's SAE Commit/Confirm during EXTERNAL_AUTH, so
+ * WPA3 joins ended in a JOIN TIMEOUT. Replay the bitmap through the per-type
+ * handler, for the frame types that handler knows.
+ */
+void mtk_cfg_update_mgmt_frame_registrations(struct wiphy *wiphy,
+					     struct wireless_dev *wdev,
+					     struct mgmt_frame_regs *upd)
+{
+	static const u16 types[] = {
+		MAC_FRAME_PROBE_REQ, MAC_FRAME_AUTH, MAC_FRAME_ACTION
+	};
+	u32 stypes = upd->interface_stypes | upd->global_stypes;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(types); i++)
+		mtk_cfg_mgmt_frame_register(wiphy, wdev, types[i],
+			!!(stypes & BIT((types[i] & 0x00F0) >> 4)));
+}
+#endif
+
 #ifdef CONFIG_NL80211_TESTMODE
 #if KERNEL_VERSION(3, 12, 0) <= CFG80211_VERSION_CODE
 int mtk_cfg_testmode_cmd(struct wiphy *wiphy,

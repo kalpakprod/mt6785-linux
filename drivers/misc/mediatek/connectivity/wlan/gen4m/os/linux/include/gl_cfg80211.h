@@ -714,6 +714,11 @@ int mtk_cfg_mgmt_tx(struct wiphy *wiphy,
 		    bool dont_wait_for_ack,
 		    u64 cookie);
 #endif
+#if KERNEL_VERSION(5, 8, 0) <= CFG80211_VERSION_CODE
+void mtk_cfg_update_mgmt_frame_registrations(struct wiphy *wiphy,
+					     struct wireless_dev *wdev,
+					     struct mgmt_frame_regs *upd);
+#endif
 void mtk_cfg_mgmt_frame_register(struct wiphy *wiphy,
 				 struct wireless_dev *wdev,
 				 u16 frame_type, bool reg);

@@ -509,6 +509,9 @@ static struct cfg80211_ops mtk_cfg_ops = {
 	 * update_mgmt_frame_registrations, which fullmac may leave unset). */
 #if KERNEL_VERSION(5, 8, 0) > CFG80211_VERSION_CODE
 	.mgmt_frame_register = mtk_cfg_mgmt_frame_register,
+#else
+	.update_mgmt_frame_registrations =
+		mtk_cfg_update_mgmt_frame_registrations,
 #endif
 
 #ifdef CONFIG_NL80211_TESTMODE
