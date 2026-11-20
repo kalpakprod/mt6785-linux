@@ -8,6 +8,7 @@
 #include <linux/component.h>
 #include <linux/iopoll.h>
 #include <linux/irq.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -288,6 +289,20 @@ struct mtk_dsi {
 	u32 irq_data;
 	unsigned int irq_count;
 	wait_queue_head_t irq_wait_queue;
+	/*
+	 * Owns the engine: one DCS transfer at a time, and none while the bridge
+	 * powers the engine or switches it between command and video mode. The
+	 * transfer path leaves video mode, fills the command queue, starts the
+	 * engine and polls INTSTA, and clears INTSTA and irq_data on the way out;
+	 * two callers interleaving there take or wipe each other's completion and
+	 * one of them waits out its whole second. That is what the panel's
+	 * backlight did to the panel's own init on 20.11: systemd-backlight
+	 * restored the brightness 1 ms after the DRM device came up, both waits
+	 * timed out together and the panel stayed dark (prepare failed, -ETIME);
+	 * an unblank with brightness writes running beside it fails the same way
+	 * (poco-m5s/evidence/comb64-boot-a/blrace-c65-dmesg.txt).
+	 */
+	struct mutex lock;
 	const struct mtk_dsi_driver_data *driver_data;
 };
 
@@ -1101,6 +1116,7 @@ static void mtk_dsi_bridge_atomic_disable(struct drm_bridge *bridge,
 {
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
 
+	guard(mutex)(&dsi->lock);
 	mtk_output_dsi_disable(dsi);
 }
 
@@ -1108,6 +1124,8 @@ static void mtk_dsi_bridge_atomic_enable(struct drm_bridge *bridge,
 					 struct drm_atomic_commit *state)
 {
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
+
+	guard(mutex)(&dsi->lock);
 
 	if (dsi->refcount == 0)
 		return;
@@ -1122,6 +1140,8 @@ static void mtk_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
 	struct drm_device *drm = bridge->dev;
 	int ret;
 
+	guard(mutex)(&dsi->lock);
+
 	ret = mtk_dsi_poweron(dsi);
 	if (ret < 0)
 		drm_err(drm, "failed to power on dsi\n");
@@ -1135,6 +1155,7 @@ static void mtk_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
 {
 	struct mtk_dsi *dsi = bridge_to_dsi(bridge);
 
+	guard(mutex)(&dsi->lock);
 	mtk_dsi_poweroff(dsi);
 }
 
@@ -1173,6 +1194,7 @@ void mtk_dsi_ddp_start(struct device *dev)
 {
 	struct mtk_dsi *dsi = dev_get_drvdata(dev);
 
+	guard(mutex)(&dsi->lock);
 	mtk_dsi_poweron(dsi);
 }
 
@@ -1180,6 +1202,7 @@ void mtk_dsi_ddp_stop(struct device *dev)
 {
 	struct mtk_dsi *dsi = dev_get_drvdata(dev);
 
+	guard(mutex)(&dsi->lock);
 	mtk_dsi_poweroff(dsi);
 }
 
@@ -1582,8 +1605,8 @@ static ssize_t mtk_dsi_read_lcm_reg(struct mtk_dsi *dsi,
 	return recv_cnt;
 }
 
-static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
-				     const struct mipi_dsi_msg *msg)
+static ssize_t mtk_dsi_host_transfer_locked(struct mipi_dsi_host *host,
+					    const struct mipi_dsi_msg *msg)
 {
 	struct mtk_dsi *dsi = host_to_dsi(host);
 	struct drm_device *drm = dsi->bridge.dev;
@@ -1668,6 +1691,16 @@ restore_dsi_mode:
 	return ret < 0 ? ret : recv_cnt;
 }
 
+static ssize_t mtk_dsi_host_transfer(struct mipi_dsi_host *host,
+				     const struct mipi_dsi_msg *msg)
+{
+	struct mtk_dsi *dsi = host_to_dsi(host);
+
+	guard(mutex)(&dsi->lock);
+
+	return mtk_dsi_host_transfer_locked(host, msg);
+}
+
 static const struct mipi_dsi_host_ops mtk_dsi_ops = {
 	.attach = mtk_dsi_host_attach,
 	.detach = mtk_dsi_host_detach,
@@ -1719,6 +1752,10 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	dsi->host.dev = dev;
 
 	init_waitqueue_head(&dsi->irq_wait_queue);
+
+	ret = devm_mutex_init(dev, &dsi->lock);
+	if (ret)
+		return ret;
 
 	platform_set_drvdata(pdev, dsi);
 
