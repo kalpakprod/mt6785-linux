@@ -39,8 +39,8 @@ not "Works".
 | Touchscreen (FT3418) | Works | touches reported on the phone |
 | Audio | In progress | sound card registers; the audio DSP firmware stalls, no playback |
 | Cameras | Partial | 8 MP IMX355: raw RAW10 frames in memory, colour bars decode correctly; 64 MP OV64B40: chip id read, no frames; no image processing, no focus |
-| Wi-Fi (gen4m) | Works | WPA3 client: 10 of 10 reboots connect, get an address and reach the internet; one chip start failed in 18 |
-| Wi-Fi hotspot | Partial | clients join and get an address; traffic from a client to the phone is lost |
+| Wi-Fi (gen4m) | Works | WPA3 client: 34 of 34 reboots connect and get an address, 32 of 34 reach the internet at once (two single misses, cause not known); Wi-Fi off and on works; one chip start failed in 18 |
+| Wi-Fi hotspot | Works | a laptop joins (WPA2), gets an address and reaches the internet through the phone: 41 Mbit/s down with the USB uplink; sharing the phone's own Wi-Fi connection runs at only ~7 Mbit/s |
 | Bluetooth | Partial | scan finds devices; connections not checked |
 | GPS | Partial | the engine outputs NMEA; no position fix yet |
 | 3D (Mali-G76, Panfrost) | Works | Panfrost renders on the phone |
